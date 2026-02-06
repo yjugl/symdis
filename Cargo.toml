@@ -1,0 +1,19 @@
+[package]
+name = "symdis"
+version = "0.1.0"
+edition = "2021"
+description = "Symbolic disassembler for Mozilla crash report analysis"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1.0"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+reqwest = { version = "0.12", features = ["gzip", "rustls-tls"] }
+goblin = "0.9"
+capstone = "0.13"
+cab = "0.6"
+dirs = "6.0"
+flate2 = "1.1"
+tempfile = "3"
