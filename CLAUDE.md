@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # Build
 cargo clippy -- -D warnings          # Lint (must pass with zero warnings)
-cargo test                           # Run all 58 unit tests
+cargo test                           # Run all 64 unit tests
 cargo test symbols::breakpad         # Run tests in a specific module
 cargo test test_rva_to_offset        # Run a single test by name
 cargo run -- disasm --help           # Run CLI with args
@@ -15,7 +15,7 @@ cargo run -- disasm --help           # Run CLI with args
 
 ## Project Status
 
-Phases 0-7 of the [implementation plan](IMPLEMENTATION.md) are complete. The `disasm` command works end-to-end: fetch sym+binary from symbol servers, find a function, disassemble, annotate with source lines/call targets/inlines/highlight, and print text output. Remaining commands (`lookup`, `info`, `fetch`, `frames`) and features (JSON output, ELF/Mach-O, demangling) are stubbed but not yet implemented.
+Phases 0-8 of the [implementation plan](IMPLEMENTATION.md) are complete. The `disasm` command works end-to-end: fetch sym+binary from symbol servers, find a function, disassemble, annotate with source lines/call targets/inlines/highlight, and print text or JSON output (`--format text|json`). Remaining commands (`lookup`, `info`, `fetch`, `frames`) and features (ELF/Mach-O, demangling) are stubbed but not yet implemented.
 
 `#![allow(dead_code)]` is set in `main.rs` because many pub items are defined ahead of use for later phases. Remove this once all phases are complete.
 
@@ -28,7 +28,7 @@ Phases 0-7 of the [implementation plan](IMPLEMENTATION.md) are complete. The `di
 4. Find target function by name (HashMap lookup) or offset (binary search)
 5. Extract code bytes at function's RVA, disassemble via Capstone
 6. Annotate: source lines → call targets → inlines → highlight (`disasm/annotate.rs`)
-7. Format and print text output
+7. Format and print text or JSON output (dispatched via `--format`)
 
 **Graceful degradation**: sym+binary → full disassembly; binary-only → raw disassembly; sym-only → metadata without instructions; neither → error.
 
@@ -39,7 +39,8 @@ Phases 0-7 of the [implementation plan](IMPLEMENTATION.md) are complete. The `di
 - `binary/pe.rs` — Goblin-based PE parser implementing `BinaryFile` trait; RVA-to-file-offset via section table walk; IAT import resolution for call target annotation
 - `disasm/engine.rs` — Capstone wrapper supporting x86/x86_64/ARM/ARM64 with Intel or ATT syntax; extracts call targets from direct call/jmp instructions
 - `disasm/annotate.rs` — Annotation pipeline: source lines, call target resolution (FUNC/PUBLIC/IAT), inline frame tracking, highlight with mid-instruction range matching
-- `output/text.rs` — Text formatter rendering source line comments, call target annotations, inline enter/exit markers, highlight (`==>`) marker
+- `output/text.rs` — Text formatter rendering source line comments, call target annotations, inline enter/exit markers, highlight (`==>`) marker; also defines shared `ModuleInfo`, `FunctionInfo`, `DataSource` types
+- `output/json.rs` — JSON formatter with dedicated serde structs; hex-string addresses, hex-encoded bytes, `skip_serializing_if` for optional fields; includes `format_json_error` for structured error output
 
 ## Key Conventions
 

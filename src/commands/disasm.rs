@@ -11,7 +11,9 @@ use crate::config::Syntax;
 use crate::disasm::annotate;
 use crate::disasm::engine::Disassembler;
 use crate::fetch;
+use crate::output::json;
 use crate::output::text::{self, DataSource, FunctionInfo, ModuleInfo};
+use super::FormatArg;
 use crate::symbols::breakpad::SymFile;
 
 /// Parse a hex offset string (with or without 0x prefix) to u64.
@@ -145,23 +147,47 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
             DataSource::BinaryOnly
         };
 
-        let output = text::format_text(
-            &module_info,
-            &function_info,
-            &annotated,
-            &data_source,
-        );
-        print!("{output}");
+        match cli.format {
+            FormatArg::Text => {
+                let output = text::format_text(&module_info, &function_info, &annotated, &data_source);
+                print!("{output}");
+            }
+            FormatArg::Json => {
+                let output = json::format_json(&module_info, &function_info, &annotated, &data_source);
+                println!("{output}");
+            }
+        }
     } else if sym_file.is_some() {
         // Sym only - no binary available
-        let output = text::format_sym_only(&module_info, &function_info);
-        print!("{output}");
+        match cli.format {
+            FormatArg::Text => {
+                let output = text::format_sym_only(&module_info, &function_info);
+                print!("{output}");
+            }
+            FormatArg::Json => {
+                let output = json::format_json_sym_only(&module_info, &function_info);
+                println!("{output}");
+            }
+        }
     } else {
-        bail!(
-            "neither symbol file nor binary available for {}/{}",
-            args.debug_file,
-            args.debug_id
-        );
+        match cli.format {
+            FormatArg::Text => {
+                bail!(
+                    "neither symbol file nor binary available for {}/{}",
+                    args.debug_file,
+                    args.debug_id
+                );
+            }
+            FormatArg::Json => {
+                let msg = format!(
+                    "neither symbol file nor binary available for {}/{}",
+                    args.debug_file, args.debug_id
+                );
+                let output = json::format_json_error(&msg);
+                println!("{output}");
+                return Ok(());
+            }
+        }
     }
 
     Ok(())
