@@ -44,6 +44,12 @@ Phases 0-8 of the [implementation plan](IMPLEMENTATION.md) are complete. The `di
 
 ## Key Conventions
 
+- **Every new `.rs` file must start with the MPL 2.0 license header:**
+  ```rust
+  // This Source Code Form is subject to the terms of the Mozilla Public
+  // License, v. 2.0. If a copy of the MPL was not distributed with this
+  // file, You can obtain one at http://mozilla.org/MPL/2.0/.
+  ```
 - All commands are async (`async fn run`) and return `anyhow::Result<()>` with `.context()` for error messages
 - `.sym` filename derivation: `xul.pdb` → `xul.sym`, `libxul.so` → `libxul.so.sym` (strip `.pdb` suffix, else append `.sym`)
 - Hex addresses in `.sym` files have no `0x` prefix; parsed with `u64::from_str_radix(s, 16)`

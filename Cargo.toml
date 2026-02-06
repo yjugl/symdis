@@ -2,6 +2,7 @@
 name = "symdis"
 version = "0.1.0"
 edition = "2021"
+license = "MPL-2.0"
 description = "Symbolic disassembler for Mozilla crash report analysis"
 
 [dependencies]
