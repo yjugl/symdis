@@ -75,28 +75,27 @@ impl Cache {
     }
 
     /// Get the path where a symbol file would be cached.
+    /// Layout matches WinDbg: <root>/<debug_file>/<debug_id>/<filename>
     pub fn sym_path(&self, key: &SymbolCacheKey) -> PathBuf {
         self.root
-            .join("symbols")
             .join(&key.debug_file)
             .join(&key.debug_id)
             .join(&key.filename)
     }
 
     /// Get the path where a binary file would be cached.
+    /// Layout matches WinDbg: <root>/<code_file>/<code_id>/<code_file>
     pub fn binary_path(&self, key: &BinaryCacheKey) -> PathBuf {
         self.root
-            .join("binaries")
             .join(&key.code_file)
             .join(&key.code_id)
             .join(&key.filename)
     }
 
     /// Get the path for a negative cache marker.
-    fn miss_path(&self, category: &str, file: &str, id: &str) -> PathBuf {
+    fn miss_path(&self, file: &str, id: &str) -> PathBuf {
         self.root
             .join("miss")
-            .join(category)
             .join(file)
             .join(format!("{}.miss", id))
     }
@@ -107,7 +106,7 @@ impl Cache {
         if path.exists() {
             return CacheResult::Hit(path);
         }
-        let miss = self.miss_path("symbols", &key.debug_file, &key.debug_id);
+        let miss = self.miss_path(&key.debug_file, &key.debug_id);
         if miss.exists() && !Self::is_miss_expired(&miss) {
             return CacheResult::NegativeHit;
         }
@@ -120,7 +119,7 @@ impl Cache {
         if path.exists() {
             return CacheResult::Hit(path);
         }
-        let miss = self.miss_path("binaries", &key.code_file, &key.code_id);
+        let miss = self.miss_path(&key.code_file, &key.code_id);
         if miss.exists() && !Self::is_miss_expired(&miss) {
             return CacheResult::NegativeHit;
         }
@@ -143,14 +142,14 @@ impl Cache {
 
     /// Store a negative cache marker.
     pub fn store_sym_miss(&self, key: &SymbolCacheKey) -> Result<()> {
-        let miss = self.miss_path("symbols", &key.debug_file, &key.debug_id);
+        let miss = self.miss_path(&key.debug_file, &key.debug_id);
         self.atomic_write(&miss, b"")?;
         Ok(())
     }
 
     /// Store a negative cache marker for a binary.
     pub fn store_binary_miss(&self, key: &BinaryCacheKey) -> Result<()> {
-        let miss = self.miss_path("binaries", &key.code_file, &key.code_id);
+        let miss = self.miss_path(&key.code_file, &key.code_id);
         self.atomic_write(&miss, b"")?;
         Ok(())
     }

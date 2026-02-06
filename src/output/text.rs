@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use crate::disasm::engine::Instruction;
+use crate::disasm::annotate::AnnotatedInstruction;
 
 /// Information about the module being disassembled.
 pub struct ModuleInfo {
@@ -15,6 +15,7 @@ pub struct FunctionInfo {
     pub name: String,
     pub address: u64,
     pub size: u64,
+    pub source_file: Option<String>,
 }
 
 /// Data source indicator.
@@ -38,9 +39,8 @@ impl std::fmt::Display for DataSource {
 pub fn format_text(
     module: &ModuleInfo,
     function: &FunctionInfo,
-    instructions: &[Instruction],
+    instructions: &[AnnotatedInstruction],
     data_source: &DataSource,
-    highlight_offset: Option<u64>,
 ) -> String {
     let mut out = String::new();
 
@@ -58,6 +58,9 @@ pub fn format_text(
         function.name, function.address, function.size
     )
     .unwrap();
+    if let Some(ref source_file) = function.source_file {
+        writeln!(out, "; Source: {}", source_file).unwrap();
+    }
     writeln!(out, "; Architecture: {}", module.arch).unwrap();
     writeln!(out, "; Data sources: {}", data_source).unwrap();
 
@@ -73,28 +76,67 @@ pub fn format_text(
 
     writeln!(out, ";").unwrap();
 
-    // Instructions
+    // Track state for transition detection
+    let mut prev_source: Option<(String, u32)> = None;
+    let mut prev_inline_names: Vec<String> = Vec::new();
+
     for insn in instructions {
-        let highlight = highlight_offset
-            .is_some_and(|h| h == insn.address);
+        let curr_inline_names: Vec<String> =
+            insn.inline_frames.iter().map(|f| f.name.clone()).collect();
 
-        let marker = if highlight { "==> " } else { "    " };
+        // Find common prefix between previous and current inline stacks
+        let common = prev_inline_names
+            .iter()
+            .zip(curr_inline_names.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
 
-        let _bytes_hex: String = insn.bytes.iter().map(|b| format!("{:02x}", b)).collect();
+        // Close frames that are no longer active (deepest first)
+        for i in (common..prev_inline_names.len()).rev() {
+            writeln!(out, "    ; [end inline] {}", prev_inline_names[i]).unwrap();
+        }
 
-        write!(
-            out,
-            "{}0x{:08x}:  {:<8}{}",
-            marker, insn.address, insn.mnemonic, insn.operands
-        )
-        .unwrap();
+        // Open new inline frames
+        for frame in insn.inline_frames.iter().skip(common) {
+            let location = match &frame.call_file {
+                Some(f) => format!(" ({}:{})", f, frame.call_line),
+                None => String::new(),
+            };
+            writeln!(out, "    ; [inline] {}{}", frame.name, location).unwrap();
+        }
 
-        // Append call target annotation if available
-        if insn.is_indirect_call {
-            write!(out, "              ; indirect call").unwrap();
+        prev_inline_names = curr_inline_names;
+
+        // Emit source line annotation when file:line changes
+        if let (Some(ref file), Some(line)) = (&insn.source_file, insn.source_line) {
+            let curr = (file.clone(), line);
+            if prev_source.as_ref() != Some(&curr) {
+                writeln!(out, "    ; {}:{}", file, line).unwrap();
+                prev_source = Some(curr);
+            }
+        }
+
+        // Emit the instruction
+        let marker = if insn.highlighted { "==> " } else { "    " };
+        let main_part = format!(
+            "0x{:08x}:  {:<8}{}",
+            insn.instruction.address, insn.instruction.mnemonic, insn.instruction.operands
+        );
+
+        write!(out, "{}{}", marker, main_part).unwrap();
+
+        // Call target annotation
+        if let Some(ref target_name) = insn.call_target_name {
+            let padding = 44usize.saturating_sub(main_part.len()).max(2);
+            write!(out, "{:width$}; {}", "", target_name, width = padding).unwrap();
         }
 
         writeln!(out).unwrap();
+    }
+
+    // Close any remaining inline frames at the end
+    for i in (0..prev_inline_names.len()).rev() {
+        writeln!(out, "    ; [end inline] {}", prev_inline_names[i]).unwrap();
     }
 
     out
@@ -102,11 +144,5 @@ pub fn format_text(
 
 /// Format a "sym only" result (no binary available).
 pub fn format_sym_only(module: &ModuleInfo, function: &FunctionInfo) -> String {
-    format_text(
-        module,
-        function,
-        &[],
-        &DataSource::SymOnly,
-        None,
-    )
+    format_text(module, function, &[], &DataSource::SymOnly)
 }

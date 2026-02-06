@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # Build
 cargo clippy -- -D warnings          # Lint (must pass with zero warnings)
-cargo test                           # Run all 37 unit tests
+cargo test                           # Run all 58 unit tests
 cargo test symbols::breakpad         # Run tests in a specific module
 cargo test test_rva_to_offset        # Run a single test by name
 cargo run -- disasm --help           # Run CLI with args
@@ -15,7 +15,7 @@ cargo run -- disasm --help           # Run CLI with args
 
 ## Project Status
 
-Phases 0-6 of the [implementation plan](IMPLEMENTATION.md) are complete (MVP). The `disasm` command works end-to-end: fetch sym+binary from symbol servers, find a function, disassemble, print text output. Remaining commands (`lookup`, `info`, `fetch`, `frames`) and features (annotations, JSON output, ELF/Mach-O, demangling) are stubbed but not yet implemented.
+Phases 0-7 of the [implementation plan](IMPLEMENTATION.md) are complete. The `disasm` command works end-to-end: fetch sym+binary from symbol servers, find a function, disassemble, annotate with source lines/call targets/inlines/highlight, and print text output. Remaining commands (`lookup`, `info`, `fetch`, `frames`) and features (JSON output, ELF/Mach-O, demangling) are stubbed but not yet implemented.
 
 `#![allow(dead_code)]` is set in `main.rs` because many pub items are defined ahead of use for later phases. Remove this once all phases are complete.
 
@@ -27,16 +27,19 @@ Phases 0-6 of the [implementation plan](IMPLEMENTATION.md) are complete (MVP). T
 3. Parse `.sym` → `SymFile`, parse binary → `PeFile` (via `BinaryFile` trait)
 4. Find target function by name (HashMap lookup) or offset (binary search)
 5. Extract code bytes at function's RVA, disassemble via Capstone
-6. Format and print text output
+6. Annotate: source lines → call targets → inlines → highlight (`disasm/annotate.rs`)
+7. Format and print text output
 
 **Graceful degradation**: sym+binary → full disassembly; binary-only → raw disassembly; sym-only → metadata without instructions; neither → error.
 
 **Key modules**:
-- `cache.rs` — Atomic writes via tempfile, negative cache markers with 24h TTL, `_NT_SYMBOL_PATH` integration
-- `fetch/` — Orchestrator tries Tecken then Microsoft symbol server; Microsoft client handles CAB-compressed downloads (`.dl_`/`.pd_` variants)
-- `symbols/breakpad.rs` — Line-by-line parser for `.sym` files; functions and publics sorted by address for binary search; name→index HashMap for exact lookup
-- `binary/pe.rs` — Goblin-based PE parser implementing `BinaryFile` trait; RVA-to-file-offset via section table walk
+- `cache.rs` — Flat WinDbg-compatible layout (`<root>/<file>/<id>/<file>`); atomic writes via tempfile; negative cache markers with 24h TTL; `_NT_SYMBOL_PATH` integration
+- `fetch/` — Orchestrator tries Tecken then Microsoft symbol server; both clients handle CAB-compressed downloads (`.dl_`/`.pd_` variants); shared `compress_filename`/`decompress_cab` in `fetch/mod.rs`
+- `symbols/breakpad.rs` — Line-by-line parser for `.sym` files; functions and publics sorted by address for binary search; name→index HashMap for exact lookup; `resolve_address` caps PUBLIC symbol distance at 64KB; `get_inline_at` returns active inline frames
+- `binary/pe.rs` — Goblin-based PE parser implementing `BinaryFile` trait; RVA-to-file-offset via section table walk; IAT import resolution for call target annotation
 - `disasm/engine.rs` — Capstone wrapper supporting x86/x86_64/ARM/ARM64 with Intel or ATT syntax; extracts call targets from direct call/jmp instructions
+- `disasm/annotate.rs` — Annotation pipeline: source lines, call target resolution (FUNC/PUBLIC/IAT), inline frame tracking, highlight with mid-instruction range matching
+- `output/text.rs` — Text formatter rendering source line comments, call target annotations, inline enter/exit markers, highlight (`==>`) marker
 
 ## Key Conventions
 

@@ -66,6 +66,14 @@ pub struct SourceLocation {
     pub line: u32,
 }
 
+/// Information about an inline frame active at a given address.
+pub struct InlineInfo {
+    pub name: String,
+    pub depth: u32,
+    pub call_file: Option<String>,
+    pub call_line: u32,
+}
+
 impl SymFile {
     /// Parse a .sym file from a reader.
     pub fn parse<R: BufRead>(reader: R) -> Result<Self> {
@@ -200,15 +208,47 @@ impl SymFile {
         }
 
         if let Some(public) = self.find_public_at_address(addr) {
-            return Some(SymbolInfo {
-                name: public.name.clone(),
-                address: public.address,
-                size: None,
-                offset_in_function: addr - public.address,
-            });
+            // PUBLIC symbols have no size, so cap the max distance to avoid
+            // bogus matches for addresses far from any known symbol.
+            const MAX_PUBLIC_DISTANCE: u64 = 0x10000; // 64KB
+            if addr - public.address < MAX_PUBLIC_DISTANCE {
+                return Some(SymbolInfo {
+                    name: public.name.clone(),
+                    address: public.address,
+                    size: None,
+                    offset_in_function: addr - public.address,
+                });
+            }
         }
 
         None
+    }
+
+    /// Get all inline frames active at a given address within a function.
+    /// Returns frames sorted by depth (outermost first).
+    pub fn get_inline_at(&self, addr: u64, func: &FuncRecord) -> Vec<InlineInfo> {
+        let mut result = Vec::new();
+        for inline in &func.inlines {
+            let active = inline.ranges.iter().any(|&(range_addr, range_size)| {
+                addr >= range_addr && addr < range_addr + range_size
+            });
+            if active {
+                let name = self
+                    .inline_origins
+                    .get(inline.origin_index)
+                    .cloned()
+                    .unwrap_or_else(|| format!("<inline {}>", inline.origin_index));
+                let call_file = self.files.get(inline.call_file_index).cloned();
+                result.push(InlineInfo {
+                    name,
+                    depth: inline.depth,
+                    call_file,
+                    call_line: inline.call_line,
+                });
+            }
+        }
+        result.sort_by_key(|i| i.depth);
+        result
     }
 
     /// Get the source file and line for an address within a function.
@@ -472,6 +512,13 @@ PUBLIC 4000 0 _AnotherPublic
         assert_eq!(info.name, "_PublicSymbol");
         assert_eq!(info.offset_in_function, 0x10);
         assert!(info.size.is_none());
+    }
+
+    #[test]
+    fn test_resolve_address_public_too_far() {
+        // Address far beyond any PUBLIC symbol should not resolve
+        let sym = SymFile::parse(Cursor::new(make_test_sym())).unwrap();
+        assert!(sym.resolve_address(0xdeadbeef).is_none());
     }
 
     #[test]

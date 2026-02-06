@@ -1,8 +1,6 @@
-use std::io::Read;
-
 use reqwest::Client;
 
-use super::FetchResult;
+use super::{FetchResult, compress_filename, decompress_cab};
 
 const MS_SYMBOL_SERVER: &str = "https://msdl.microsoft.com/download/symbols";
 
@@ -84,36 +82,6 @@ async fn fetch_url(client: &Client, url: &str) -> FetchResult {
         Ok(bytes) => FetchResult::Ok(bytes.to_vec()),
         Err(e) => FetchResult::Error(format!("reading response body: {e}")),
     }
-}
-
-/// Replace the last character of the file extension with '_'.
-/// ntdll.dll -> ntdll.dl_, ntdll.pdb -> ntdll.pd_
-fn compress_filename(name: &str) -> String {
-    let mut chars: Vec<char> = name.chars().collect();
-    if chars.len() >= 2 {
-        let last = chars.len() - 1;
-        chars[last] = '_';
-    }
-    chars.into_iter().collect()
-}
-
-/// Decompress a CAB archive and return the contents of the first file.
-fn decompress_cab(data: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let cursor = std::io::Cursor::new(data);
-    let mut cabinet = cab::Cabinet::new(cursor)?;
-
-    // Get the name of the first file in the cabinet
-    let file_name = cabinet
-        .folder_entries()
-        .flat_map(|folder| folder.file_entries())
-        .map(|entry| entry.name().to_string())
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("CAB archive is empty"))?;
-
-    let mut reader = cabinet.read_file(&file_name)?;
-    let mut buf = Vec::new();
-    reader.read_to_end(&mut buf)?;
-    Ok(buf)
 }
 
 #[cfg(test)]

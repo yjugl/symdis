@@ -1,6 +1,6 @@
 use reqwest::Client;
 
-use super::{FetchResult, sym_filename};
+use super::{FetchResult, sym_filename, compress_filename, decompress_cab};
 
 const TECKEN_BASE: &str = "https://symbols.mozilla.org";
 
@@ -17,14 +17,33 @@ pub async fn fetch_sym(
 }
 
 /// Fetch a binary from Tecken using code-file/code-id.
-/// URL pattern: <base>/<code_file>/<code_id>/<code_file>
+/// Tries uncompressed first, then the CAB-compressed variant.
+/// URL patterns:
+///   <base>/<code_file>/<code_id>/<code_file>
+///   <base>/<code_file>/<code_id>/<code_file_compressed>  (CAB)
 pub async fn fetch_binary_by_code_id(
     client: &Client,
     code_file: &str,
     code_id: &str,
 ) -> FetchResult {
+    // Try uncompressed
     let url = format!("{TECKEN_BASE}/{code_file}/{code_id}/{code_file}");
-    fetch_url(client, &url).await
+    match fetch_url(client, &url).await {
+        FetchResult::Ok(data) => return FetchResult::Ok(data),
+        FetchResult::Error(e) => return FetchResult::Error(e),
+        FetchResult::NotFound => {}
+    }
+
+    // Try compressed variant (last extension char -> '_')
+    let compressed_name = compress_filename(code_file);
+    let url = format!("{TECKEN_BASE}/{code_file}/{code_id}/{compressed_name}");
+    match fetch_url(client, &url).await {
+        FetchResult::Ok(data) => match decompress_cab(&data) {
+            Ok(decompressed) => FetchResult::Ok(decompressed),
+            Err(e) => FetchResult::Error(format!("CAB decompression failed: {e}")),
+        },
+        other => other,
+    }
 }
 
 async fn fetch_url(client: &Client, url: &str) -> FetchResult {

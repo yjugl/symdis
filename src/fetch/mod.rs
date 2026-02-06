@@ -6,6 +6,8 @@ use std::path::PathBuf;
 use anyhow::{Result, Context, bail};
 use reqwest::Client;
 
+use std::io::Read;
+
 use crate::cache::{Cache, CacheResult, SymbolCacheKey, BinaryCacheKey};
 
 /// Result of a fetch attempt.
@@ -130,6 +132,35 @@ pub async fn fetch_binary(
         "binary not found: {code_file}/{code_id}\n\
          Tried: Mozilla Tecken, Microsoft Symbol Server"
     )
+}
+
+/// Replace the last character of a file extension with '_'.
+/// ntdll.dll -> ntdll.dl_, xul.dll -> xul.dl_
+pub fn compress_filename(name: &str) -> String {
+    let mut chars: Vec<char> = name.chars().collect();
+    if chars.len() >= 2 {
+        let last = chars.len() - 1;
+        chars[last] = '_';
+    }
+    chars.into_iter().collect()
+}
+
+/// Decompress a CAB archive and return the contents of the first file.
+pub fn decompress_cab(data: &[u8]) -> Result<Vec<u8>> {
+    let cursor = std::io::Cursor::new(data);
+    let mut cabinet = cab::Cabinet::new(cursor)?;
+
+    let file_name = cabinet
+        .folder_entries()
+        .flat_map(|folder| folder.file_entries())
+        .map(|entry| entry.name().to_string())
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("CAB archive is empty"))?;
+
+    let mut reader = cabinet.read_file(&file_name)?;
+    let mut buf = Vec::new();
+    reader.read_to_end(&mut buf)?;
+    Ok(buf)
 }
 
 #[cfg(test)]

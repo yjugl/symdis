@@ -8,6 +8,7 @@ use crate::binary::{BinaryFile, CpuArch};
 use crate::binary::pe::PeFile;
 use crate::cache::Cache;
 use crate::config::Syntax;
+use crate::disasm::annotate;
 use crate::disasm::engine::Disassembler;
 use crate::fetch;
 use crate::output::text::{self, DataSource, FunctionInfo, ModuleInfo};
@@ -92,6 +93,20 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
     // Find the target function
     let (func_name, func_addr, func_size) = find_target(args, &sym_file, &pe_file)?;
 
+    // Look up the FuncRecord for annotation (re-lookup by address)
+    let func_record = sym_file
+        .as_ref()
+        .and_then(|sym| sym.find_function_at_address(func_addr));
+
+    // Derive the function's primary source file from the first line record
+    let source_file = sym_file.as_ref().and_then(|sym| {
+        func_record.and_then(|func| {
+            func.lines
+                .first()
+                .and_then(|lr| sym.files.get(lr.file_index).cloned())
+        })
+    });
+
     // Build module info for output
     let module_info = ModuleInfo {
         debug_file: args.debug_file.clone(),
@@ -104,6 +119,7 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
         name: func_name,
         address: func_addr,
         size: func_size,
+        source_file,
     };
 
     // Disassemble if binary is available
@@ -114,6 +130,15 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
         let disassembler = Disassembler::new(arch, syntax)?;
         let instructions = disassembler.disassemble(&code, func_addr, args.max_instructions)?;
 
+        // Run annotation pipeline
+        let annotated = annotate::annotate(
+            instructions,
+            sym_file.as_ref(),
+            func_record,
+            Some(pe as &dyn BinaryFile),
+            highlight_offset,
+        );
+
         let data_source = if sym_file.is_some() {
             DataSource::BinaryAndSym
         } else {
@@ -123,9 +148,8 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
         let output = text::format_text(
             &module_info,
             &function_info,
-            &instructions,
+            &annotated,
             &data_source,
-            highlight_offset,
         );
         print!("{output}");
     } else if sym_file.is_some() {
