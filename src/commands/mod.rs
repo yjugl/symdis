@@ -5,7 +5,6 @@
 pub mod cache_cmd;
 pub mod disasm;
 pub mod fetch;
-pub mod frames;
 pub mod info;
 pub mod lookup;
 
@@ -250,8 +249,6 @@ pub enum Command {
     Info(InfoArgs),
     /// Pre-fetch symbols and binary for a module
     Fetch(FetchArgs),
-    /// Process multiple stack frames from a crash report
-    Frames(FramesArgs),
     /// Manage the local cache
     Cache(CacheArgs),
 }
@@ -407,25 +404,6 @@ pub struct FetchArgs {
 }
 
 #[derive(Parser)]
-pub struct FramesArgs {
-    /// Path to a processed crash report JSON file
-    #[arg(long, conflicts_with = "crash_id")]
-    pub crash_report: Option<String>,
-
-    /// Socorro crash ID
-    #[arg(long, conflicts_with = "crash_report")]
-    pub crash_id: Option<String>,
-
-    /// Which thread: "crashing" or a thread index
-    #[arg(long, default_value = "crashing")]
-    pub thread: String,
-
-    /// Which frames: "all", a single index, or a range "N-M"
-    #[arg(long, default_value = "0-9")]
-    pub frames: String,
-}
-
-#[derive(Parser)]
 pub struct CacheArgs {
     #[command(subcommand)]
     pub action: CacheAction,
@@ -471,10 +449,6 @@ pub async fn run(cli: Cli) -> Result<()> {
             info::run(args, &config).await
         }
         Command::Fetch(ref args) => fetch::run(args, &config).await,
-        Command::Frames(_args) => {
-            eprintln!("frames: not yet implemented");
-            Ok(())
-        }
         Command::Cache(args) => cache_cmd::run(args, &config),
     }
 }

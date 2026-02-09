@@ -202,6 +202,7 @@ fn format_offset_text(
     out
 }
 
+#[cfg(test)]
 fn format_function_text(
     func: &crate::symbols::breakpad::FuncRecord,
     source_file: Option<&str>,
@@ -307,6 +308,7 @@ fn format_offset_json(
     serde_json::to_string_pretty(&output).expect("JSON serialization should not fail")
 }
 
+#[cfg(test)]
 fn format_function_json(
     func: &crate::symbols::breakpad::FuncRecord,
     source_file: Option<&str>,

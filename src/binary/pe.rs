@@ -23,7 +23,6 @@ struct SectionInfo {
     virtual_address: u64,
     virtual_size: u64,
     pointer_to_raw_data: u64,
-    size_of_raw_data: u64,
 }
 
 impl PeFile {
@@ -55,7 +54,6 @@ impl PeFile {
                 virtual_address: u64::from(s.virtual_address),
                 virtual_size: u64::from(s.virtual_size),
                 pointer_to_raw_data: u64::from(s.pointer_to_raw_data),
-                size_of_raw_data: u64::from(s.size_of_raw_data),
             })
             .collect();
 
@@ -149,13 +147,11 @@ mod tests {
                     virtual_address: 0x1000,
                     virtual_size: 0x5000,
                     pointer_to_raw_data: 0x400,
-                    size_of_raw_data: 0x5000,
                 },
                 SectionInfo {
                     virtual_address: 0x7000,
                     virtual_size: 0x2000,
                     pointer_to_raw_data: 0x5400,
-                    size_of_raw_data: 0x2000,
                 },
             ],
         };

@@ -46,6 +46,7 @@ pub fn debug_id_to_build_id(debug_id: &str) -> Result<String> {
 /// The build ID is a raw hex string (typically 40 chars for 20-byte SHA-1).
 /// The first 16 bytes map to the GUID with byte-swapping on the first 3 fields.
 /// Age is always 0 for Linux.
+#[cfg(test)]
 pub fn build_id_to_debug_id(build_id: &str) -> Result<String> {
     if build_id.len() < 32 {
         bail!("build ID too short: expected at least 32 hex chars, got {}", build_id.len());

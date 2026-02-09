@@ -21,13 +21,16 @@ pub struct SymFile {
 pub struct ModuleRecord {
     pub os: String,
     pub arch: String,
+    #[allow(dead_code)]
     pub debug_id: String,
+    #[allow(dead_code)]
     pub name: String,
 }
 
 pub struct FuncRecord {
     pub address: u64,
     pub size: u64,
+    #[allow(dead_code)]
     pub param_size: u64,
     pub name: String,
     pub lines: Vec<LineRecord>,
@@ -52,6 +55,7 @@ pub struct InlineRecord {
 
 pub struct PublicRecord {
     pub address: u64,
+    #[allow(dead_code)]
     pub param_size: u64,
     pub name: String,
 }

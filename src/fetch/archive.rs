@@ -351,6 +351,7 @@ fn parse_build_id_note(data: &[u8]) -> Result<Option<String>> {
 }
 
 /// Verify that an ELF binary's build ID matches the expected value.
+#[cfg(test)]
 pub fn verify_build_id(data: &[u8], expected: &str) -> Result<()> {
     let actual = extract_elf_build_id(data)?
         .ok_or_else(|| anyhow::anyhow!("binary has no .note.gnu.build-id section"))?;

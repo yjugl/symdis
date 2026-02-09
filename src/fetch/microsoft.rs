@@ -44,39 +44,6 @@ pub async fn fetch_pe(
     }
 }
 
-/// Fetch a PDB file from the Microsoft Symbol Server.
-pub async fn fetch_pdb(
-    client: &Client,
-    base_url: &str,
-    pdb_name: &str,
-    guid_age: &str,
-) -> FetchResult {
-    let base = base_url.trim_end_matches('/');
-    // Try uncompressed
-    let url = format!("{base}/{pdb_name}/{guid_age}/{pdb_name}");
-    debug!("Microsoft PDB URL: {url}");
-    match fetch_url(client, &url).await {
-        FetchResult::Ok(data) => return FetchResult::Ok(data),
-        FetchResult::Error(e) => return FetchResult::Error(e),
-        FetchResult::NotFound => {}
-    }
-
-    // Try compressed variant
-    let compressed_name = compress_filename(pdb_name);
-    let url = format!("{base}/{pdb_name}/{guid_age}/{compressed_name}");
-    debug!("Microsoft PDB compressed URL: {url}");
-    match fetch_url(client, &url).await {
-        FetchResult::Ok(data) => {
-            match decompress_cab(&data) {
-                Ok(decompressed) => FetchResult::Ok(decompressed),
-                Err(e) => FetchResult::Error(format!("CAB decompression failed: {e}")),
-            }
-        }
-        FetchResult::NotFound => FetchResult::NotFound,
-        FetchResult::Error(e) => FetchResult::Error(e),
-    }
-}
-
 async fn fetch_url(client: &Client, url: &str) -> FetchResult {
     let response = match client.get(url).send().await {
         Ok(r) => r,

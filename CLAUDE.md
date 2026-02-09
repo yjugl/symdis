@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # Build
 cargo clippy -- -D warnings          # Lint (must pass with zero warnings)
-cargo test                           # Run all 149 unit tests
+cargo test                           # Run all unit tests
 cargo test symbols::breakpad         # Run tests in a specific module
 cargo test test_rva_to_offset        # Run a single test by name
 cargo run -- disasm --help           # Run CLI with args
@@ -15,9 +15,7 @@ cargo run -- disasm --help           # Run CLI with args
 
 ## Project Status
 
-Phases 0-15 of the [implementation plan](IMPLEMENTATION.md) are complete. The `disasm` command works end-to-end for Windows (PE), Linux (ELF), and macOS (Mach-O) modules: fetch sym+binary from symbol servers, find a function, disassemble, annotate with source lines/call targets/inlines/highlight, and print text or JSON output (`--format text|json`). Mach-O supports fat (universal) binaries with automatic arch selection. The FTP archive fallback supports both Linux (tar.xz) and macOS (PKG/XAR/cpio). The `lookup` and `info` commands are also implemented. C++/Rust symbol demangling is applied at display time (`--no-demangle` to disable). Configuration is loaded from a TOML config file, environment variables, and CLI flags with layered precedence (defaults < config file < env vars < CLI). Structured logging via `tracing` outputs to stderr at configurable verbosity (`-v` for info, `-vv` for debug). The `--offline` flag restricts operation to cached data only. HTML error page detection prevents caching corrupted downloads. Empty functions (size 0) are handled gracefully. The remaining `fetch` command is stubbed but not yet implemented. The `frames` command has been removed from the plan — the AI agent selects interesting frames and calls `disasm` individually.
-
-`#![allow(dead_code)]` is set in `main.rs` because many pub items are defined ahead of use for later phases. Remove this once all phases are complete.
+All commands are fully implemented and the project is ready for real-life testing. The `disasm` command works end-to-end for Windows (PE), Linux (ELF), and macOS (Mach-O) modules: fetch sym+binary from symbol servers, find a function, disassemble, annotate with source lines/call targets/inlines/highlight, and print text or JSON output (`--format text|json`). Mach-O supports fat (universal) binaries with automatic arch selection. The FTP archive fallback supports both Linux (tar.xz) and macOS (PKG/XAR/cpio). The `lookup`, `info`, and `fetch` commands are implemented. The `cache` command supports `path`, `size`, `clear` (with `--older-than`), and `list`. C++/Rust symbol demangling is applied at display time (`--no-demangle` to disable). Configuration is loaded from a TOML config file, environment variables, and CLI flags with layered precedence (defaults < config file < env vars < CLI). Structured logging via `tracing` outputs to stderr at configurable verbosity (`-v` for info, `-vv` for debug). The `--offline` flag restricts operation to cached data only. HTML error page detection prevents caching corrupted downloads. Empty functions (size 0) are handled gracefully.
 
 ## Architecture
 
@@ -49,6 +47,11 @@ Phases 0-15 of the [implementation plan](IMPLEMENTATION.md) are complete. The `d
 - `disasm/annotate.rs` — Annotation pipeline: source lines, call target resolution (FUNC/PUBLIC/IAT/PLT), inline frame tracking, highlight with mid-instruction range matching
 - `output/text.rs` — Text formatter rendering source line comments, call target annotations, inline enter/exit markers, highlight (`==>`) marker; also defines shared `ModuleInfo`, `FunctionInfo`, `DataSource` types
 - `output/json.rs` — JSON formatter with dedicated serde structs; hex-string addresses, hex-encoded bytes, `skip_serializing_if` for optional fields; includes `format_json_error` for structured error output
+- `commands/disasm.rs` — Primary command: concurrent sym+binary fetch, parse, find function, disassemble, annotate, format
+- `commands/lookup.rs` — Sym-file-only lookup by offset or function name; text and JSON output
+- `commands/info.rs` — Lightweight module metadata using `SymFileSummary::scan`; text and JSON output
+- `commands/fetch.rs` — Cache pre-warming: concurrent sym+binary fetch with debuginfod and FTP fallback; text and JSON output
+- `commands/cache_cmd.rs` — Cache management: `path`, `size` (recursive walk), `clear` (with `--older-than` age filter), `list` (per-module artifacts)
 
 ## Key Conventions
 

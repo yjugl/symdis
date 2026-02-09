@@ -7,6 +7,7 @@ use tracing::{warn, debug};
 
 use super::FetchResult;
 
+#[cfg(test)]
 pub const DEFAULT_DEBUGINFOD_URL: &str = "https://debuginfod.elfutils.org";
 
 /// Fetch an ELF executable from debuginfod servers.
@@ -22,29 +23,6 @@ pub async fn fetch_executable(
     for server in servers {
         let base = server.trim_end_matches('/');
         let url = format!("{base}/buildid/{build_id}/executable");
-        debug!("trying debuginfod: {url}");
-        match fetch_url(client, &url).await {
-            FetchResult::Ok(data) => return FetchResult::Ok(data),
-            FetchResult::Error(e) => {
-                warn!("debuginfod {base}: {e}");
-            }
-            FetchResult::NotFound => {}
-        }
-    }
-    FetchResult::NotFound
-}
-
-/// Fetch debug info from debuginfod servers.
-///
-/// URL pattern: `<server>/buildid/<build_id>/debuginfo`
-pub async fn fetch_debuginfo(
-    client: &Client,
-    build_id: &str,
-    servers: &[String],
-) -> FetchResult {
-    for server in servers {
-        let base = server.trim_end_matches('/');
-        let url = format!("{base}/buildid/{build_id}/debuginfo");
         debug!("trying debuginfod: {url}");
         match fetch_url(client, &url).await {
             FetchResult::Ok(data) => return FetchResult::Ok(data),

@@ -140,13 +140,13 @@ symdis disasm \
 
 ## Commands
 
-| Command | Description | Status |
-|---|---|---|
-| `disasm` | Disassemble a function from a module | Implemented |
-| `lookup` | Resolve an offset to a symbol, or a name to an address | Implemented |
-| `info` | Show module metadata | Implemented |
-| `fetch` | Pre-fetch symbols and binary for a module | Implemented |
-| `cache` | Manage the local cache (`path`, `size`, `clear`) | Implemented |
+| Command | Description |
+|---|---|
+| `disasm` | Disassemble a function from a module |
+| `lookup` | Resolve an offset to a symbol, or a name to an address |
+| `info` | Show module metadata |
+| `fetch` | Pre-fetch symbols and binary for a module |
+| `cache` | Manage the local cache (`path`, `size`, `clear`, `list`) |
 
 ## Global Options
 
