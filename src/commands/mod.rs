@@ -14,8 +14,165 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::config::Config;
 
+const DISASM_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
+
+  Socorro JSON field     CLI flag            Notes
+  ---------------------  ------------------  -------------------------------
+  module.debug_file      --debug-file        Required. E.g. "xul.pdb"
+  module.debug_id        --debug-id          Required. 33-char hex string
+  frame.module_offset    --offset            Hex (with or without 0x prefix)
+  frame.function         --function          Exact match; --fuzzy for substr
+  frame.module_offset    --highlight-offset  Marks crash address with ==>
+  module.filename        --code-file         Improves binary fetch (Windows)
+  module.code_id         --code-id           Improves binary fetch (Windows)
+  (from release info)    --version           E.g. "128.0.3". FTP fallback
+  (from release info)    --channel           release|beta|esr|nightly
+  (from release info)    --build-id          14-digit timestamp (nightly only)
+
+BINARY FETCH CHAIN:
+
+  Sources tried in order for the native binary:
+    1. Local cache (instant)
+    2. Mozilla Tecken symbol server (code-file + code-id)
+    3. Microsoft symbol server (Windows PE only)
+    4. debuginfod servers (Linux ELF only, build ID from debug ID)
+    5. Mozilla FTP archive (Linux/macOS, requires --version + --channel)
+
+  Providing --code-file and --code-id significantly improves success for
+  steps 2-3. Providing --version and --channel enables step 5 as a last
+  resort. The .sym file is always fetched from Tecken using --debug-file
+  and --debug-id.
+
+GRACEFUL DEGRADATION:
+
+  binary + sym file  ->  Full annotated disassembly (source lines, call
+                         targets, inline frames, highlight)
+  binary only        ->  Raw disassembly (no source annotations)
+  sym file only      ->  Function metadata (name, address, size, source)
+                         but no disassembly
+  neither            ->  Error
+
+EXAMPLES:
+
+  # Windows module -- disassemble by offset, highlight crash address:
+  symdis disasm \
+      --debug-file xul.pdb \
+      --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
+      --code-file xul.dll --code-id 5CF2591C6859000 \
+      --offset 0x1a3f00 --highlight-offset 0x1a3f00
+
+  # Linux module -- with FTP archive fallback:
+  symdis disasm \
+      --debug-file libxul.so \
+      --debug-id 0200CE7B29CF2F761BB067BC519155A00 \
+      --code-id 7bce0002cf29762f1bb067bc519155a0cb3f4a31 \
+      --version 128.0.3 --channel release \
+      --offset 0x3bb5231 --highlight-offset 0x3bb5231
+
+  # macOS module -- fat/universal binary from PKG archive:
+  symdis disasm \
+      --debug-file XUL \
+      --debug-id 697EB30464C83C329FF3A1B119BAC88D0 \
+      --code-id 697eb30464c83c329ff3a1b119bac88d \
+      --version 128.0.3 --channel release \
+      --offset 0x1c019fb
+
+  # Search by function name (substring match):
+  symdis disasm \
+      --debug-file xul.pdb \
+      --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
+      --function SetAttribute --fuzzy
+
+  # JSON output for structured parsing:
+  symdis disasm \
+      --debug-file ntdll.pdb \
+      --debug-id 1EB9FACB04EA273BB24BA52C8B8D336A1 \
+      --function NtCreateFile --format json
+
+TIPS:
+
+  - Use --format json for machine-parseable output.
+  - Use --highlight-offset with the crash address (frame.module_offset)
+    to mark the faulting instruction with ==> in text output or
+    "highlighted": true in JSON output.
+  - --offset finds the containing function and disassembles it entirely;
+    combine with --highlight-offset to pinpoint the specific instruction.
+  - Use 'symdis info' first to check if sym/binary files are available.
+  - Use 'symdis lookup --offset 0x...' for quick symbol resolution
+    without full disassembly.
+  - For nightly builds, --build-id is the 14-digit build timestamp
+    (YYYYMMDDHHmmSS) from the crash report's build_id field."#;
+
+const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
+
+  Socorro JSON field     CLI flag        Notes
+  ---------------------  --------------  --------------------------------
+  module.debug_file      --debug-file    Required. E.g. "xul.pdb"
+  module.debug_id        --debug-id      Required. 33-char hex string
+  frame.module_offset    --offset        Hex (with or without 0x prefix)
+  frame.function         --function      Exact match; --fuzzy for substr
+
+  Operates on the .sym file only (no binary needed). Resolves an offset
+  to the containing function name, or a function name to its address and
+  size. Useful for quick symbol lookups without full disassembly.
+
+EXAMPLES:
+
+  # Resolve an offset to a symbol name:
+  symdis lookup \
+      --debug-file xul.pdb \
+      --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
+      --offset 0x1a3f00
+
+  # Find a function's address by name (substring match):
+  symdis lookup \
+      --debug-file xul.pdb \
+      --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
+      --function SetAttribute --fuzzy"#;
+
+const INFO_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
+
+  Socorro JSON field     CLI flag        Notes
+  ---------------------  --------------  --------------------------------
+  module.debug_file      --debug-file    Required. E.g. "xul.pdb"
+  module.debug_id        --debug-id      Required. 33-char hex string
+  module.filename        --code-file     Optional. For binary availability
+  module.code_id         --code-id       Optional. For binary availability
+
+  Shows module metadata from the .sym file: module name, debug ID, OS,
+  architecture, function count, and whether the binary is available.
+
+EXAMPLES:
+
+  # Check module metadata and sym/binary availability:
+  symdis info \
+      --debug-file xul.pdb \
+      --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
+      --code-file xul.dll --code-id 5CF2591C6859000
+
+TIPS:
+
+  - Run 'symdis info' before 'symdis disasm' to check whether the sym
+    file and binary are available before attempting full disassembly."#;
+
 #[derive(Parser)]
-#[command(name = "symdis", version, about = "Symbolic disassembler for Mozilla crash report analysis")]
+#[command(
+    name = "symdis",
+    version,
+    about = "Symbolic disassembler for Mozilla crash report analysis",
+    long_about = "Symbolic disassembler for Mozilla crash report analysis.\n\n\
+        Designed for AI agents analyzing Mozilla crash reports. Given a module's \
+        debug identifiers and a function name or offset from a crash report, \
+        symdis fetches symbols and binaries from Mozilla/Microsoft symbol \
+        servers and produces annotated disassembly with source lines, call \
+        targets, and inline frames.\n\n\
+        Subcommands:\n  \
+        disasm   Disassemble a function (primary command)\n  \
+        lookup   Resolve offset → symbol or symbol → address (sym file only)\n  \
+        info     Show module metadata (sym file availability, function count)\n  \
+        fetch    Pre-fetch symbols and binary into cache\n  \
+        cache    Manage the local cache (path, size, clear, list)"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -64,6 +221,7 @@ pub enum Command {
 }
 
 #[derive(Parser)]
+#[command(after_long_help = DISASM_LONG_HELP)]
 pub struct DisasmArgs {
     /// Debug file name (e.g., xul.pdb, libxul.so)
     #[arg(long)]
@@ -125,6 +283,7 @@ pub enum SyntaxArg {
 }
 
 #[derive(Parser)]
+#[command(after_long_help = LOOKUP_LONG_HELP)]
 pub struct LookupArgs {
     /// Debug file name
     #[arg(long)]
@@ -148,6 +307,7 @@ pub struct LookupArgs {
 }
 
 #[derive(Parser)]
+#[command(after_long_help = INFO_LONG_HELP)]
 pub struct InfoArgs {
     /// Debug file name
     #[arg(long)]
