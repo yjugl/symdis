@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+pub mod archive;
 pub mod debuginfod;
 pub mod microsoft;
 pub mod tecken;
@@ -187,6 +188,93 @@ pub async fn fetch_binary_debuginfod(
         "binary not found: {code_file} (build ID: {build_id})\n\
          Tried: debuginfod"
     )
+}
+
+/// Create an HTTP client with extended timeout for large archive downloads.
+pub fn build_archive_http_client() -> Result<Client> {
+    Client::builder()
+        .user_agent(format!("symdis/{}", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(300))
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .gzip(true)
+        .build()
+        .context("building archive HTTP client")
+}
+
+/// Fetch a Linux binary from Mozilla's FTP archive, checking cache first.
+///
+/// Uses the same `buildid-{id}` cache key format as debuginfod so that binaries
+/// cached by either source are found by both. Does not store negative cache
+/// markers because failure depends on user-provided version/channel metadata.
+///
+/// The .tar.xz archive itself is also cached so that extracting a second binary
+/// from the same release does not require re-downloading.
+pub async fn fetch_binary_ftp(
+    client: &Client,
+    cache: &Cache,
+    code_file: &str,
+    code_id: Option<&str>,
+    debug_id: &str,
+    locator: &archive::ArchiveLocator,
+) -> Result<PathBuf> {
+    let build_id = match code_id {
+        Some(id) => id.to_lowercase(),
+        None => crate::symbols::id_convert::debug_id_to_build_id(debug_id)?,
+    };
+
+    // Use same cache key as debuginfod
+    let key = BinaryCacheKey {
+        code_file: code_file.to_string(),
+        code_id: format!("buildid-{build_id}"),
+        filename: code_file.to_string(),
+    };
+
+    // Check cache for extracted binary
+    match cache.get_binary(&key) {
+        CacheResult::Hit(path) => return Ok(path),
+        CacheResult::NegativeHit | CacheResult::Miss => {}
+    }
+
+    // Get archive bytes — from cache or download
+    let (archive_filename, archive_id) = archive::archive_cache_key(locator)?;
+    let archive_key = BinaryCacheKey {
+        code_file: archive_filename.clone(),
+        code_id: archive_id,
+        filename: archive_filename,
+    };
+
+    let archive_data = match cache.get_binary(&archive_key) {
+        CacheResult::Hit(path) => {
+            eprintln!("info: using cached archive: {}", path.display());
+            std::fs::read(&path)
+                .with_context(|| format!("reading cached archive: {}", path.display()))?
+        }
+        _ => {
+            match archive::download_archive(client, locator).await {
+                FetchResult::Ok(data) => {
+                    // Cache the archive for future extractions
+                    cache.store_binary(&archive_key, &data)?;
+                    data
+                }
+                FetchResult::NotFound => {
+                    bail!(
+                        "binary not found in FTP archive: {code_file}\n\
+                         Check that --version and --channel are correct"
+                    )
+                }
+                FetchResult::Error(e) => {
+                    bail!("FTP archive download error: {e}")
+                }
+            }
+        }
+    };
+
+    // Extract binary from archive and verify build ID
+    let binary_data = archive::extract_and_verify(&archive_data, code_file, &build_id)
+        .context("FTP archive extraction")?;
+
+    let path = cache.store_binary(&key, &binary_data)?;
+    Ok(path)
 }
 
 /// Replace the last character of a file extension with '_'.

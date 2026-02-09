@@ -658,6 +658,133 @@ Disassembly of a function from a module where both binary and `.sym` are availab
 
 ---
 
+## Phase 10.5: Binary Fetching from Mozilla Archive
+
+**Goal:** When a binary can't be found through symbol servers (Tecken, Microsoft), fetch it from Mozilla's FTP archive (`ftp.mozilla.org`) using the Firefox version, platform, and channel from the crash report.
+
+### Background
+
+Mozilla's symbol server (Tecken) serves native binaries for **Windows only** (as CAB-compressed `.dl_`/`.ex_` files). For **Linux**, only `.sym` and `.dbg.gz` files are available — the `.dbg.gz` files are stripped ELF debug info (`objcopy --only-keep-debug`) with no code bytes. For **macOS**, the situation is similar.
+
+However, Mozilla's FTP archive at `https://ftp.mozilla.org/pub/firefox/` hosts complete build archives for all platforms and all channels, organized by version.
+
+### FTP Archive Structure
+
+**Release/beta builds:**
+```
+https://ftp.mozilla.org/pub/firefox/releases/<version>/<platform>/en-US/<archive>
+```
+Examples:
+- `releases/135.0/linux-x86_64/en-US/firefox-135.0.tar.xz`
+- `releases/135.0/mac/en-US/Firefox 135.0.dmg`
+- `releases/135.0b5/linux-x86_64/en-US/firefox-135.0b5.tar.xz`
+
+**Nightly builds:**
+```
+https://ftp.mozilla.org/pub/firefox/nightly/<year>/<month>/<buildid-timestamp>-mozilla-central/<archive>
+```
+The build ID timestamp `YYYYMMDDHHMMSS` maps to the directory name `YYYY-MM-DD-HH-MM-SS-mozilla-central`. Example:
+- Build ID `20260208200320` → `nightly/2026/02/2026-02-08-20-03-20-mozilla-central/firefox-149.0a1.en-US.linux-x86_64.tar.xz`
+
+**Platform directory names:**
+| Crash report OS + arch | FTP platform |
+|---|---|
+| Linux x86_64 | `linux-x86_64` |
+| Linux i686 | `linux-i686` |
+| Linux aarch64 | `linux-aarch64` |
+| macOS (any) | `mac` |
+| Windows x64 | `win64` |
+| Windows x86 | `win32` |
+| Windows aarch64 | `win64-aarch64` |
+
+**Archive formats:**
+| Platform | Format | Extraction |
+|---|---|---|
+| Linux | `.tar.xz` (~70 MB) | `tar xJf` — standard, cross-platform via `xz2` + `tar` crates |
+| macOS | `.dmg` (~150 MB) | Disk image — requires platform-specific handling or a DMG extraction crate |
+| Windows | `.zip` / installer | Not needed — Tecken already serves Windows binaries |
+
+### Information Sources for Version/Platform/Channel
+
+The FTP lookup requires: **version**, **channel**, **platform** (OS + arch), and for nightlies, the **build ID timestamp**.
+
+**From the `frames` command** (crash report JSON):
+- `version`: top-level field (e.g., `"135.0"`, `"149.0a1"`)
+- `release_channel`: top-level field (`"release"`, `"beta"`, `"nightly"`, `"esr"`)
+- `build`: top-level field — Firefox build ID timestamp (e.g., `"20260208200320"`)
+- OS and arch: from the crash report's system info or from the `.sym` MODULE record
+
+**From standalone commands** (`disasm`, `lookup`, `info`):
+- New flags: `--version`, `--channel`, `--build-id` (Firefox build ID, not ELF build ID)
+- Or: `--crash-id` to fetch metadata from Socorro's API
+- Platform can be inferred from the `.sym` MODULE record's OS/arch fields
+
+### Tasks
+
+1. **Implement FTP URL construction** in `src/fetch/archive.rs`.
+   - `build_archive_url(version, channel, platform, build_id) -> Vec<String>`:
+     - For `release`/`beta`: `releases/<version>/<platform>/en-US/firefox-<version>.<ext>`
+     - For `nightly`: `nightly/<year>/<month>/<YYYY-MM-DD-HH-MM-SS>-mozilla-central/firefox-<version>.en-US.<platform>.<ext>`
+     - For `esr`: `releases/<version>esr/<platform>/en-US/firefox-<version>esr.<ext>`
+   - Return multiple candidate URLs to handle naming variations.
+
+2. **Implement archive downloading and extraction.**
+   - Download the archive to a temp file (these are large — 70-150 MB).
+   - For `.tar.xz` (Linux): extract specific files by name (e.g., `firefox/libxul.so`) using the `xz2` and `tar` crates.
+   - For `.dmg` (macOS): defer to a later phase or require a `--binary-path` escape hatch.
+   - Cache the extracted individual binaries, not the full archive.
+
+3. **Implement build ID verification.**
+   - After extracting a binary, read its build ID and compare to the expected value from the crash report:
+     - ELF: read the `.note.gnu.build-id` section (a well-known ELF note with `NT_GNU_BUILD_ID` type).
+     - Mach-O: read the UUID from the `LC_UUID` load command.
+   - If the build ID doesn't match, discard the binary and warn.
+   - This guards against version mismatches (e.g., a point release overwriting the same version slot).
+
+4. **Integrate into the fetch pipeline.**
+   - In `fetch_binary()`, after Tecken and Microsoft fail:
+     1. Check if version/channel/platform info is available.
+     2. If so, construct the FTP URL and download the archive.
+     3. Extract the requested binary (e.g., `libxul.so`).
+     4. Verify the build ID matches.
+     5. Store in the symbol cache with the normal cache key.
+   - For the `frames` command: extract version/channel/build_id from the crash report JSON and pass them through the pipeline. One archive download populates cache entries for all modules from that build.
+
+5. **Add CLI flags for standalone commands.**
+   - `--version <version>` — Firefox version string (e.g., `"135.0"`, `"149.0a1"`)
+   - `--channel <channel>` — Release channel (`release`, `beta`, `nightly`, `esr`)
+   - `--build-id <id>` — Firefox build ID timestamp (required for nightly, since the version alone is ambiguous)
+
+### Dependencies to add
+
+```toml
+xz2 = "0.1"      # LZMA/XZ decompression for .tar.xz archives
+tar = "0.4"       # Tar archive extraction
+```
+
+### Acceptance Criteria
+
+- Given a Linux crash report with version `"135.0"` and channel `"release"`, `symdis disasm` fetches the `.tar.xz` from the FTP, extracts `libxul.so`, verifies its build ID, caches it, and disassembles successfully.
+- Nightly builds: the build ID timestamp correctly maps to the FTP directory.
+- A second invocation for the same module uses the cached binary (no re-download).
+- Multiple frames from the same crash reuse the single archive download.
+- Build ID mismatch produces a clear warning and falls back to sym-only.
+
+### Tests
+
+- Unit test: FTP URL construction for release, beta, nightly, and ESR channels.
+- Unit test: Build ID timestamp to nightly directory path conversion.
+- Unit test: ELF build ID extraction from `.note.gnu.build-id`.
+- Integration test with a mock HTTP server serving a test `.tar.xz`.
+
+### Open Questions
+
+- **macOS DMG extraction**: Cross-platform DMG handling is non-trivial. Options include requiring macOS for Mac crash analysis, using a Rust DMG crate if one exists, or deferring macOS binary fetching. A `--binary-path` flag could serve as an escape hatch.
+- **ESR URL pattern**: Need to verify the exact FTP path for ESR releases (may be under `releases/` with an `esr` suffix, or a separate `pub/firefox/releases/esr/` tree).
+- **Archive caching**: Should we cache the full `.tar.xz` to avoid re-downloading when multiple modules are needed, or only cache extracted individual binaries? The full archive is ~70 MB but contains all modules for a build.
+
+---
+
 ## Phase 11: Mach-O Support
 
 **Goal:** macOS modules can be parsed (binary availability may be limited, but parsing works when the binary is available).

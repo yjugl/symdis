@@ -94,6 +94,18 @@ pub struct DisasmArgs {
     /// Code identifier
     #[arg(long)]
     pub code_id: Option<String>,
+
+    /// Firefox version (e.g., "147.0.3") for FTP archive fallback
+    #[arg(long)]
+    pub version: Option<String>,
+
+    /// Firefox release channel (release, beta, nightly, esr) for FTP archive fallback
+    #[arg(long)]
+    pub channel: Option<String>,
+
+    /// Firefox build ID timestamp (required for nightly channel only)
+    #[arg(long)]
+    pub build_id: Option<String>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -142,6 +154,18 @@ pub struct InfoArgs {
     /// Code identifier
     #[arg(long)]
     pub code_id: Option<String>,
+
+    /// Firefox version (e.g., "147.0.3") for FTP archive fallback
+    #[arg(long)]
+    pub version: Option<String>,
+
+    /// Firefox release channel (release, beta, nightly, esr) for FTP archive fallback
+    #[arg(long)]
+    pub channel: Option<String>,
+
+    /// Firefox build ID timestamp (required for nightly channel only)
+    #[arg(long)]
+    pub build_id: Option<String>,
 }
 
 #[derive(Parser)]
@@ -161,6 +185,18 @@ pub struct FetchArgs {
     /// Code identifier
     #[arg(long)]
     pub code_id: Option<String>,
+
+    /// Firefox version (e.g., "147.0.3") for FTP archive fallback
+    #[arg(long)]
+    pub version: Option<String>,
+
+    /// Firefox release channel (release, beta, nightly, esr) for FTP archive fallback
+    #[arg(long)]
+    pub channel: Option<String>,
+
+    /// Firefox build ID timestamp (required for nightly channel only)
+    #[arg(long)]
+    pub build_id: Option<String>,
 }
 
 #[derive(Parser)]

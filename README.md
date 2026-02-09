@@ -6,10 +6,11 @@ Designed primarily for use by AI agents analyzing [Socorro/Crash Stats](https://
 
 ## Features
 
-- **Fetch symbols and binaries** from Mozilla's [Tecken](https://symbols.mozilla.org/) symbol server and Microsoft's public symbol server, with automatic CAB decompression
+- **Fetch symbols and binaries** from Mozilla's [Tecken](https://symbols.mozilla.org/) symbol server, Microsoft's public symbol server, [debuginfod](https://sourceware.org/elfutils/Debuginfod.html) servers, and Mozilla's FTP archive — with automatic CAB decompression and `.tar.xz` extraction
+- **Windows and Linux** module support: PE (via section table) and ELF (via PT_LOAD segments) binary formats
 - **Find functions** by exact name, substring match (`--fuzzy`), or by RVA/offset
 - **Disassemble** x86, x86-64, ARM32, and AArch64 code via [Capstone](https://www.capstone-engine.org/)
-- **Annotate** instructions with source file/line, resolved call targets (FUNC/PUBLIC/IAT), and inline function boundaries
+- **Annotate** instructions with source file/line, resolved call targets (FUNC/PUBLIC/IAT/PLT), and inline function boundaries
 - **Highlight** a specific offset (e.g., a crash address) in the output
 - **Graceful degradation**: binary+sym gives full annotated disassembly; binary-only gives raw disassembly; sym-only gives function metadata
 - **Text and JSON** output formats (`--format text|json`)
@@ -50,6 +51,14 @@ symdis disasm \
     --debug-file xul.pdb \
     --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
     --function SetAttribute --fuzzy
+
+# Linux module with FTP archive fallback
+symdis disasm \
+    --debug-file libxul.so \
+    --debug-id 0200CE7B29CF2F761BB067BC519155A00 \
+    --code-id 7bce0002cf29762f1bb067bc519155a0cb3f4a31 \
+    --version 147.0.3 --channel release \
+    --offset 0x3bb5231 --highlight-offset 0x3bb5231
 
 # JSON output
 symdis disasm \
@@ -124,11 +133,11 @@ symdis disasm \
 | Command | Description | Status |
 |---|---|---|
 | `disasm` | Disassemble a function from a module | Implemented |
-| `lookup` | Resolve an offset to a symbol, or a name to an address | Planned |
-| `info` | Show module metadata | Planned |
+| `lookup` | Resolve an offset to a symbol, or a name to an address | Implemented |
+| `info` | Show module metadata | Implemented |
 | `fetch` | Pre-fetch symbols and binary for a module | Planned |
 | `frames` | Process multiple stack frames from a crash report | Planned |
-| `cache` | Manage the local cache (`path`, `size`, `clear`, `list`) | Implemented |
+| `cache` | Manage the local cache (`path`, `size`, `clear`) | Implemented |
 
 ## Global Options
 
