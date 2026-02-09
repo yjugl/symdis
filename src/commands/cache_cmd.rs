@@ -6,9 +6,10 @@ use anyhow::Result;
 
 use super::{CacheArgs, CacheAction};
 use crate::cache::Cache;
+use crate::config::Config;
 
-pub fn run(args: CacheArgs) -> Result<()> {
-    let cache = Cache::new(None)?;
+pub fn run(args: CacheArgs, config: &Config) -> Result<()> {
+    let cache = Cache::new(&config.cache_dir, config.miss_ttl_hours);
     match args.action {
         CacheAction::Path => {
             println!("{}", cache.root().display());

@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # Build
 cargo clippy -- -D warnings          # Lint (must pass with zero warnings)
-cargo test                           # Run all 138 unit tests
+cargo test                           # Run all 144 unit tests
 cargo test symbols::breakpad         # Run tests in a specific module
 cargo test test_rva_to_offset        # Run a single test by name
 cargo run -- disasm --help           # Run CLI with args
@@ -15,14 +15,14 @@ cargo run -- disasm --help           # Run CLI with args
 
 ## Project Status
 
-Phases 0-13 of the [implementation plan](IMPLEMENTATION.md) are complete. The `disasm` command works end-to-end for Windows (PE), Linux (ELF), and macOS (Mach-O) modules: fetch sym+binary from symbol servers, find a function, disassemble, annotate with source lines/call targets/inlines/highlight, and print text or JSON output (`--format text|json`). Mach-O supports fat (universal) binaries with automatic arch selection. The FTP archive fallback supports both Linux (tar.xz) and macOS (PKG/XAR/cpio). The `lookup` and `info` commands are also implemented. C++/Rust symbol demangling is applied at display time (`--no-demangle` to disable). The remaining `fetch` command is stubbed but not yet implemented. The `frames` command has been removed from the plan — the AI agent selects interesting frames and calls `disasm` individually.
+Phases 0-14 of the [implementation plan](IMPLEMENTATION.md) are complete. The `disasm` command works end-to-end for Windows (PE), Linux (ELF), and macOS (Mach-O) modules: fetch sym+binary from symbol servers, find a function, disassemble, annotate with source lines/call targets/inlines/highlight, and print text or JSON output (`--format text|json`). Mach-O supports fat (universal) binaries with automatic arch selection. The FTP archive fallback supports both Linux (tar.xz) and macOS (PKG/XAR/cpio). The `lookup` and `info` commands are also implemented. C++/Rust symbol demangling is applied at display time (`--no-demangle` to disable). Configuration is loaded from a TOML config file, environment variables, and CLI flags with layered precedence (defaults < config file < env vars < CLI). The remaining `fetch` command is stubbed but not yet implemented. The `frames` command has been removed from the plan — the AI agent selects interesting frames and calls `disasm` individually.
 
 `#![allow(dead_code)]` is set in `main.rs` because many pub items are defined ahead of use for later phases. Remove this once all phases are complete.
 
 ## Architecture
 
 **Data flow for `disasm` command** (`commands/disasm.rs`):
-1. Build HTTP client + resolve cache directory
+1. Resolve `Config` (TOML file + env vars + CLI flags), build HTTP client + cache
 2. Concurrently fetch `.sym` file and native binary (`tokio::join!`)
 3. Parse `.sym` → `SymFile`, parse binary → `PeFile`, `ElfFile`, or `MachOFile` (via `BinaryFile` trait)
 4. Find target function by name (HashMap lookup) or offset (binary search)
@@ -34,9 +34,10 @@ Phases 0-13 of the [implementation plan](IMPLEMENTATION.md) are complete. The `d
 **Graceful degradation**: sym+binary → full disassembly; binary-only → raw disassembly; sym-only → metadata without instructions; neither → error.
 
 **Key modules**:
-- `cache.rs` — Flat WinDbg-compatible layout (`<root>/<file>/<id>/<file>`); atomic writes via tempfile; negative cache markers with 24h TTL; `_NT_SYMBOL_PATH` integration
-- `fetch/` — Orchestrator tries Tecken then Microsoft symbol server; both clients handle CAB-compressed downloads (`.dl_`/`.pd_` variants); shared `compress_filename`/`decompress_cab` in `fetch/mod.rs`
-- `fetch/debuginfod.rs` — debuginfod client for Linux executables; configurable via `DEBUGINFOD_URLS` env var
+- `config.rs` — TOML config file parsing (`toml 0.8`); `Config::resolve()` merges defaults < config file < env vars < CLI flags; `_NT_SYMBOL_PATH` parsing for cache dir; config file located via `SYMDIS_CONFIG` env var or platform default (`%APPDATA%\symdis\config.toml` / `~/.config/symdis/config.toml`)
+- `cache.rs` — Flat WinDbg-compatible layout (`<root>/<file>/<id>/<file>`); atomic writes via tempfile; negative cache markers with configurable TTL
+- `fetch/` — Orchestrator tries Tecken then Microsoft symbol server; both clients handle CAB-compressed downloads (`.dl_`/`.pd_` variants); server URLs parameterized from config; shared `compress_filename`/`decompress_cab` in `fetch/mod.rs`
+- `fetch/debuginfod.rs` — debuginfod client for Linux executables; server URLs from config (sourced from `DEBUGINFOD_URLS` env var or config file)
 - `fetch/archive.rs` — Mozilla FTP archive client; downloads `.tar.xz` (Linux) or `.pkg` (macOS) build archives; extracts binaries; verifies ELF build IDs and Mach-O UUIDs; archive caching avoids re-downloading for multiple binaries from the same release
 - `symbols/breakpad.rs` — Line-by-line parser for `.sym` files; functions and publics sorted by address for binary search; name→index HashMap for exact lookup; `resolve_address` caps PUBLIC symbol distance at 64KB; `get_inline_at` returns active inline frames; `SymFileSummary` for lightweight scanning
 - `symbols/id_convert.rs` — Debug ID ↔ Build ID conversion (GUID byte-swapping for ELF)
@@ -72,6 +73,7 @@ Phases 0-13 of the [implementation plan](IMPLEMENTATION.md) are complete. The `d
 - **xz2 0.1** + **tar 0.4** for Linux `.tar.xz` archive extraction
 - **quick-xml 0.37** + **cpio_reader 0.1** for macOS `.pkg` (XAR/cpio) archive extraction
 - **cpp_demangle 0.4** + **rustc-demangle 0.1** for C++/Rust symbol demangling
+- **toml 0.8** for TOML config file parsing
 - **edition = "2021"** (not 2024)
 
 ## Reference

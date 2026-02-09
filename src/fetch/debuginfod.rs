@@ -6,7 +6,7 @@ use reqwest::Client;
 
 use super::FetchResult;
 
-const DEFAULT_DEBUGINFOD_URL: &str = "https://debuginfod.elfutils.org";
+pub const DEFAULT_DEBUGINFOD_URL: &str = "https://debuginfod.elfutils.org";
 
 /// Fetch an ELF executable from debuginfod servers.
 ///
@@ -54,19 +54,6 @@ pub async fn fetch_debuginfo(
     FetchResult::NotFound
 }
 
-/// Get the list of debuginfod server URLs, from `DEBUGINFOD_URLS` env var
-/// or the default server.
-pub fn server_urls() -> Vec<String> {
-    if let Ok(val) = std::env::var("DEBUGINFOD_URLS") {
-        val.split_whitespace()
-            .filter(|s| !s.is_empty())
-            .map(|s| s.to_string())
-            .collect()
-    } else {
-        vec![DEFAULT_DEBUGINFOD_URL.to_string()]
-    }
-}
-
 async fn fetch_url(client: &Client, url: &str) -> FetchResult {
     let response = match client.get(url).send().await {
         Ok(r) => r,
@@ -92,11 +79,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_server_urls_default() {
-        // When DEBUGINFOD_URLS is not set, should return the default
-        // (We can't easily control env vars in tests, so just test the function exists)
-        let urls = server_urls();
-        assert!(!urls.is_empty());
+    fn test_default_debuginfod_url() {
+        assert_eq!(DEFAULT_DEBUGINFOD_URL, "https://debuginfod.elfutils.org");
     }
 
     #[test]

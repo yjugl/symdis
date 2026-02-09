@@ -3,24 +3,22 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use std::io::BufReader;
-use std::path::Path;
 
 use anyhow::{Result, Context, bail};
 
-use super::{Cli, DisasmArgs, SyntaxArg};
+use super::DisasmArgs;
 use crate::binary::{BinaryFile, CpuArch};
 use crate::demangle::maybe_demangle;
 use crate::binary::elf::ElfFile;
 use crate::binary::macho::MachOFile;
 use crate::binary::pe::PeFile;
 use crate::cache::Cache;
-use crate::config::Syntax;
+use crate::config::{Config, OutputFormat};
 use crate::disasm::annotate;
 use crate::disasm::engine::Disassembler;
 use crate::fetch;
 use crate::output::json;
 use crate::output::text::{self, DataSource, FunctionInfo, ModuleInfo};
-use super::FormatArg;
 use crate::symbols::breakpad::SymFile;
 
 /// Parse a hex offset string (with or without 0x prefix) to u64.
@@ -29,14 +27,9 @@ fn parse_offset(s: &str) -> Result<u64> {
     u64::from_str_radix(s, 16).context("invalid hex offset")
 }
 
-pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
-    let cache = Cache::new(cli.cache_dir.as_ref().map(Path::new))?;
-    let client = fetch::build_http_client()?;
-
-    let syntax = match args.syntax {
-        SyntaxArg::Intel => Syntax::Intel,
-        SyntaxArg::Att => Syntax::Att,
-    };
+pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
+    let cache = Cache::new(&config.cache_dir, config.miss_ttl_hours);
+    let client = fetch::build_http_client(config)?;
 
     let highlight_offset = args
         .highlight_offset
@@ -45,15 +38,15 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
         .transpose()?;
 
     // Fetch .sym file and binary concurrently
-    let sym_fut = fetch::fetch_sym_file(&client, &cache, &args.debug_file, &args.debug_id);
+    let sym_fut = fetch::fetch_sym_file(&client, &cache, config, &args.debug_file, &args.debug_id);
     let bin_fut = async {
         if let (Some(code_file), Some(code_id)) = (&args.code_file, &args.code_id) {
-            fetch::fetch_binary(&client, &cache, code_file, code_id).await
+            fetch::fetch_binary(&client, &cache, config, code_file, code_id).await
         } else {
             // Without code_file/code_id, we can try using the debug_file as code_file
             // and debug_id as code_id (works for some cases like when Tecken proxies to MS)
             let code_file = derive_code_file(&args.debug_file);
-            fetch::fetch_binary(&client, &cache, &code_file, &args.debug_id).await
+            fetch::fetch_binary(&client, &cache, config, &code_file, &args.debug_id).await
         }
     };
 
@@ -87,7 +80,7 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
                 .is_some_and(|sym| sym.module.os.eq_ignore_ascii_case("linux"));
             if is_linux {
                 let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                match fetch::fetch_binary_debuginfod(&client, &cache, code_file, args.code_id.as_deref(), &args.debug_id).await {
+                match fetch::fetch_binary_debuginfod(&client, &cache, config, code_file, args.code_id.as_deref(), &args.debug_id).await {
                     Ok(path) => Ok(path),
                     Err(_) => Err(e),
                 }
@@ -105,7 +98,7 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
             let arch_str = sym_file.as_ref().map(|s| s.module.arch.as_str()).unwrap_or("");
             if let (Some(version), Some(channel)) = (&args.version, &args.channel) {
                 if let Some(platform) = fetch::archive::ftp_platform(os, arch_str) {
-                    let archive_client = fetch::build_archive_http_client()?;
+                    let archive_client = fetch::build_archive_http_client(config)?;
                     let locator = fetch::archive::ArchiveLocator {
                         version: version.clone(),
                         channel: channel.clone(),
@@ -170,7 +163,7 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
         arch: arch.to_string(),
     };
 
-    let demangle_enabled = !cli.no_demangle;
+    let demangle_enabled = !config.no_demangle;
 
     let function_info = FunctionInfo {
         name: maybe_demangle(&func_name, demangle_enabled),
@@ -184,8 +177,8 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
         let code = bin.extract_code(func_addr, func_size)
             .context("extracting code from binary")?;
 
-        let disassembler = Disassembler::new(arch, syntax)?;
-        let instructions = disassembler.disassemble(&code, func_addr, args.max_instructions)?;
+        let disassembler = Disassembler::new(arch, config.syntax)?;
+        let instructions = disassembler.disassemble(&code, func_addr, config.max_instructions)?;
 
         // Run annotation pipeline
         let mut annotated = annotate::annotate(
@@ -216,38 +209,38 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
             DataSource::BinaryOnly
         };
 
-        match cli.format {
-            FormatArg::Text => {
+        match config.format {
+            OutputFormat::Text => {
                 let output = text::format_text(&module_info, &function_info, &annotated, &data_source);
                 print!("{output}");
             }
-            FormatArg::Json => {
+            OutputFormat::Json => {
                 let output = json::format_json(&module_info, &function_info, &annotated, &data_source);
                 println!("{output}");
             }
         }
     } else if sym_file.is_some() {
         // Sym only - no binary available
-        match cli.format {
-            FormatArg::Text => {
+        match config.format {
+            OutputFormat::Text => {
                 let output = text::format_sym_only(&module_info, &function_info);
                 print!("{output}");
             }
-            FormatArg::Json => {
+            OutputFormat::Json => {
                 let output = json::format_json_sym_only(&module_info, &function_info);
                 println!("{output}");
             }
         }
     } else {
-        match cli.format {
-            FormatArg::Text => {
+        match config.format {
+            OutputFormat::Text => {
                 bail!(
                     "neither symbol file nor binary available for {}/{}",
                     args.debug_file,
                     args.debug_id
                 );
             }
-            FormatArg::Json => {
+            OutputFormat::Json => {
                 let msg = format!(
                     "neither symbol file nor binary available for {}/{}",
                     args.debug_file, args.debug_id

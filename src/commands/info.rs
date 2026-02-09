@@ -4,28 +4,28 @@
 
 use std::fmt::Write;
 use std::io::BufReader;
-use std::path::Path;
 
 use anyhow::{Result, Context};
 use serde::Serialize;
 
-use super::{Cli, FormatArg, InfoArgs};
+use super::InfoArgs;
 use crate::cache::Cache;
+use crate::config::{Config, OutputFormat};
 use crate::fetch;
 use crate::symbols::breakpad::SymFileSummary;
 
-pub async fn run(args: &InfoArgs, cli: &Cli) -> Result<()> {
-    let cache = Cache::new(cli.cache_dir.as_ref().map(Path::new))?;
-    let client = fetch::build_http_client()?;
+pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
+    let cache = Cache::new(&config.cache_dir, config.miss_ttl_hours);
+    let client = fetch::build_http_client(config)?;
 
     // Fetch .sym file and binary concurrently
-    let sym_fut = fetch::fetch_sym_file(&client, &cache, &args.debug_file, &args.debug_id);
+    let sym_fut = fetch::fetch_sym_file(&client, &cache, config, &args.debug_file, &args.debug_id);
     let bin_fut = async {
         if let (Some(code_file), Some(code_id)) = (&args.code_file, &args.code_id) {
-            fetch::fetch_binary(&client, &cache, code_file, code_id).await
+            fetch::fetch_binary(&client, &cache, config, code_file, code_id).await
         } else {
             let code_file = derive_code_file(&args.debug_file);
-            fetch::fetch_binary(&client, &cache, &code_file, &args.debug_id).await
+            fetch::fetch_binary(&client, &cache, config, &code_file, &args.debug_id).await
         }
     };
 
@@ -56,7 +56,7 @@ pub async fn run(args: &InfoArgs, cli: &Cli) -> Result<()> {
                 .is_some_and(|s| s.module.os.eq_ignore_ascii_case("linux"));
             if is_linux {
                 let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                match fetch::fetch_binary_debuginfod(&client, &cache, code_file, args.code_id.as_deref(), &args.debug_id).await {
+                match fetch::fetch_binary_debuginfod(&client, &cache, config, code_file, args.code_id.as_deref(), &args.debug_id).await {
                     Ok(path) => Ok(path),
                     Err(_) => Err(e),
                 }
@@ -74,7 +74,7 @@ pub async fn run(args: &InfoArgs, cli: &Cli) -> Result<()> {
             let arch_str = sym_summary.as_ref().map(|s| s.module.arch.as_str()).unwrap_or("");
             if let (Some(version), Some(channel)) = (&args.version, &args.channel) {
                 if let Some(platform) = fetch::archive::ftp_platform(os, arch_str) {
-                    let archive_client = fetch::build_archive_http_client()?;
+                    let archive_client = fetch::build_archive_http_client(config)?;
                     let locator = fetch::archive::ArchiveLocator {
                         version: version.clone(),
                         channel: channel.clone(),
@@ -142,12 +142,12 @@ pub async fn run(args: &InfoArgs, cli: &Cli) -> Result<()> {
         }
     }
 
-    match cli.format {
-        FormatArg::Text => {
+    match config.format {
+        OutputFormat::Text => {
             let output = format_info_text(&info);
             print!("{output}");
         }
-        FormatArg::Json => {
+        OutputFormat::Json => {
             let output = format_info_json(&info);
             println!("{output}");
         }

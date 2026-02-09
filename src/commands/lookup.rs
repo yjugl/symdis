@@ -4,13 +4,13 @@
 
 use std::fmt::Write;
 use std::io::BufReader;
-use std::path::Path;
 
 use anyhow::{Result, Context, bail};
 use serde::Serialize;
 
-use super::{Cli, FormatArg, LookupArgs};
+use super::LookupArgs;
 use crate::cache::Cache;
+use crate::config::{Config, OutputFormat};
 use crate::demangle::maybe_demangle;
 use crate::fetch;
 use crate::symbols::breakpad::SymFile;
@@ -21,12 +21,12 @@ fn parse_offset(s: &str) -> Result<u64> {
     u64::from_str_radix(s, 16).context("invalid hex offset")
 }
 
-pub async fn run(args: &LookupArgs, cli: &Cli) -> Result<()> {
-    let cache = Cache::new(cli.cache_dir.as_ref().map(Path::new))?;
-    let client = fetch::build_http_client()?;
+pub async fn run(args: &LookupArgs, config: &Config) -> Result<()> {
+    let cache = Cache::new(&config.cache_dir, config.miss_ttl_hours);
+    let client = fetch::build_http_client(config)?;
 
     // Fetch only the .sym file (no binary needed for lookup)
-    let sym_path = fetch::fetch_sym_file(&client, &cache, &args.debug_file, &args.debug_id)
+    let sym_path = fetch::fetch_sym_file(&client, &cache, config, &args.debug_file, &args.debug_id)
         .await
         .context("fetching symbol file")?;
 
@@ -37,9 +37,9 @@ pub async fn run(args: &LookupArgs, cli: &Cli) -> Result<()> {
 
     if let Some(ref offset_str) = args.offset {
         let offset = parse_offset(offset_str)?;
-        lookup_by_offset(offset, &sym, cli)
+        lookup_by_offset(offset, &sym, config)
     } else if let Some(ref name) = args.function {
-        lookup_by_name(name, args.fuzzy, &sym, cli)
+        lookup_by_name(name, args.fuzzy, &sym, config)
     } else {
         bail!("either --function or --offset must be specified")
     }
@@ -48,7 +48,7 @@ pub async fn run(args: &LookupArgs, cli: &Cli) -> Result<()> {
 fn lookup_by_offset(
     offset: u64,
     sym: &SymFile,
-    cli: &Cli,
+    config: &Config,
 ) -> Result<()> {
     let mut info = sym.resolve_address(offset)
         .ok_or_else(|| anyhow::anyhow!("no symbol found at offset 0x{:x}", offset))?;
@@ -61,18 +61,18 @@ fn lookup_by_offset(
         .unwrap_or_default();
 
     // Demangle names for output
-    let demangle_enabled = !cli.no_demangle;
+    let demangle_enabled = !config.no_demangle;
     info.name = maybe_demangle(&info.name, demangle_enabled);
     for frame in &mut inlines {
         frame.name = maybe_demangle(&frame.name, demangle_enabled);
     }
 
-    match cli.format {
-        FormatArg::Text => {
+    match config.format {
+        OutputFormat::Text => {
             let output = format_offset_text(offset, &info, source_loc.as_ref(), &inlines);
             print!("{output}");
         }
-        FormatArg::Json => {
+        OutputFormat::Json => {
             let output = format_offset_json(offset, &info, source_loc.as_ref(), &inlines);
             println!("{output}");
         }
@@ -85,9 +85,9 @@ fn lookup_by_name(
     name: &str,
     fuzzy: bool,
     sym: &SymFile,
-    cli: &Cli,
+    config: &Config,
 ) -> Result<()> {
-    let demangle_enabled = !cli.no_demangle;
+    let demangle_enabled = !config.no_demangle;
 
     let func = if fuzzy {
         let matches = sym.find_function_by_name_fuzzy(name);
@@ -96,8 +96,8 @@ fn lookup_by_name(
             1 => matches[0],
             _ => {
                 // Multiple matches — report them as an error
-                match cli.format {
-                    FormatArg::Text => {
+                match config.format {
+                    OutputFormat::Text => {
                         let mut msg = format!("ambiguous function name '{name}'. Matches:\n");
                         for (i, f) in matches.iter().enumerate().take(20) {
                             writeln!(
@@ -111,7 +111,7 @@ fn lookup_by_name(
                         }
                         bail!("{msg}");
                     }
-                    FormatArg::Json => {
+                    OutputFormat::Json => {
                         let output = format_fuzzy_matches_json(name, &matches, demangle_enabled);
                         println!("{output}");
                         std::process::exit(1);
@@ -145,12 +145,12 @@ fn lookup_by_name(
 
     let demangled_name = maybe_demangle(&func.name, demangle_enabled);
 
-    match cli.format {
-        FormatArg::Text => {
+    match config.format {
+        OutputFormat::Text => {
             let output = format_function_text_demangled(&demangled_name, func, source_file.as_deref());
             print!("{output}");
         }
-        FormatArg::Json => {
+        OutputFormat::Json => {
             let output = format_function_json_demangled(&demangled_name, func, source_file.as_deref());
             println!("{output}");
         }

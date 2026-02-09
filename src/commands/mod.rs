@@ -12,6 +12,8 @@ pub mod lookup;
 use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 
+use crate::config::Config;
+
 #[derive(Parser)]
 #[command(name = "symdis", version, about = "Symbolic disassembler for Mozilla crash report analysis")]
 pub struct Cli {
@@ -249,21 +251,23 @@ pub enum CacheAction {
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
+    let config = Config::resolve(&cli)?;
+
     match cli.command {
         Command::Disasm(ref args) => {
             if args.function.is_none() && args.offset.is_none() {
                 bail!("Either --function or --offset must be specified");
             }
-            disasm::run(args, &cli).await
+            disasm::run(args, &config).await
         }
         Command::Lookup(ref args) => {
             if args.function.is_none() && args.offset.is_none() {
                 bail!("Either --function or --offset must be specified");
             }
-            lookup::run(args, &cli).await
+            lookup::run(args, &config).await
         }
         Command::Info(ref args) => {
-            info::run(args, &cli).await
+            info::run(args, &config).await
         }
         Command::Fetch(_args) => {
             eprintln!("fetch: not yet implemented");
@@ -273,6 +277,6 @@ pub async fn run(cli: Cli) -> Result<()> {
             eprintln!("frames: not yet implemented");
             Ok(())
         }
-        Command::Cache(args) => cache_cmd::run(args),
+        Command::Cache(args) => cache_cmd::run(args, &config),
     }
 }

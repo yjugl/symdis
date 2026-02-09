@@ -6,17 +6,19 @@ use reqwest::Client;
 
 use super::{FetchResult, compress_filename, decompress_cab};
 
-const MS_SYMBOL_SERVER: &str = "https://msdl.microsoft.com/download/symbols";
+pub const DEFAULT_MS_SYMBOL_SERVER: &str = "https://msdl.microsoft.com/download/symbols";
 
 /// Fetch a PE binary from the Microsoft Symbol Server.
 /// Tries uncompressed first, then the CAB-compressed variant.
 pub async fn fetch_pe(
     client: &Client,
+    base_url: &str,
     pe_name: &str,
     timestamp_size: &str,
 ) -> FetchResult {
+    let base = base_url.trim_end_matches('/');
     // Try uncompressed
-    let url = format!("{MS_SYMBOL_SERVER}/{pe_name}/{timestamp_size}/{pe_name}");
+    let url = format!("{base}/{pe_name}/{timestamp_size}/{pe_name}");
     match fetch_url(client, &url).await {
         FetchResult::Ok(data) => return FetchResult::Ok(data),
         FetchResult::Error(e) => return FetchResult::Error(e),
@@ -25,7 +27,7 @@ pub async fn fetch_pe(
 
     // Try compressed variant (last extension char -> '_')
     let compressed_name = compress_filename(pe_name);
-    let url = format!("{MS_SYMBOL_SERVER}/{pe_name}/{timestamp_size}/{compressed_name}");
+    let url = format!("{base}/{pe_name}/{timestamp_size}/{compressed_name}");
     match fetch_url(client, &url).await {
         FetchResult::Ok(data) => {
             // Decompress CAB
@@ -42,11 +44,13 @@ pub async fn fetch_pe(
 /// Fetch a PDB file from the Microsoft Symbol Server.
 pub async fn fetch_pdb(
     client: &Client,
+    base_url: &str,
     pdb_name: &str,
     guid_age: &str,
 ) -> FetchResult {
+    let base = base_url.trim_end_matches('/');
     // Try uncompressed
-    let url = format!("{MS_SYMBOL_SERVER}/{pdb_name}/{guid_age}/{pdb_name}");
+    let url = format!("{base}/{pdb_name}/{guid_age}/{pdb_name}");
     match fetch_url(client, &url).await {
         FetchResult::Ok(data) => return FetchResult::Ok(data),
         FetchResult::Error(e) => return FetchResult::Error(e),
@@ -55,7 +59,7 @@ pub async fn fetch_pdb(
 
     // Try compressed variant
     let compressed_name = compress_filename(pdb_name);
-    let url = format!("{MS_SYMBOL_SERVER}/{pdb_name}/{guid_age}/{compressed_name}");
+    let url = format!("{base}/{pdb_name}/{guid_age}/{compressed_name}");
     match fetch_url(client, &url).await {
         FetchResult::Ok(data) => {
             match decompress_cab(&data) {
@@ -101,9 +105,10 @@ mod tests {
 
     #[test]
     fn test_microsoft_pe_url() {
+        let base = DEFAULT_MS_SYMBOL_SERVER;
         let pe_name = "ntdll.dll";
         let timestamp_size = "F9D0B4E4218000";
-        let url = format!("{MS_SYMBOL_SERVER}/{pe_name}/{timestamp_size}/{pe_name}");
+        let url = format!("{base}/{pe_name}/{timestamp_size}/{pe_name}");
         assert_eq!(
             url,
             "https://msdl.microsoft.com/download/symbols/ntdll.dll/F9D0B4E4218000/ntdll.dll"
@@ -112,10 +117,11 @@ mod tests {
 
     #[test]
     fn test_microsoft_compressed_url() {
+        let base = DEFAULT_MS_SYMBOL_SERVER;
         let pe_name = "ntdll.dll";
         let timestamp_size = "F9D0B4E4218000";
         let compressed = compress_filename(pe_name);
-        let url = format!("{MS_SYMBOL_SERVER}/{pe_name}/{timestamp_size}/{compressed}");
+        let url = format!("{base}/{pe_name}/{timestamp_size}/{compressed}");
         assert_eq!(
             url,
             "https://msdl.microsoft.com/download/symbols/ntdll.dll/F9D0B4E4218000/ntdll.dl_"

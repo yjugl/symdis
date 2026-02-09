@@ -15,6 +15,7 @@ Designed primarily for use by AI agents analyzing [Socorro/Crash Stats](https://
 - **Highlight** a specific offset (e.g., a crash address) in the output
 - **Graceful degradation**: binary+sym gives full annotated disassembly; binary-only gives raw disassembly; sym-only gives function metadata
 - **Text and JSON** output formats (`--format text|json`)
+- **Configurable** via TOML config file, environment variables, and CLI flags with layered precedence
 - **Local cache** with WinDbg-compatible layout, atomic writes, negative-cache markers, and `_NT_SYMBOL_PATH` integration
 
 ## Installation
@@ -156,14 +157,59 @@ symdis disasm \
 | `--no-demangle` | off | Disable C++/Rust symbol demangling |
 | `-v` / `-vv` | off | Verbose output (info / debug) |
 
+## Configuration
+
+Settings are resolved with layered precedence: **defaults < config file < environment variables < CLI flags**.
+
+### Config File
+
+Location (checked in order):
+1. `SYMDIS_CONFIG` environment variable
+2. Platform default: `%APPDATA%\symdis\config.toml` (Windows) or `~/.config/symdis/config.toml` (Linux/macOS)
+
+```toml
+[cache]
+dir = "D:\\SymbolCache\\symdis"
+miss_ttl_hours = 48
+
+[symbols]
+servers = [
+    "https://symbols.mozilla.org/",
+    "https://msdl.microsoft.com/download/symbols",
+]
+debuginfod_urls = ["https://debuginfod.elfutils.org/"]
+
+[disassembly]
+syntax = "intel"        # "intel" or "att"
+max_instructions = 2000
+
+[output]
+format = "text"         # "text" or "json"
+
+[network]
+timeout_seconds = 30
+user_agent = "symdis/0.1"
+```
+
+### Environment Variables
+
+| Variable | Description |
+|---|---|
+| `SYMDIS_CONFIG` | Override config file path |
+| `SYMDIS_CACHE_DIR` | Override cache directory |
+| `SYMDIS_SYMBOL_SERVERS` | Comma-separated symbol server URLs |
+| `DEBUGINFOD_URLS` | Space-separated debuginfod server URLs |
+| `_NT_SYMBOL_PATH` | Windows symbol path (used for cache directory resolution) |
+
 ## Cache
 
-Downloaded symbol files and binaries are cached locally. The cache location is resolved in this order:
+Downloaded symbol files and binaries are cached locally. The cache directory is resolved in this order:
 
 1. `--cache-dir` CLI flag
 2. `SYMDIS_CACHE_DIR` environment variable
-3. `_NT_SYMBOL_PATH` (Windows) -- uses the cache path from `SRV*<cache>*<server>` entries
-4. Platform default (`%LOCALAPPDATA%\symdis\cache`, `~/.cache/symdis`, or `~/Library/Caches/symdis`)
+3. Config file `[cache] dir` setting
+4. `_NT_SYMBOL_PATH` (Windows) -- uses the cache path from `SRV*<cache>*<server>` entries
+5. Platform default (`%LOCALAPPDATA%\symdis\cache`, `~/.cache/symdis`, or `~/Library/Caches/symdis`)
 
 The cache uses WinDbg-compatible flat layout (`<file>/<id>/<file>`) so it can be shared with other symbol tools.
 

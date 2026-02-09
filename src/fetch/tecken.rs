@@ -6,17 +6,19 @@ use reqwest::Client;
 
 use super::{FetchResult, sym_filename, compress_filename, decompress_cab};
 
-const TECKEN_BASE: &str = "https://symbols.mozilla.org";
+pub const DEFAULT_TECKEN_BASE: &str = "https://symbols.mozilla.org";
 
 /// Fetch a .sym file from Mozilla Tecken.
 /// URL pattern: <base>/<debug_file>/<debug_id>/<stem>.sym
 pub async fn fetch_sym(
     client: &Client,
+    base_url: &str,
     debug_file: &str,
     debug_id: &str,
 ) -> FetchResult {
+    let base = base_url.trim_end_matches('/');
     let sym_name = sym_filename(debug_file);
-    let url = format!("{TECKEN_BASE}/{debug_file}/{debug_id}/{sym_name}");
+    let url = format!("{base}/{debug_file}/{debug_id}/{sym_name}");
     fetch_url(client, &url).await
 }
 
@@ -27,11 +29,13 @@ pub async fn fetch_sym(
 ///   <base>/<code_file>/<code_id>/<code_file_compressed>  (CAB)
 pub async fn fetch_binary_by_code_id(
     client: &Client,
+    base_url: &str,
     code_file: &str,
     code_id: &str,
 ) -> FetchResult {
+    let base = base_url.trim_end_matches('/');
     // Try uncompressed
-    let url = format!("{TECKEN_BASE}/{code_file}/{code_id}/{code_file}");
+    let url = format!("{base}/{code_file}/{code_id}/{code_file}");
     match fetch_url(client, &url).await {
         FetchResult::Ok(data) => return FetchResult::Ok(data),
         FetchResult::Error(e) => return FetchResult::Error(e),
@@ -40,7 +44,7 @@ pub async fn fetch_binary_by_code_id(
 
     // Try compressed variant (last extension char -> '_')
     let compressed_name = compress_filename(code_file);
-    let url = format!("{TECKEN_BASE}/{code_file}/{code_id}/{compressed_name}");
+    let url = format!("{base}/{code_file}/{code_id}/{compressed_name}");
     match fetch_url(client, &url).await {
         FetchResult::Ok(data) => match decompress_cab(&data) {
             Ok(decompressed) => FetchResult::Ok(decompressed),
@@ -77,10 +81,11 @@ mod tests {
     #[test]
     fn test_tecken_sym_url() {
         // Verify the URL construction logic
+        let base = DEFAULT_TECKEN_BASE;
         let debug_file = "xul.pdb";
         let debug_id = "44E4EC8C2F41492B9369D6B9A059577C2";
         let sym_name = sym_filename(debug_file);
-        let url = format!("{TECKEN_BASE}/{debug_file}/{debug_id}/{sym_name}");
+        let url = format!("{base}/{debug_file}/{debug_id}/{sym_name}");
         assert_eq!(
             url,
             "https://symbols.mozilla.org/xul.pdb/44E4EC8C2F41492B9369D6B9A059577C2/xul.sym"
@@ -89,9 +94,10 @@ mod tests {
 
     #[test]
     fn test_tecken_binary_url() {
+        let base = DEFAULT_TECKEN_BASE;
         let code_file = "xul.dll";
         let code_id = "5CF2591C6859000";
-        let url = format!("{TECKEN_BASE}/{code_file}/{code_id}/{code_file}");
+        let url = format!("{base}/{code_file}/{code_id}/{code_file}");
         assert_eq!(
             url,
             "https://symbols.mozilla.org/xul.dll/5CF2591C6859000/xul.dll"

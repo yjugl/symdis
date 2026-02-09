@@ -15,6 +15,7 @@ use reqwest::Client;
 use std::io::Read;
 
 use crate::cache::{Cache, CacheResult, SymbolCacheKey, BinaryCacheKey};
+use crate::config::Config;
 
 /// Result of a fetch attempt.
 pub enum FetchResult {
@@ -27,10 +28,10 @@ pub enum FetchResult {
 }
 
 /// Create a shared HTTP client with standard configuration.
-pub fn build_http_client() -> Result<Client> {
+pub fn build_http_client(config: &Config) -> Result<Client> {
     Client::builder()
-        .user_agent(format!("symdis/{}", env!("CARGO_PKG_VERSION")))
-        .timeout(std::time::Duration::from_secs(30))
+        .user_agent(&config.user_agent)
+        .timeout(std::time::Duration::from_secs(config.timeout_seconds))
         .redirect(reqwest::redirect::Policy::limited(10))
         .gzip(true)
         .build()
@@ -51,6 +52,7 @@ pub fn sym_filename(debug_file: &str) -> String {
 pub async fn fetch_sym_file(
     client: &Client,
     cache: &Cache,
+    config: &Config,
     debug_file: &str,
     debug_id: &str,
 ) -> Result<PathBuf> {
@@ -68,8 +70,12 @@ pub async fn fetch_sym_file(
         CacheResult::Miss => {}
     }
 
-    // Try Tecken
-    match tecken::fetch_sym(client, debug_file, debug_id).await {
+    // Try Tecken (first symbol server)
+    let tecken_url = config.symbol_servers.first()
+        .map(|s| s.as_str())
+        .unwrap_or(tecken::DEFAULT_TECKEN_BASE);
+
+    match tecken::fetch_sym(client, tecken_url, debug_file, debug_id).await {
         FetchResult::Ok(data) => {
             let path = cache.store_sym(&key, &data)?;
             return Ok(path);
@@ -92,6 +98,7 @@ pub async fn fetch_sym_file(
 pub async fn fetch_binary(
     client: &Client,
     cache: &Cache,
+    config: &Config,
     code_file: &str,
     code_id: &str,
 ) -> Result<PathBuf> {
@@ -109,7 +116,11 @@ pub async fn fetch_binary(
     }
 
     // Try Tecken (code-file/code-id lookup)
-    match tecken::fetch_binary_by_code_id(client, code_file, code_id).await {
+    let tecken_url = config.symbol_servers.first()
+        .map(|s| s.as_str())
+        .unwrap_or(tecken::DEFAULT_TECKEN_BASE);
+
+    match tecken::fetch_binary_by_code_id(client, tecken_url, code_file, code_id).await {
         FetchResult::Ok(data) => {
             let path = cache.store_binary(&key, &data)?;
             return Ok(path);
@@ -121,7 +132,11 @@ pub async fn fetch_binary(
     }
 
     // Try Microsoft Symbol Server
-    match microsoft::fetch_pe(client, code_file, code_id).await {
+    let ms_url = config.symbol_servers.get(1)
+        .map(|s| s.as_str())
+        .unwrap_or(microsoft::DEFAULT_MS_SYMBOL_SERVER);
+
+    match microsoft::fetch_pe(client, ms_url, code_file, code_id).await {
         FetchResult::Ok(data) => {
             let path = cache.store_binary(&key, &data)?;
             return Ok(path);
@@ -148,6 +163,7 @@ pub async fn fetch_binary(
 pub async fn fetch_binary_debuginfod(
     client: &Client,
     cache: &Cache,
+    config: &Config,
     code_file: &str,
     code_id: Option<&str>,
     debug_id: &str,
@@ -171,8 +187,7 @@ pub async fn fetch_binary_debuginfod(
         CacheResult::Miss => {}
     }
 
-    let servers = debuginfod::server_urls();
-    match debuginfod::fetch_executable(client, &build_id, &servers).await {
+    match debuginfod::fetch_executable(client, &build_id, &config.debuginfod_urls).await {
         FetchResult::Ok(data) => {
             let path = cache.store_binary(&key, &data)?;
             return Ok(path);
@@ -191,10 +206,10 @@ pub async fn fetch_binary_debuginfod(
 }
 
 /// Create an HTTP client with extended timeout for large archive downloads.
-pub fn build_archive_http_client() -> Result<Client> {
+pub fn build_archive_http_client(config: &Config) -> Result<Client> {
     Client::builder()
-        .user_agent(format!("symdis/{}", env!("CARGO_PKG_VERSION")))
-        .timeout(std::time::Duration::from_secs(300))
+        .user_agent(&config.user_agent)
+        .timeout(std::time::Duration::from_secs(config.archive_timeout_seconds))
         .redirect(reqwest::redirect::Policy::limited(10))
         .gzip(true)
         .build()
