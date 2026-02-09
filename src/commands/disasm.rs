@@ -92,6 +92,50 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         }
     };
 
+    // If binary still not found and Linux, try Snap Store
+    let bin_result = match bin_result {
+        Ok(path) => Ok(path),
+        Err(e) => {
+            let is_linux = sym_file.as_ref()
+                .map(|sym| sym.module.os.eq_ignore_ascii_case("linux"))
+                .unwrap_or(false);
+            if is_linux {
+                let snap_name = args.snap.clone()
+                    .or_else(|| sym_file.as_ref().and_then(fetch::snap::detect_snap_name));
+                let arch = sym_file.as_ref()
+                    .and_then(|sym| fetch::snap::snap_architecture(&sym.module.arch));
+                if let (Some(snap_name), Some(arch)) = (snap_name, arch) {
+                    let locator = fetch::snap::SnapLocator {
+                        snap_name,
+                        architecture: arch.to_string(),
+                    };
+                    let archive_client = fetch::build_archive_http_client(config)?;
+                    let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                    match fetch::fetch_binary_snap(
+                        &archive_client,
+                        &cache,
+                        code_file,
+                        args.code_id.as_deref(),
+                        &args.debug_id,
+                        &locator,
+                    )
+                    .await
+                    {
+                        Ok(path) => Ok(path),
+                        Err(snap_err) => {
+                            warn!("Snap Store fallback failed: {snap_err}");
+                            Err(e)
+                        }
+                    }
+                } else {
+                    Err(e)
+                }
+            } else {
+                Err(e)
+            }
+        }
+    };
+
     // If binary still not found, try FTP archive fallback (Linux + macOS)
     let bin_result = match bin_result {
         Ok(path) => Ok(path),

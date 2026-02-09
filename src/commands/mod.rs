@@ -27,6 +27,7 @@ const DISASM_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   (from release info)    --version           E.g. "128.0.3". FTP fallback
   (from release info)    --channel           release|beta|esr|nightly
   (from release info)    --build-id          14-digit timestamp (nightly only)
+  (snap source paths)    --snap              Snap package name (auto-detected)
 
 BINARY FETCH CHAIN:
 
@@ -35,12 +36,15 @@ BINARY FETCH CHAIN:
     2. Mozilla Tecken symbol server (code-file + code-id)
     3. Microsoft symbol server (Windows PE only)
     4. debuginfod servers (Linux ELF only, build ID from debug ID)
-    5. Mozilla FTP archive (Linux/macOS, requires --version + --channel)
+    5. Snap Store (Linux, when snap detected from sym file or --snap flag)
+    6. Mozilla FTP archive (Linux/macOS, requires --version + --channel)
 
   Providing --code-file and --code-id significantly improves success for
-  steps 2-3. Providing --version and --channel enables step 5 as a last
-  resort. The .sym file is always fetched from Tecken using --debug-file
-  and --debug-id.
+  steps 2-3. Step 5 auto-detects the snap name from source file paths in
+  the .sym file (e.g. /build/gnome-42-2204-sdk/parts/...), or use --snap
+  to specify it explicitly. Providing --version and --channel enables
+  step 6 as a last resort. The .sym file is always fetched from Tecken
+  using --debug-file and --debug-id.
 
 GRACEFUL DEGRADATION:
 
@@ -75,6 +79,14 @@ EXAMPLES:
       --code-id 697eb30464c83c329ff3a1b119bac88d \
       --version 128.0.3 --channel release \
       --offset 0x1c019fb
+
+  # Ubuntu snap library (auto-detected from sym file source paths):
+  symdis disasm \
+      --debug-file libglib-2.0.so.0 \
+      --debug-id 8EF7C24A1B02B5A64F56BEA31DCF2B1E0 \
+      --code-file libglib-2.0.so.0 \
+      --code-id 4ac2f78e021ba6b54f56bea31dcf2b1e19c7f3bc \
+      --offset 0x625f6
 
   # Search by function name (substring match):
   symdis disasm \
@@ -140,10 +152,17 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   (from release info)    --version       E.g. "128.0.3". FTP fallback
   (from release info)    --channel       release|beta|esr|nightly
   (from release info)    --build-id      14-digit timestamp (nightly only)
+  (snap source paths)    --snap          Snap package name (explicit only)
 
   Pre-fetches the .sym file and native binary into the local cache so
   that subsequent disasm calls are instant cache hits. Useful when you
   plan to disassemble multiple functions from the same module.
+
+  Binary fetch chain: cache → Tecken → Microsoft (Windows) → debuginfod
+  (Linux) → Snap Store (Linux, --snap) → FTP archive (--version + --channel).
+
+  Note: snap auto-detection from sym file source paths is only available
+  in the disasm command. For fetch, use --snap explicitly.
 
 EXAMPLES:
 
@@ -158,6 +177,12 @@ EXAMPLES:
       --debug-file libxul.so \
       --debug-id 0200CE7B29CF2F761BB067BC519155A00 \
       --version 128.0.3 --channel release
+
+  # Pre-fetch a snap library:
+  symdis fetch \
+      --debug-file libglib-2.0.so.0 \
+      --debug-id 8EF7C24A1B02B5A64F56BEA31DCF2B1E0 \
+      --snap gnome-42-2204-sdk
 
 TIPS:
 
@@ -307,6 +332,10 @@ pub struct DisasmArgs {
     /// Firefox build ID timestamp (required for nightly channel only)
     #[arg(long)]
     pub build_id: Option<String>,
+
+    /// Snap package name (auto-detected from sym file source paths if not specified)
+    #[arg(long)]
+    pub snap: Option<String>,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -401,6 +430,10 @@ pub struct FetchArgs {
     /// Firefox build ID timestamp (required for nightly channel only)
     #[arg(long)]
     pub build_id: Option<String>,
+
+    /// Snap package name (not auto-detected; use --snap explicitly for fetch)
+    #[arg(long)]
+    pub snap: Option<String>,
 }
 
 #[derive(Parser)]

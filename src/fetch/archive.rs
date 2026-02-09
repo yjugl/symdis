@@ -108,7 +108,7 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
 /// Extract a file from a tar.xz archive by matching the filename (ignoring directory prefix).
 /// Returns the file contents as bytes.
 pub fn extract_from_tar_xz(data: &[u8], target_name: &str) -> Result<Vec<u8>> {
-    let decoder = xz2::read::XzDecoder::new(data);
+    let decoder = liblzma::read::XzDecoder::new(data);
     let mut archive = tar::Archive::new(decoder);
 
     for entry in archive.entries().context("reading tar entries")? {
