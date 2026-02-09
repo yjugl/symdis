@@ -130,6 +130,42 @@ EXAMPLES:
       --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
       --function SetAttribute --fuzzy"#;
 
+const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
+
+  Socorro JSON field     CLI flag        Notes
+  ---------------------  --------------  --------------------------------
+  module.debug_file      --debug-file    Required. E.g. "xul.pdb"
+  module.debug_id        --debug-id      Required. 33-char hex string
+  module.filename        --code-file     Improves binary fetch (Windows)
+  module.code_id         --code-id       Improves binary fetch (Windows)
+  (from release info)    --version       E.g. "128.0.3". FTP fallback
+  (from release info)    --channel       release|beta|esr|nightly
+  (from release info)    --build-id      14-digit timestamp (nightly only)
+
+  Pre-fetches the .sym file and native binary into the local cache so
+  that subsequent disasm calls are instant cache hits. Useful when you
+  plan to disassemble multiple functions from the same module.
+
+EXAMPLES:
+
+  # Pre-fetch a Windows module:
+  symdis fetch \
+      --debug-file xul.pdb \
+      --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
+      --code-file xul.dll --code-id 5CF2591C6859000
+
+  # Pre-fetch a Linux module with FTP archive fallback:
+  symdis fetch \
+      --debug-file libxul.so \
+      --debug-id 0200CE7B29CF2F761BB067BC519155A00 \
+      --version 128.0.3 --channel release
+
+TIPS:
+
+  - Run 'symdis fetch' once before a series of 'symdis disasm' calls
+    on the same module to avoid redundant network requests.
+  - Use -v to see cache hit/miss details on stderr."#;
+
 const INFO_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 
   Socorro JSON field     CLI flag        Notes
@@ -339,6 +375,7 @@ pub struct InfoArgs {
 }
 
 #[derive(Parser)]
+#[command(after_long_help = FETCH_LONG_HELP)]
 pub struct FetchArgs {
     /// Debug file name
     #[arg(long)]
@@ -433,10 +470,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Info(ref args) => {
             info::run(args, &config).await
         }
-        Command::Fetch(_args) => {
-            eprintln!("fetch: not yet implemented");
-            Ok(())
-        }
+        Command::Fetch(ref args) => fetch::run(args, &config).await,
         Command::Frames(_args) => {
             eprintln!("frames: not yet implemented");
             Ok(())
