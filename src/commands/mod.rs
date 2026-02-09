@@ -119,6 +119,10 @@ pub struct LookupArgs {
     /// RVA / module offset
     #[arg(long, conflicts_with = "function")]
     pub offset: Option<String>,
+
+    /// Enable substring/fuzzy matching for --function
+    #[arg(long)]
+    pub fuzzy: bool,
 }
 
 #[derive(Parser)]
@@ -212,16 +216,14 @@ pub async fn run(cli: Cli) -> Result<()> {
             }
             disasm::run(args, &cli).await
         }
-        Command::Lookup(args) => {
+        Command::Lookup(ref args) => {
             if args.function.is_none() && args.offset.is_none() {
                 bail!("Either --function or --offset must be specified");
             }
-            eprintln!("lookup: not yet implemented");
-            Ok(())
+            lookup::run(args, &cli).await
         }
-        Command::Info(_args) => {
-            eprintln!("info: not yet implemented");
-            Ok(())
+        Command::Info(ref args) => {
+            info::run(args, &cli).await
         }
         Command::Fetch(_args) => {
             eprintln!("fetch: not yet implemented");

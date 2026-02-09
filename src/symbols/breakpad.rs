@@ -78,6 +78,41 @@ pub struct InlineInfo {
     pub call_line: u32,
 }
 
+/// Summary statistics from a .sym file, extracted without full parsing.
+pub struct SymFileSummary {
+    pub module: ModuleRecord,
+    pub function_count: usize,
+    pub public_count: usize,
+}
+
+impl SymFileSummary {
+    /// Scan a .sym file to extract the MODULE record and count FUNC/PUBLIC records.
+    /// Much cheaper than a full parse — no allocations per record.
+    pub fn scan<R: BufRead>(reader: R) -> Result<Self> {
+        let mut module: Option<ModuleRecord> = None;
+        let mut function_count: usize = 0;
+        let mut public_count: usize = 0;
+
+        for line in reader.lines() {
+            let line = line?;
+            let line = line.trim();
+
+            if let Some(rest) = line.strip_prefix("MODULE ") {
+                if module.is_none() {
+                    module = Some(parse_module_record(rest)?);
+                }
+            } else if line.starts_with("FUNC ") {
+                function_count += 1;
+            } else if line.starts_with("PUBLIC ") {
+                public_count += 1;
+            }
+        }
+
+        let module = module.ok_or_else(|| anyhow::anyhow!("no MODULE record found"))?;
+        Ok(Self { module, function_count, public_count })
+    }
+}
+
 impl SymFile {
     /// Parse a .sym file from a reader.
     pub fn parse<R: BufRead>(reader: R) -> Result<Self> {
@@ -570,5 +605,15 @@ PUBLIC 4000 0 _AnotherPublic
         assert_eq!(func.inlines.len(), 1);
         assert_eq!(func.inlines[0].ranges.len(), 1);
         assert_eq!(func.inlines[0].ranges[0], (0x1020, 0x10));
+    }
+
+    #[test]
+    fn test_summary_scan() {
+        let summary = SymFileSummary::scan(Cursor::new(make_test_sym())).unwrap();
+        assert_eq!(summary.module.os, "windows");
+        assert_eq!(summary.module.arch, "x86_64");
+        assert_eq!(summary.module.debug_id, "44E4EC8C2F41492B9369D6B9A059577C2");
+        assert_eq!(summary.function_count, 2);
+        assert_eq!(summary.public_count, 2);
     }
 }

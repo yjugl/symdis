@@ -198,10 +198,14 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
 }
 
 /// Derive a code file name from a debug file name.
-/// xul.pdb -> xul.dll, ntdll.pdb -> ntdll.dll
+/// xul.pdb -> xul.dll, ntdll.pdb -> ntdll.dll, firefox.pdb -> firefox.exe
 fn derive_code_file(debug_file: &str) -> String {
     if let Some(stem) = debug_file.strip_suffix(".pdb") {
-        format!("{stem}.dll")
+        if stem.eq_ignore_ascii_case("firefox") {
+            format!("{stem}.exe")
+        } else {
+            format!("{stem}.dll")
+        }
     } else {
         debug_file.to_string()
     }
