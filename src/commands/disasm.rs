@@ -78,7 +78,8 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         Ok(path) => Ok(path),
         Err(e) => {
             let is_linux = sym_file.as_ref()
-                .is_some_and(|sym| sym.module.os.eq_ignore_ascii_case("linux"));
+                .map(|sym| sym.module.os.eq_ignore_ascii_case("linux"))
+                .unwrap_or_else(|| looks_like_elf(&args.debug_file));
             if is_linux {
                 let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
                 match fetch::fetch_binary_debuginfod(&client, &cache, config, code_file, args.code_id.as_deref(), &args.debug_id).await {
@@ -267,6 +268,12 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Heuristic: debug file name looks like a Linux ELF shared library.
+/// Used to try debuginfod when the sym file is unavailable.
+fn looks_like_elf(debug_file: &str) -> bool {
+    debug_file.contains(".so")
 }
 
 /// Derive a code file name from a debug file name.
