@@ -6,11 +6,11 @@ Designed primarily for use by AI agents analyzing [Socorro/Crash Stats](https://
 
 ## Features
 
-- **Fetch symbols and binaries** from Mozilla's [Tecken](https://symbols.mozilla.org/) symbol server, Microsoft's public symbol server, [debuginfod](https://sourceware.org/elfutils/Debuginfod.html) servers, and Mozilla's FTP archive — with automatic CAB decompression and `.tar.xz` extraction
-- **Windows and Linux** module support: PE (via section table) and ELF (via PT_LOAD segments) binary formats
+- **Fetch symbols and binaries** from Mozilla's [Tecken](https://symbols.mozilla.org/) symbol server, Microsoft's public symbol server, [debuginfod](https://sourceware.org/elfutils/Debuginfod.html) servers, and Mozilla's FTP archive — with automatic CAB decompression, `.tar.xz` extraction, and `.pkg` (XAR/cpio) extraction
+- **Windows, Linux, and macOS** module support: PE (via section table), ELF (via PT_LOAD segments), and Mach-O (including fat/universal binaries) binary formats
 - **Find functions** by exact name, substring match (`--fuzzy`), or by RVA/offset
 - **Disassemble** x86, x86-64, ARM32, and AArch64 code via [Capstone](https://www.capstone-engine.org/)
-- **Annotate** instructions with source file/line, resolved call targets (FUNC/PUBLIC/IAT/PLT), and inline function boundaries
+- **Annotate** instructions with source file/line, resolved call targets (FUNC/PUBLIC/IAT/PLT/dylib imports), and inline function boundaries
 - **Highlight** a specific offset (e.g., a crash address) in the output
 - **Graceful degradation**: binary+sym gives full annotated disassembly; binary-only gives raw disassembly; sym-only gives function metadata
 - **Text and JSON** output formats (`--format text|json`)
@@ -59,6 +59,14 @@ symdis disasm \
     --code-id 7bce0002cf29762f1bb067bc519155a0cb3f4a31 \
     --version 147.0.3 --channel release \
     --offset 0x3bb5231 --highlight-offset 0x3bb5231
+
+# macOS module (fat/universal binary from PKG archive)
+symdis disasm \
+    --debug-file XUL \
+    --debug-id 697EB30464C83C329FF3A1B119BAC88D0 \
+    --code-id 697eb30464c83c329ff3a1b119bac88d \
+    --version 147.0.3 --channel release \
+    --offset 0x1c019fb --highlight-offset 0x1c019fb
 
 # JSON output
 symdis disasm \

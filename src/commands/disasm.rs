@@ -10,6 +10,7 @@ use anyhow::{Result, Context, bail};
 use super::{Cli, DisasmArgs, SyntaxArg};
 use crate::binary::{BinaryFile, CpuArch};
 use crate::binary::elf::ElfFile;
+use crate::binary::macho::MachOFile;
 use crate::binary::pe::PeFile;
 use crate::cache::Cache;
 use crate::config::Syntax;
@@ -95,33 +96,28 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
         }
     };
 
-    // If binary still not found and Linux, try FTP archive fallback
+    // If binary still not found, try FTP archive fallback (Linux + macOS)
     let bin_result = match bin_result {
         Ok(path) => Ok(path),
         Err(e) => {
-            let is_linux = sym_file.as_ref()
-                .is_some_and(|sym| sym.module.os.eq_ignore_ascii_case("linux"));
-            if is_linux {
-                if let (Some(version), Some(channel)) = (&args.version, &args.channel) {
-                    let arch_str = sym_file.as_ref().map(|s| s.module.arch.as_str()).unwrap_or("");
-                    if let Some(platform) = fetch::archive::ftp_platform(arch_str) {
-                        let archive_client = fetch::build_archive_http_client()?;
-                        let locator = fetch::archive::ArchiveLocator {
-                            version: version.clone(),
-                            channel: channel.clone(),
-                            platform: platform.to_string(),
-                            build_id: args.build_id.clone(),
-                        };
-                        let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                        match fetch::fetch_binary_ftp(&archive_client, &cache, code_file, args.code_id.as_deref(), &args.debug_id, &locator).await {
-                            Ok(path) => Ok(path),
-                            Err(ftp_err) => {
-                                eprintln!("warning: FTP archive fallback failed: {ftp_err}");
-                                Err(e)
-                            }
+            let os = sym_file.as_ref().map(|s| s.module.os.as_str()).unwrap_or("");
+            let arch_str = sym_file.as_ref().map(|s| s.module.arch.as_str()).unwrap_or("");
+            if let (Some(version), Some(channel)) = (&args.version, &args.channel) {
+                if let Some(platform) = fetch::archive::ftp_platform(os, arch_str) {
+                    let archive_client = fetch::build_archive_http_client()?;
+                    let locator = fetch::archive::ArchiveLocator {
+                        version: version.clone(),
+                        channel: channel.clone(),
+                        platform: platform.to_string(),
+                        build_id: args.build_id.clone(),
+                    };
+                    let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                    match fetch::fetch_binary_ftp(&archive_client, &cache, code_file, args.code_id.as_deref(), &args.debug_id, &locator).await {
+                        Ok(path) => Ok(path),
+                        Err(ftp_err) => {
+                            eprintln!("warning: FTP archive fallback failed: {ftp_err}");
+                            Err(e)
                         }
-                    } else {
-                        Err(e)
                     }
                 } else {
                     Err(e)
@@ -132,9 +128,13 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
         }
     };
 
-    // Parse binary if available — try PE first, then ELF
+    // Determine target arch from sym file for fat binary selection
+    let target_arch = sym_file.as_ref()
+        .and_then(|sym| CpuArch::from_sym_arch(&sym.module.arch));
+
+    // Parse binary if available — try PE first, then ELF, then Mach-O
     let binary_file: Option<Box<dyn BinaryFile>> = match &bin_result {
-        Ok(path) => load_binary(path),
+        Ok(path) => load_binary(path, target_arch),
         Err(e) => {
             eprintln!("warning: binary not available: {e}");
             None
@@ -259,13 +259,16 @@ fn derive_code_file(debug_file: &str) -> String {
     }
 }
 
-/// Load a binary file, trying PE first then ELF.
-fn load_binary(path: &std::path::Path) -> Option<Box<dyn BinaryFile>> {
+/// Load a binary file, trying PE first, then ELF, then Mach-O.
+fn load_binary(path: &std::path::Path, target_arch: Option<CpuArch>) -> Option<Box<dyn BinaryFile>> {
     if let Ok(pe) = PeFile::load(path) {
         return Some(Box::new(pe));
     }
     if let Ok(elf) = ElfFile::load(path) {
         return Some(Box::new(elf));
+    }
+    if let Ok(macho) = MachOFile::load(path, target_arch) {
+        return Some(Box::new(macho));
     }
     eprintln!("warning: failed to parse binary: {}", path.display());
     None

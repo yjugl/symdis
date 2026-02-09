@@ -66,33 +66,28 @@ pub async fn run(args: &InfoArgs, cli: &Cli) -> Result<()> {
         }
     };
 
-    // If binary still not found and Linux, try FTP archive fallback
+    // If binary still not found, try FTP archive fallback (Linux + macOS)
     let bin_result = match bin_result {
         Ok(path) => Ok(path),
         Err(e) => {
-            let is_linux = sym_summary.as_ref()
-                .is_some_and(|s| s.module.os.eq_ignore_ascii_case("linux"));
-            if is_linux {
-                if let (Some(version), Some(channel)) = (&args.version, &args.channel) {
-                    let arch_str = sym_summary.as_ref().map(|s| s.module.arch.as_str()).unwrap_or("");
-                    if let Some(platform) = fetch::archive::ftp_platform(arch_str) {
-                        let archive_client = fetch::build_archive_http_client()?;
-                        let locator = fetch::archive::ArchiveLocator {
-                            version: version.clone(),
-                            channel: channel.clone(),
-                            platform: platform.to_string(),
-                            build_id: args.build_id.clone(),
-                        };
-                        let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                        match fetch::fetch_binary_ftp(&archive_client, &cache, code_file, args.code_id.as_deref(), &args.debug_id, &locator).await {
-                            Ok(path) => Ok(path),
-                            Err(ftp_err) => {
-                                eprintln!("warning: FTP archive fallback failed: {ftp_err}");
-                                Err(e)
-                            }
+            let os = sym_summary.as_ref().map(|s| s.module.os.as_str()).unwrap_or("");
+            let arch_str = sym_summary.as_ref().map(|s| s.module.arch.as_str()).unwrap_or("");
+            if let (Some(version), Some(channel)) = (&args.version, &args.channel) {
+                if let Some(platform) = fetch::archive::ftp_platform(os, arch_str) {
+                    let archive_client = fetch::build_archive_http_client()?;
+                    let locator = fetch::archive::ArchiveLocator {
+                        version: version.clone(),
+                        channel: channel.clone(),
+                        platform: platform.to_string(),
+                        build_id: args.build_id.clone(),
+                    };
+                    let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                    match fetch::fetch_binary_ftp(&archive_client, &cache, code_file, args.code_id.as_deref(), &args.debug_id, &locator).await {
+                        Ok(path) => Ok(path),
+                        Err(ftp_err) => {
+                            eprintln!("warning: FTP archive fallback failed: {ftp_err}");
+                            Err(e)
                         }
-                    } else {
-                        Err(e)
                     }
                 } else {
                     Err(e)
