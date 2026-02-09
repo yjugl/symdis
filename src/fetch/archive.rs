@@ -6,6 +6,7 @@ use std::io::Read;
 
 use anyhow::{Result, Context, bail};
 use reqwest::Client;
+use tracing::info;
 
 use super::FetchResult;
 
@@ -406,7 +407,7 @@ pub async fn download_archive(
         Err(e) => return FetchResult::Error(format!("building archive URL: {e}")),
     };
 
-    eprintln!("info: downloading archive from {url}");
+    info!("downloading archive from {url}");
 
     let response = match client.get(&url).send().await {
         Ok(r) => r,
@@ -438,8 +439,8 @@ pub fn extract_and_verify(
     expected_build_id: &str,
     platform: &str,
 ) -> Result<Vec<u8>> {
-    eprintln!(
-        "info: extracting {binary_name} from archive ({:.1} MB)",
+    info!(
+        "extracting {binary_name} from archive ({:.1} MB)",
         archive_data.len() as f64 / 1_048_576.0
     );
 
@@ -453,7 +454,7 @@ pub fn extract_and_verify(
 
     verify_binary_id(&binary_data, expected_build_id)?;
 
-    eprintln!("info: build ID verified ({expected_build_id})");
+    info!("build ID verified ({expected_build_id})");
 
     Ok(binary_data)
 }

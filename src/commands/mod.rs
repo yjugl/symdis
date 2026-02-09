@@ -35,6 +35,10 @@ pub struct Cli {
     /// Verbose output (-v info, -vv debug)
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
+
+    /// Skip network requests; use only cached data
+    #[arg(long, global = true)]
+    pub offline: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]

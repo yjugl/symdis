@@ -6,6 +6,7 @@ use std::fmt::Write;
 use std::io::BufReader;
 
 use anyhow::{Result, Context};
+use tracing::warn;
 use serde::Serialize;
 
 use super::InfoArgs;
@@ -40,7 +41,7 @@ pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
             match SymFileSummary::scan(reader) {
                 Ok(summary) => Some(summary),
                 Err(e) => {
-                    eprintln!("warning: failed to scan sym file: {e}");
+                    warn!("failed to scan sym file: {e}");
                     None
                 }
             }
@@ -82,10 +83,10 @@ pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
                         build_id: args.build_id.clone(),
                     };
                     let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                    match fetch::fetch_binary_ftp(&archive_client, &cache, code_file, args.code_id.as_deref(), &args.debug_id, &locator).await {
+                    match fetch::fetch_binary_ftp(&archive_client, &cache, config, code_file, args.code_id.as_deref(), &args.debug_id, &locator).await {
                         Ok(path) => Ok(path),
                         Err(ftp_err) => {
-                            eprintln!("warning: FTP archive fallback failed: {ftp_err}");
+                            warn!("FTP archive fallback failed: {ftp_err}");
                             Err(e)
                         }
                     }

@@ -22,5 +22,18 @@ use commands::Cli;
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    let level = match cli.verbose {
+        0 => tracing::Level::WARN,
+        1 => tracing::Level::INFO,
+        _ => tracing::Level::DEBUG,
+    };
+    tracing_subscriber::fmt()
+        .with_max_level(level)
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .without_time()
+        .init();
+
     commands::run(cli).await
 }

@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, Context, bail};
 use reqwest::Client;
+use tracing::{warn, info, debug};
 
 use std::io::Read;
 
@@ -65,9 +66,21 @@ pub async fn fetch_sym_file(
 
     // Check cache
     match cache.get_sym(&key) {
-        CacheResult::Hit(path) => return Ok(path),
-        CacheResult::NegativeHit => bail!("symbol file not available (cached negative result)"),
-        CacheResult::Miss => {}
+        CacheResult::Hit(path) => {
+            info!("cache hit: {debug_file}/{debug_id}/{sym_name}");
+            return Ok(path);
+        }
+        CacheResult::NegativeHit => {
+            debug!("negative cache hit: {debug_file}/{debug_id}/{sym_name}");
+            bail!("symbol file not available (cached negative result)");
+        }
+        CacheResult::Miss => {
+            debug!("cache miss: {debug_file}/{debug_id}/{sym_name}");
+        }
+    }
+
+    if config.offline {
+        bail!("symbol file not in cache and --offline is set: {debug_file}/{debug_id}/{sym_name}");
     }
 
     // Try Tecken (first symbol server)
@@ -77,12 +90,16 @@ pub async fn fetch_sym_file(
 
     match tecken::fetch_sym(client, tecken_url, debug_file, debug_id).await {
         FetchResult::Ok(data) => {
-            let path = cache.store_sym(&key, &data)?;
-            return Ok(path);
+            if is_html_response(&data) {
+                warn!("Tecken returned HTML instead of sym file for {debug_file}/{debug_id}");
+            } else {
+                let path = cache.store_sym(&key, &data)?;
+                return Ok(path);
+            }
         }
         FetchResult::NotFound => {}
         FetchResult::Error(e) => {
-            eprintln!("warning: Tecken fetch error: {e}");
+            warn!("Tecken fetch error: {e}");
         }
     }
 
@@ -110,9 +127,21 @@ pub async fn fetch_binary(
 
     // Check cache
     match cache.get_binary(&key) {
-        CacheResult::Hit(path) => return Ok(path),
-        CacheResult::NegativeHit => bail!("binary not available (cached negative result)"),
-        CacheResult::Miss => {}
+        CacheResult::Hit(path) => {
+            info!("cache hit: {code_file}/{code_id}");
+            return Ok(path);
+        }
+        CacheResult::NegativeHit => {
+            debug!("negative cache hit: {code_file}/{code_id}");
+            bail!("binary not available (cached negative result)");
+        }
+        CacheResult::Miss => {
+            debug!("cache miss: {code_file}/{code_id}");
+        }
+    }
+
+    if config.offline {
+        bail!("binary not in cache and --offline is set: {code_file}/{code_id}");
     }
 
     // Try Tecken (code-file/code-id lookup)
@@ -122,12 +151,16 @@ pub async fn fetch_binary(
 
     match tecken::fetch_binary_by_code_id(client, tecken_url, code_file, code_id).await {
         FetchResult::Ok(data) => {
-            let path = cache.store_binary(&key, &data)?;
-            return Ok(path);
+            if is_html_response(&data) {
+                warn!("Tecken returned HTML instead of binary for {code_file}/{code_id}");
+            } else {
+                let path = cache.store_binary(&key, &data)?;
+                return Ok(path);
+            }
         }
         FetchResult::NotFound => {}
         FetchResult::Error(e) => {
-            eprintln!("warning: Tecken binary fetch error: {e}");
+            warn!("Tecken binary fetch error: {e}");
         }
     }
 
@@ -138,12 +171,16 @@ pub async fn fetch_binary(
 
     match microsoft::fetch_pe(client, ms_url, code_file, code_id).await {
         FetchResult::Ok(data) => {
-            let path = cache.store_binary(&key, &data)?;
-            return Ok(path);
+            if is_html_response(&data) {
+                warn!("Microsoft returned HTML instead of binary for {code_file}/{code_id}");
+            } else {
+                let path = cache.store_binary(&key, &data)?;
+                return Ok(path);
+            }
         }
         FetchResult::NotFound => {}
         FetchResult::Error(e) => {
-            eprintln!("warning: Microsoft symbol server fetch error: {e}");
+            warn!("Microsoft symbol server fetch error: {e}");
         }
     }
 
@@ -182,9 +219,21 @@ pub async fn fetch_binary_debuginfod(
 
     // Check cache
     match cache.get_binary(&key) {
-        CacheResult::Hit(path) => return Ok(path),
-        CacheResult::NegativeHit => bail!("binary not available via debuginfod (cached negative result)"),
-        CacheResult::Miss => {}
+        CacheResult::Hit(path) => {
+            info!("cache hit: {code_file} (buildid-{build_id})");
+            return Ok(path);
+        }
+        CacheResult::NegativeHit => {
+            debug!("negative cache hit: {code_file} (buildid-{build_id})");
+            bail!("binary not available via debuginfod (cached negative result)");
+        }
+        CacheResult::Miss => {
+            debug!("cache miss: {code_file} (buildid-{build_id})");
+        }
+    }
+
+    if config.offline {
+        bail!("binary not in cache and --offline is set: {code_file} (build ID: {build_id})");
     }
 
     match debuginfod::fetch_executable(client, &build_id, &config.debuginfod_urls).await {
@@ -194,7 +243,7 @@ pub async fn fetch_binary_debuginfod(
         }
         FetchResult::NotFound => {}
         FetchResult::Error(e) => {
-            eprintln!("warning: debuginfod fetch error: {e}");
+            warn!("debuginfod fetch error: {e}");
         }
     }
 
@@ -227,6 +276,7 @@ pub fn build_archive_http_client(config: &Config) -> Result<Client> {
 pub async fn fetch_binary_ftp(
     client: &Client,
     cache: &Cache,
+    config: &Config,
     code_file: &str,
     code_id: Option<&str>,
     debug_id: &str,
@@ -246,8 +296,17 @@ pub async fn fetch_binary_ftp(
 
     // Check cache for extracted binary
     match cache.get_binary(&key) {
-        CacheResult::Hit(path) => return Ok(path),
-        CacheResult::NegativeHit | CacheResult::Miss => {}
+        CacheResult::Hit(path) => {
+            info!("cache hit: {code_file} (buildid-{build_id})");
+            return Ok(path);
+        }
+        CacheResult::NegativeHit | CacheResult::Miss => {
+            debug!("cache miss (FTP): {code_file} (buildid-{build_id})");
+        }
+    }
+
+    if config.offline {
+        bail!("binary not in cache and --offline is set: {code_file} (build ID: {build_id})");
     }
 
     // Get archive bytes — from cache or download
@@ -260,7 +319,7 @@ pub async fn fetch_binary_ftp(
 
     let archive_data = match cache.get_binary(&archive_key) {
         CacheResult::Hit(path) => {
-            eprintln!("info: using cached archive: {}", path.display());
+            info!("using cached archive: {}", path.display());
             std::fs::read(&path)
                 .with_context(|| format!("reading cached archive: {}", path.display()))?
         }
@@ -290,6 +349,18 @@ pub async fn fetch_binary_ftp(
 
     let path = cache.store_binary(&key, &binary_data)?;
     Ok(path)
+}
+
+/// Check if response data looks like an HTML error page rather than real data.
+///
+/// Some symbol servers return HTML error pages with 200 status codes. We check
+/// the first 256 bytes for `<!DOCTYPE` or `<html` (case-insensitive) to detect
+/// these corrupted responses.
+fn is_html_response(data: &[u8]) -> bool {
+    let prefix = &data[..data.len().min(256)];
+    let lowercase: Vec<u8> = prefix.iter().map(|b| b.to_ascii_lowercase()).collect();
+    let s = String::from_utf8_lossy(&lowercase);
+    s.contains("<!doctype") || s.contains("<html")
 }
 
 /// Replace the last character of a file extension with '_'.
@@ -331,5 +402,35 @@ mod tests {
         assert_eq!(sym_filename("libxul.so"), "libxul.so.sym");
         assert_eq!(sym_filename("XUL"), "XUL.sym");
         assert_eq!(sym_filename("ntdll.pdb"), "ntdll.sym");
+    }
+
+    #[test]
+    fn test_is_html_response_doctype() {
+        let data = b"<!DOCTYPE html><html><body>Not Found</body></html>";
+        assert!(is_html_response(data));
+    }
+
+    #[test]
+    fn test_is_html_response_html_tag() {
+        let data = b"<HTML><HEAD><TITLE>Error</TITLE></HEAD></HTML>";
+        assert!(is_html_response(data));
+    }
+
+    #[test]
+    fn test_is_html_response_binary_data() {
+        let data = b"MODULE windows x86_64 ABC123 xul.pdb\n";
+        assert!(!is_html_response(data));
+    }
+
+    #[test]
+    fn test_is_html_response_empty() {
+        let data = b"";
+        assert!(!is_html_response(data));
+    }
+
+    #[test]
+    fn test_is_html_response_mz_header() {
+        let data = b"MZ\x90\x00\x03\x00\x00\x00";
+        assert!(!is_html_response(data));
     }
 }

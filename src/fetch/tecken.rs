@@ -3,6 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use reqwest::Client;
+use tracing::debug;
 
 use super::{FetchResult, sym_filename, compress_filename, decompress_cab};
 
@@ -19,6 +20,7 @@ pub async fn fetch_sym(
     let base = base_url.trim_end_matches('/');
     let sym_name = sym_filename(debug_file);
     let url = format!("{base}/{debug_file}/{debug_id}/{sym_name}");
+    debug!("Tecken sym URL: {url}");
     fetch_url(client, &url).await
 }
 
@@ -36,6 +38,7 @@ pub async fn fetch_binary_by_code_id(
     let base = base_url.trim_end_matches('/');
     // Try uncompressed
     let url = format!("{base}/{code_file}/{code_id}/{code_file}");
+    debug!("Tecken binary URL: {url}");
     match fetch_url(client, &url).await {
         FetchResult::Ok(data) => return FetchResult::Ok(data),
         FetchResult::Error(e) => return FetchResult::Error(e),

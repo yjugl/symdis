@@ -5,6 +5,7 @@
 use std::io::BufReader;
 
 use anyhow::{Result, Context, bail};
+use tracing::warn;
 
 use super::DisasmArgs;
 use crate::binary::{BinaryFile, CpuArch};
@@ -61,13 +62,13 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
             match SymFile::parse(reader) {
                 Ok(sym) => Some(sym),
                 Err(e) => {
-                    eprintln!("warning: failed to parse sym file: {e}");
+                    warn!("failed to parse sym file: {e}");
                     None
                 }
             }
         }
         Err(e) => {
-            eprintln!("warning: sym file not available: {e}");
+            warn!("sym file not available: {e}");
             None
         }
     };
@@ -106,10 +107,10 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                         build_id: args.build_id.clone(),
                     };
                     let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                    match fetch::fetch_binary_ftp(&archive_client, &cache, code_file, args.code_id.as_deref(), &args.debug_id, &locator).await {
+                    match fetch::fetch_binary_ftp(&archive_client, &cache, config, code_file, args.code_id.as_deref(), &args.debug_id, &locator).await {
                         Ok(path) => Ok(path),
                         Err(ftp_err) => {
-                            eprintln!("warning: FTP archive fallback failed: {ftp_err}");
+                            warn!("FTP archive fallback failed: {ftp_err}");
                             Err(e)
                         }
                     }
@@ -130,7 +131,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     let binary_file: Option<Box<dyn BinaryFile>> = match &bin_result {
         Ok(path) => load_binary(path, target_arch),
         Err(e) => {
-            eprintln!("warning: binary not available: {e}");
+            warn!("binary not available: {e}");
             None
         }
     };
@@ -140,6 +141,19 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
 
     // Find the target function
     let (func_name, func_addr, func_size) = find_target(args, &sym_file, binary_file.as_ref().map(|b| b.as_ref()))?;
+
+    // Handle empty functions (size 0)
+    if func_size == 0 {
+        let msg = format!("function '{}' has size 0 at 0x{:x}", func_name, func_addr);
+        match config.format {
+            OutputFormat::Text => bail!("{msg}"),
+            OutputFormat::Json => {
+                let output = json::format_json_error(&msg);
+                println!("{output}");
+                return Ok(());
+            }
+        }
+    }
 
     // Look up the FuncRecord for annotation (re-lookup by address)
     let func_record = sym_file
@@ -280,7 +294,7 @@ fn load_binary(path: &std::path::Path, target_arch: Option<CpuArch>) -> Option<B
     if let Ok(macho) = MachOFile::load(path, target_arch) {
         return Some(Box::new(macho));
     }
-    eprintln!("warning: failed to parse binary: {}", path.display());
+    warn!("failed to parse binary: {}", path.display());
     None
 }
 

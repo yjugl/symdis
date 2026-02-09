@@ -156,6 +156,7 @@ symdis disasm \
 | `--format <FMT>` | `text` | Output format: `text` or `json` |
 | `--no-demangle` | off | Disable C++/Rust symbol demangling |
 | `-v` / `-vv` | off | Verbose output (info / debug) |
+| `--offline` | off | Skip network requests; use only cached data |
 
 ## Configuration
 
@@ -189,6 +190,7 @@ format = "text"         # "text" or "json"
 [network]
 timeout_seconds = 30
 user_agent = "symdis/0.1"
+offline = false
 ```
 
 ### Environment Variables

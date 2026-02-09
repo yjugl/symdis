@@ -3,6 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use reqwest::Client;
+use tracing::debug;
 
 use super::{FetchResult, compress_filename, decompress_cab};
 
@@ -19,6 +20,7 @@ pub async fn fetch_pe(
     let base = base_url.trim_end_matches('/');
     // Try uncompressed
     let url = format!("{base}/{pe_name}/{timestamp_size}/{pe_name}");
+    debug!("Microsoft PE URL: {url}");
     match fetch_url(client, &url).await {
         FetchResult::Ok(data) => return FetchResult::Ok(data),
         FetchResult::Error(e) => return FetchResult::Error(e),
@@ -28,6 +30,7 @@ pub async fn fetch_pe(
     // Try compressed variant (last extension char -> '_')
     let compressed_name = compress_filename(pe_name);
     let url = format!("{base}/{pe_name}/{timestamp_size}/{compressed_name}");
+    debug!("Microsoft PE compressed URL: {url}");
     match fetch_url(client, &url).await {
         FetchResult::Ok(data) => {
             // Decompress CAB
@@ -51,6 +54,7 @@ pub async fn fetch_pdb(
     let base = base_url.trim_end_matches('/');
     // Try uncompressed
     let url = format!("{base}/{pdb_name}/{guid_age}/{pdb_name}");
+    debug!("Microsoft PDB URL: {url}");
     match fetch_url(client, &url).await {
         FetchResult::Ok(data) => return FetchResult::Ok(data),
         FetchResult::Error(e) => return FetchResult::Error(e),
@@ -60,6 +64,7 @@ pub async fn fetch_pdb(
     // Try compressed variant
     let compressed_name = compress_filename(pdb_name);
     let url = format!("{base}/{pdb_name}/{guid_age}/{compressed_name}");
+    debug!("Microsoft PDB compressed URL: {url}");
     match fetch_url(client, &url).await {
         FetchResult::Ok(data) => {
             match decompress_cab(&data) {

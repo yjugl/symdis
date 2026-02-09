@@ -47,6 +47,7 @@ struct OutputSection {
 struct NetworkSection {
     timeout_seconds: Option<u64>,
     user_agent: Option<String>,
+    offline: Option<bool>,
 }
 
 // --- Resolved config ---
@@ -63,6 +64,7 @@ pub struct Config {
     pub max_instructions: usize,
     pub format: OutputFormat,
     pub no_demangle: bool,
+    pub offline: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -94,6 +96,7 @@ impl Default for Config {
             max_instructions: 2000,
             format: OutputFormat::Text,
             no_demangle: false,
+            offline: false,
         }
     }
 }
@@ -178,6 +181,9 @@ fn apply_config_file(config: &mut Config, file: &ConfigFile) {
         if let Some(ref ua) = network.user_agent {
             config.user_agent = ua.clone();
         }
+        if let Some(offline) = network.offline {
+            config.offline = offline;
+        }
     }
 }
 
@@ -223,6 +229,10 @@ fn apply_cli(config: &mut Config, cli: &Cli) {
 
     if cli.no_demangle {
         config.no_demangle = true;
+    }
+
+    if cli.offline {
+        config.offline = true;
     }
 
     // Subcommand-specific overrides
@@ -347,6 +357,7 @@ mod tests {
         assert_eq!(config.max_instructions, 2000);
         assert_eq!(config.format, OutputFormat::Text);
         assert!(!config.no_demangle);
+        assert!(!config.offline);
         assert_eq!(config.symbol_servers.len(), 2);
         assert_eq!(config.debuginfod_urls.len(), 1);
         assert!(config.user_agent.starts_with("symdis/"));

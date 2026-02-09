@@ -3,6 +3,7 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use reqwest::Client;
+use tracing::{warn, debug};
 
 use super::FetchResult;
 
@@ -21,10 +22,11 @@ pub async fn fetch_executable(
     for server in servers {
         let base = server.trim_end_matches('/');
         let url = format!("{base}/buildid/{build_id}/executable");
+        debug!("trying debuginfod: {url}");
         match fetch_url(client, &url).await {
             FetchResult::Ok(data) => return FetchResult::Ok(data),
             FetchResult::Error(e) => {
-                eprintln!("warning: debuginfod {base}: {e}");
+                warn!("debuginfod {base}: {e}");
             }
             FetchResult::NotFound => {}
         }
@@ -43,10 +45,11 @@ pub async fn fetch_debuginfo(
     for server in servers {
         let base = server.trim_end_matches('/');
         let url = format!("{base}/buildid/{build_id}/debuginfo");
+        debug!("trying debuginfod: {url}");
         match fetch_url(client, &url).await {
             FetchResult::Ok(data) => return FetchResult::Ok(data),
             FetchResult::Error(e) => {
-                eprintln!("warning: debuginfod {base}: {e}");
+                warn!("debuginfod {base}: {e}");
             }
             FetchResult::NotFound => {}
         }
