@@ -11,6 +11,7 @@ Designed primarily for use by AI agents analyzing [Socorro/Crash Stats](https://
 - **Find functions** by exact name, substring match (`--fuzzy`), or by RVA/offset
 - **Disassemble** x86, x86-64, ARM32, and AArch64 code via [Capstone](https://www.capstone-engine.org/)
 - **Annotate** instructions with source file/line, resolved call targets (FUNC/PUBLIC/IAT/PLT/dylib imports), and inline function boundaries
+- **Demangle** C++ (Itanium ABI) and Rust symbol names automatically (`--no-demangle` to disable)
 - **Highlight** a specific offset (e.g., a crash address) in the output
 - **Graceful degradation**: binary+sym gives full annotated disassembly; binary-only gives raw disassembly; sym-only gives function metadata
 - **Text and JSON** output formats (`--format text|json`)
@@ -152,6 +153,7 @@ symdis disasm \
 |---|---|---|
 | `--cache-dir <PATH>` | auto-detected | Cache directory path |
 | `--format <FMT>` | `text` | Output format: `text` or `json` |
+| `--no-demangle` | off | Disable C++/Rust symbol demangling |
 | `-v` / `-vv` | off | Verbose output (info / debug) |
 
 ## Cache

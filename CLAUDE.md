@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 cargo build                          # Build
 cargo clippy -- -D warnings          # Lint (must pass with zero warnings)
-cargo test                           # Run all 132 unit tests
+cargo test                           # Run all 138 unit tests
 cargo test symbols::breakpad         # Run tests in a specific module
 cargo test test_rva_to_offset        # Run a single test by name
 cargo run -- disasm --help           # Run CLI with args
@@ -15,7 +15,7 @@ cargo run -- disasm --help           # Run CLI with args
 
 ## Project Status
 
-Phases 0-11 of the [implementation plan](IMPLEMENTATION.md) are complete. The `disasm` command works end-to-end for Windows (PE), Linux (ELF), and macOS (Mach-O) modules: fetch sym+binary from symbol servers, find a function, disassemble, annotate with source lines/call targets/inlines/highlight, and print text or JSON output (`--format text|json`). Mach-O supports fat (universal) binaries with automatic arch selection. The FTP archive fallback supports both Linux (tar.xz) and macOS (PKG/XAR/cpio). The `lookup` and `info` commands are also implemented. The remaining `fetch` command and demangling feature are stubbed but not yet implemented. The `frames` command has been removed from the plan — the AI agent selects interesting frames and calls `disasm` individually.
+Phases 0-13 of the [implementation plan](IMPLEMENTATION.md) are complete. The `disasm` command works end-to-end for Windows (PE), Linux (ELF), and macOS (Mach-O) modules: fetch sym+binary from symbol servers, find a function, disassemble, annotate with source lines/call targets/inlines/highlight, and print text or JSON output (`--format text|json`). Mach-O supports fat (universal) binaries with automatic arch selection. The FTP archive fallback supports both Linux (tar.xz) and macOS (PKG/XAR/cpio). The `lookup` and `info` commands are also implemented. C++/Rust symbol demangling is applied at display time (`--no-demangle` to disable). The remaining `fetch` command is stubbed but not yet implemented. The `frames` command has been removed from the plan — the AI agent selects interesting frames and calls `disasm` individually.
 
 `#![allow(dead_code)]` is set in `main.rs` because many pub items are defined ahead of use for later phases. Remove this once all phases are complete.
 
@@ -28,7 +28,8 @@ Phases 0-11 of the [implementation plan](IMPLEMENTATION.md) are complete. The `d
 4. Find target function by name (HashMap lookup) or offset (binary search)
 5. Extract code bytes at function's RVA, disassemble via Capstone
 6. Annotate: source lines → call targets → inlines → highlight (`disasm/annotate.rs`)
-7. Format and print text or JSON output (dispatched via `--format`)
+7. Demangle function name, call target names, and inline frame names (`demangle.rs`)
+8. Format and print text or JSON output (dispatched via `--format`)
 
 **Graceful degradation**: sym+binary → full disassembly; binary-only → raw disassembly; sym-only → metadata without instructions; neither → error.
 
@@ -42,6 +43,7 @@ Phases 0-11 of the [implementation plan](IMPLEMENTATION.md) are complete. The `d
 - `binary/pe.rs` — Goblin-based PE parser implementing `BinaryFile` trait; RVA-to-file-offset via section table walk; IAT import resolution for call target annotation
 - `binary/elf.rs` — Goblin-based ELF parser implementing `BinaryFile` trait; VA-to-offset via PT_LOAD segments; PLT import mapping for call target annotation
 - `binary/macho.rs` — Goblin-based Mach-O parser implementing `BinaryFile` trait; fat (universal) binary support with arch selection; VA-to-offset via segments; export/import resolution; UUID extraction for build verification
+- `demangle.rs` — C++/Rust symbol demangling via `cpp_demangle` (Itanium ABI) and `rustc-demangle`; applied at display time, not at parse/storage time; `--no-demangle` opt-out
 - `disasm/engine.rs` — Capstone wrapper supporting x86/x86_64/ARM/ARM64 with Intel or ATT syntax; extracts call targets from direct call/jmp instructions
 - `disasm/annotate.rs` — Annotation pipeline: source lines, call target resolution (FUNC/PUBLIC/IAT/PLT), inline frame tracking, highlight with mid-instruction range matching
 - `output/text.rs` — Text formatter rendering source line comments, call target annotations, inline enter/exit markers, highlight (`==>`) marker; also defines shared `ModuleInfo`, `FunctionInfo`, `DataSource` types
@@ -69,6 +71,7 @@ Phases 0-11 of the [implementation plan](IMPLEMENTATION.md) are complete. The `d
 - **cab 0.6** for Microsoft CAB decompression
 - **xz2 0.1** + **tar 0.4** for Linux `.tar.xz` archive extraction
 - **quick-xml 0.37** + **cpio_reader 0.1** for macOS `.pkg` (XAR/cpio) archive extraction
+- **cpp_demangle 0.4** + **rustc-demangle 0.1** for C++/Rust symbol demangling
 - **edition = "2021"** (not 2024)
 
 ## Reference

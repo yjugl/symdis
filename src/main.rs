@@ -9,6 +9,7 @@ mod binary;
 mod cache;
 mod commands;
 mod config;
+mod demangle;
 mod disasm;
 mod fetch;
 mod output;

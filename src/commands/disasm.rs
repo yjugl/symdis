@@ -9,6 +9,7 @@ use anyhow::{Result, Context, bail};
 
 use super::{Cli, DisasmArgs, SyntaxArg};
 use crate::binary::{BinaryFile, CpuArch};
+use crate::demangle::maybe_demangle;
 use crate::binary::elf::ElfFile;
 use crate::binary::macho::MachOFile;
 use crate::binary::pe::PeFile;
@@ -169,8 +170,10 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
         arch: arch.to_string(),
     };
 
+    let demangle_enabled = !cli.no_demangle;
+
     let function_info = FunctionInfo {
-        name: func_name,
+        name: maybe_demangle(&func_name, demangle_enabled),
         address: func_addr,
         size: func_size,
         source_file,
@@ -185,13 +188,27 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
         let instructions = disassembler.disassemble(&code, func_addr, args.max_instructions)?;
 
         // Run annotation pipeline
-        let annotated = annotate::annotate(
+        let mut annotated = annotate::annotate(
             instructions,
             sym_file.as_ref(),
             func_record,
             Some(bin.as_ref()),
             highlight_offset,
         );
+
+        // Demangle call target names and inline frame names
+        if demangle_enabled {
+            for insn in &mut annotated {
+                if let Some(ref name) = insn.call_target_name {
+                    if !name.starts_with('[') {
+                        insn.call_target_name = Some(maybe_demangle(name, true));
+                    }
+                }
+                for frame in &mut insn.inline_frames {
+                    frame.name = maybe_demangle(&frame.name, true);
+                }
+            }
+        }
 
         let data_source = if sym_file.is_some() {
             DataSource::BinaryAndSym
@@ -360,12 +377,49 @@ fn find_by_name(
         }
     }
 
-    // Try binary exports
+    // Try binary exports — match against both mangled and demangled names
     if let Some(bin) = binary {
+        let mut export_matches: Vec<(u64, &str)> = Vec::new();
         for &(rva, ref exp_name) in bin.exports() {
-            if exp_name == name {
+            let demangled = crate::demangle::demangle(exp_name);
+            let matches = if fuzzy {
+                exp_name.contains(name) || demangled.contains(name)
+            } else {
+                exp_name == name || demangled == name
+            };
+            if matches {
+                export_matches.push((rva, exp_name));
+            }
+        }
+        match export_matches.len() {
+            0 => {}
+            1 => {
+                let (rva, exp_name) = export_matches[0];
                 let size = estimate_export_size(bin.exports(), rva);
-                return Ok((exp_name.clone(), rva, size));
+                return Ok((exp_name.to_string(), rva, size));
+            }
+            _ if fuzzy => {
+                let mut msg = format!("ambiguous function name '{name}'. Matches:\n");
+                for (i, &(rva, exp_name)) in export_matches.iter().enumerate().take(20) {
+                    let size = estimate_export_size(bin.exports(), rva);
+                    msg.push_str(&format!(
+                        "  {}. {} (RVA: 0x{:x}, size: 0x{:x})\n",
+                        i + 1,
+                        crate::demangle::demangle(exp_name),
+                        rva,
+                        size
+                    ));
+                }
+                if export_matches.len() > 20 {
+                    msg.push_str(&format!("  ... and {} more\n", export_matches.len() - 20));
+                }
+                bail!("{msg}");
+            }
+            _ => {
+                // Multiple exact matches (unlikely) — return the first
+                let (rva, exp_name) = export_matches[0];
+                let size = estimate_export_size(bin.exports(), rva);
+                return Ok((exp_name.to_string(), rva, size));
             }
         }
     }

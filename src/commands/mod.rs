@@ -26,6 +26,10 @@ pub struct Cli {
     #[arg(long, global = true, default_value = "text")]
     pub format: FormatArg,
 
+    /// Disable C++/Rust symbol demangling
+    #[arg(long, global = true)]
+    pub no_demangle: bool,
+
     /// Verbose output (-v info, -vv debug)
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,

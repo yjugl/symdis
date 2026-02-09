@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use super::{Cli, FormatArg, LookupArgs};
 use crate::cache::Cache;
+use crate::demangle::maybe_demangle;
 use crate::fetch;
 use crate::symbols::breakpad::SymFile;
 
@@ -49,15 +50,22 @@ fn lookup_by_offset(
     sym: &SymFile,
     cli: &Cli,
 ) -> Result<()> {
-    let info = sym.resolve_address(offset)
+    let mut info = sym.resolve_address(offset)
         .ok_or_else(|| anyhow::anyhow!("no symbol found at offset 0x{:x}", offset))?;
 
     // Get source location and inline frames if we have a FuncRecord
     let func = sym.find_function_at_address(offset);
     let source_loc = func.and_then(|f| sym.get_source_line(offset, f));
-    let inlines = func
+    let mut inlines = func
         .map(|f| sym.get_inline_at(offset, f))
         .unwrap_or_default();
+
+    // Demangle names for output
+    let demangle_enabled = !cli.no_demangle;
+    info.name = maybe_demangle(&info.name, demangle_enabled);
+    for frame in &mut inlines {
+        frame.name = maybe_demangle(&frame.name, demangle_enabled);
+    }
 
     match cli.format {
         FormatArg::Text => {
@@ -79,6 +87,8 @@ fn lookup_by_name(
     sym: &SymFile,
     cli: &Cli,
 ) -> Result<()> {
+    let demangle_enabled = !cli.no_demangle;
+
     let func = if fuzzy {
         let matches = sym.find_function_by_name_fuzzy(name);
         match matches.len() {
@@ -93,7 +103,7 @@ fn lookup_by_name(
                             writeln!(
                                 msg,
                                 "  {}. {} (RVA: 0x{:x}, size: 0x{:x})",
-                                i + 1, f.name, f.address, f.size
+                                i + 1, maybe_demangle(&f.name, demangle_enabled), f.address, f.size
                             ).unwrap();
                         }
                         if matches.len() > 20 {
@@ -102,7 +112,7 @@ fn lookup_by_name(
                         bail!("{msg}");
                     }
                     FormatArg::Json => {
-                        let output = format_fuzzy_matches_json(name, &matches);
+                        let output = format_fuzzy_matches_json(name, &matches, demangle_enabled);
                         println!("{output}");
                         std::process::exit(1);
                     }
@@ -118,7 +128,7 @@ fn lookup_by_name(
                 if !suggestions.is_empty() {
                     let mut msg = format!("function '{name}' not found. Similar names:\n");
                     for f in suggestions.iter().take(10) {
-                        writeln!(msg, "  - {} (0x{:x})", f.name, f.address).unwrap();
+                        writeln!(msg, "  - {} (0x{:x})", maybe_demangle(&f.name, demangle_enabled), f.address).unwrap();
                     }
                     bail!("{msg}");
                 }
@@ -133,13 +143,15 @@ fn lookup_by_name(
         .first()
         .and_then(|lr| sym.files.get(lr.file_index).cloned());
 
+    let demangled_name = maybe_demangle(&func.name, demangle_enabled);
+
     match cli.format {
         FormatArg::Text => {
-            let output = format_function_text(func, source_file.as_deref());
+            let output = format_function_text_demangled(&demangled_name, func, source_file.as_deref());
             print!("{output}");
         }
         FormatArg::Json => {
-            let output = format_function_json(func, source_file.as_deref());
+            let output = format_function_json_demangled(&demangled_name, func, source_file.as_deref());
             println!("{output}");
         }
     }
@@ -194,9 +206,17 @@ fn format_function_text(
     func: &crate::symbols::breakpad::FuncRecord,
     source_file: Option<&str>,
 ) -> String {
+    format_function_text_demangled(&func.name, func, source_file)
+}
+
+fn format_function_text_demangled(
+    display_name: &str,
+    func: &crate::symbols::breakpad::FuncRecord,
+    source_file: Option<&str>,
+) -> String {
     let mut out = String::new();
 
-    writeln!(out, "{}", func.name).unwrap();
+    writeln!(out, "{}", display_name).unwrap();
     writeln!(out, "  Address: 0x{:08x}", func.address).unwrap();
     writeln!(out, "  Size: 0x{:x} bytes", func.size).unwrap();
     if let Some(file) = source_file {
@@ -291,8 +311,16 @@ fn format_function_json(
     func: &crate::symbols::breakpad::FuncRecord,
     source_file: Option<&str>,
 ) -> String {
+    format_function_json_demangled(&func.name, func, source_file)
+}
+
+fn format_function_json_demangled(
+    display_name: &str,
+    func: &crate::symbols::breakpad::FuncRecord,
+    source_file: Option<&str>,
+) -> String {
     let output = JsonLookupFunction {
-        function: func.name.clone(),
+        function: display_name.to_string(),
         function_address: format!("0x{:x}", func.address),
         function_size: format!("0x{:x}", func.size),
         source_file: source_file.map(|s| s.to_string()),
@@ -303,6 +331,7 @@ fn format_function_json(
 fn format_fuzzy_matches_json(
     name: &str,
     matches: &[&crate::symbols::breakpad::FuncRecord],
+    demangle_enabled: bool,
 ) -> String {
     let output = JsonFuzzyError {
         error: JsonErrorDetail {
@@ -314,7 +343,7 @@ fn format_fuzzy_matches_json(
             .iter()
             .take(20)
             .map(|f| JsonFuzzyMatch {
-                name: f.name.clone(),
+                name: maybe_demangle(&f.name, demangle_enabled),
                 address: format!("0x{:x}", f.address),
                 size: format!("0x{:x}", f.size),
             })
@@ -463,7 +492,7 @@ PUBLIC 4000 0 _AnotherPublic
     fn test_fuzzy_matches_json() {
         let sym = SymFile::parse(Cursor::new(make_test_sym())).unwrap();
         let matches = sym.find_function_by_name_fuzzy("Function");
-        let json_str = format_fuzzy_matches_json("Function", &matches);
+        let json_str = format_fuzzy_matches_json("Function", &matches, false);
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         assert_eq!(v["error"]["code"], "AMBIGUOUS_FUNCTION");
