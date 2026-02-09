@@ -3,35 +3,38 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use reqwest::Client;
-use tracing::{warn, debug};
+use tracing::debug;
 
 use super::FetchResult;
 
-#[cfg(test)]
-pub const DEFAULT_DEBUGINFOD_URL: &str = "https://debuginfod.elfutils.org";
-
-/// Fetch an ELF executable from debuginfod servers.
+/// Fetch an ELF executable from debuginfod servers concurrently.
 ///
 /// URL pattern: `<server>/buildid/<build_id>/executable`
 ///
-/// Tries each server in order until one succeeds.
+/// Fires requests to all servers simultaneously and returns as soon as the
+/// first server responds with data. Remaining requests are cancelled.
 pub async fn fetch_executable(
     client: &Client,
     build_id: &str,
     servers: &[String],
 ) -> FetchResult {
+    let mut set = tokio::task::JoinSet::new();
+
     for server in servers {
-        let base = server.trim_end_matches('/');
+        let client = client.clone();
+        let base = server.trim_end_matches('/').to_string();
         let url = format!("{base}/buildid/{build_id}/executable");
         debug!("trying debuginfod: {url}");
-        match fetch_url(client, &url).await {
-            FetchResult::Ok(data) => return FetchResult::Ok(data),
-            FetchResult::Error(e) => {
-                warn!("debuginfod {base}: {e}");
-            }
-            FetchResult::NotFound => {}
+        set.spawn(async move { fetch_url(&client, &url).await });
+    }
+
+    while let Some(result) = set.join_next().await {
+        if let Ok(FetchResult::Ok(data)) = result {
+            set.abort_all();
+            return FetchResult::Ok(data);
         }
     }
+
     FetchResult::NotFound
 }
 
@@ -57,13 +60,6 @@ async fn fetch_url(client: &Client, url: &str) -> FetchResult {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_default_debuginfod_url() {
-        assert_eq!(DEFAULT_DEBUGINFOD_URL, "https://debuginfod.elfutils.org");
-    }
-
     #[test]
     fn test_executable_url_format() {
         let server = "https://debuginfod.elfutils.org";

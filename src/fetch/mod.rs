@@ -250,7 +250,8 @@ pub async fn fetch_binary_debuginfod(
     cache.store_binary_miss(&key)?;
     bail!(
         "binary not found: {code_file} (build ID: {build_id})\n\
-         Tried: debuginfod"
+         Tried: debuginfod ({})",
+        config.debuginfod_urls.join(", ")
     )
 }
 

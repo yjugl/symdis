@@ -88,7 +88,13 @@ impl Default for Config {
                 "https://symbols.mozilla.org/".to_string(),
                 "https://msdl.microsoft.com/download/symbols".to_string(),
             ],
-            debuginfod_urls: vec!["https://debuginfod.elfutils.org/".to_string()],
+            debuginfod_urls: vec![
+                "https://debuginfod.fedoraproject.org/".to_string(),
+                "https://debuginfod.ubuntu.com/".to_string(),
+                "https://debuginfod.debian.net/".to_string(),
+                "https://debuginfod.archlinux.org/".to_string(),
+                "https://debuginfod.elfutils.org/".to_string(),
+            ],
             timeout_seconds: 30,
             archive_timeout_seconds: 300,
             user_agent: format!("symdis/{}", env!("CARGO_PKG_VERSION")),
@@ -359,7 +365,7 @@ mod tests {
         assert!(!config.no_demangle);
         assert!(!config.offline);
         assert_eq!(config.symbol_servers.len(), 2);
-        assert_eq!(config.debuginfod_urls.len(), 1);
+        assert_eq!(config.debuginfod_urls.len(), 5);
         assert!(config.user_agent.starts_with("symdis/"));
     }
 
