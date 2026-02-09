@@ -9,6 +9,7 @@ use anyhow::{Result, Context, bail};
 
 use super::{Cli, DisasmArgs, SyntaxArg};
 use crate::binary::{BinaryFile, CpuArch};
+use crate::binary::elf::ElfFile;
 use crate::binary::pe::PeFile;
 use crate::cache::Cache;
 use crate::config::Syntax;
@@ -76,17 +77,27 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
         }
     };
 
-    // Parse binary if available
-    let pe_file = match &bin_result {
-        Ok(path) => {
-            match PeFile::load(path) {
-                Ok(pe) => Some(pe),
-                Err(e) => {
-                    eprintln!("warning: failed to parse binary: {e}");
-                    None
+    // If binary fetch failed and sym file indicates Linux, try debuginfod
+    let bin_result = match bin_result {
+        Ok(path) => Ok(path),
+        Err(e) => {
+            let is_linux = sym_file.as_ref()
+                .is_some_and(|sym| sym.module.os.eq_ignore_ascii_case("linux"));
+            if is_linux {
+                let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                match fetch::fetch_binary_debuginfod(&client, &cache, code_file, args.code_id.as_deref(), &args.debug_id).await {
+                    Ok(path) => Ok(path),
+                    Err(_) => Err(e),
                 }
+            } else {
+                Err(e)
             }
         }
+    };
+
+    // Parse binary if available — try PE first, then ELF
+    let binary_file: Option<Box<dyn BinaryFile>> = match &bin_result {
+        Ok(path) => load_binary(path),
         Err(e) => {
             eprintln!("warning: binary not available: {e}");
             None
@@ -94,10 +105,10 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
     };
 
     // Determine architecture
-    let arch = determine_arch(&sym_file, &pe_file)?;
+    let arch = determine_arch(&sym_file, binary_file.as_ref().map(|b| b.as_ref()))?;
 
     // Find the target function
-    let (func_name, func_addr, func_size) = find_target(args, &sym_file, &pe_file)?;
+    let (func_name, func_addr, func_size) = find_target(args, &sym_file, binary_file.as_ref().map(|b| b.as_ref()))?;
 
     // Look up the FuncRecord for annotation (re-lookup by address)
     let func_record = sym_file
@@ -129,8 +140,8 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
     };
 
     // Disassemble if binary is available
-    if let Some(pe) = &pe_file {
-        let code = pe.extract_code(func_addr, func_size)
+    if let Some(ref bin) = binary_file {
+        let code = bin.extract_code(func_addr, func_size)
             .context("extracting code from binary")?;
 
         let disassembler = Disassembler::new(arch, syntax)?;
@@ -141,7 +152,7 @@ pub async fn run(args: &DisasmArgs, cli: &Cli) -> Result<()> {
             instructions,
             sym_file.as_ref(),
             func_record,
-            Some(pe as &dyn BinaryFile),
+            Some(bin.as_ref()),
             highlight_offset,
         );
 
@@ -211,10 +222,22 @@ fn derive_code_file(debug_file: &str) -> String {
     }
 }
 
+/// Load a binary file, trying PE first then ELF.
+fn load_binary(path: &std::path::Path) -> Option<Box<dyn BinaryFile>> {
+    if let Ok(pe) = PeFile::load(path) {
+        return Some(Box::new(pe));
+    }
+    if let Ok(elf) = ElfFile::load(path) {
+        return Some(Box::new(elf));
+    }
+    eprintln!("warning: failed to parse binary: {}", path.display());
+    None
+}
+
 /// Determine the CPU architecture from available sources.
 fn determine_arch(
     sym_file: &Option<SymFile>,
-    pe_file: &Option<PeFile>,
+    binary: Option<&dyn BinaryFile>,
 ) -> Result<CpuArch> {
     // Try sym file first
     if let Some(sym) = sym_file {
@@ -223,9 +246,9 @@ fn determine_arch(
         }
     }
 
-    // Try PE file
-    if let Some(pe) = pe_file {
-        return Ok(pe.arch());
+    // Try binary file
+    if let Some(bin) = binary {
+        return Ok(bin.arch());
     }
 
     bail!("cannot determine architecture: no sym file or binary available")
@@ -235,13 +258,13 @@ fn determine_arch(
 fn find_target(
     args: &DisasmArgs,
     sym_file: &Option<SymFile>,
-    pe_file: &Option<PeFile>,
+    binary: Option<&dyn BinaryFile>,
 ) -> Result<(String, u64, u64)> {
     if let Some(ref name) = args.function {
-        find_by_name(name, args.fuzzy, sym_file, pe_file)
+        find_by_name(name, args.fuzzy, sym_file, binary)
     } else if let Some(ref offset_str) = args.offset {
         let offset = parse_offset(offset_str)?;
-        find_by_offset(offset, sym_file, pe_file)
+        find_by_offset(offset, sym_file, binary)
     } else {
         bail!("either --function or --offset must be specified")
     }
@@ -251,7 +274,7 @@ fn find_by_name(
     name: &str,
     fuzzy: bool,
     sym_file: &Option<SymFile>,
-    pe_file: &Option<PeFile>,
+    binary: Option<&dyn BinaryFile>,
 ) -> Result<(String, u64, u64)> {
     if let Some(sym) = sym_file {
         if fuzzy {
@@ -297,12 +320,11 @@ fn find_by_name(
         }
     }
 
-    // Try PE exports
-    if let Some(pe) = pe_file {
-        for &(rva, ref exp_name) in pe.exports() {
+    // Try binary exports
+    if let Some(bin) = binary {
+        for &(rva, ref exp_name) in bin.exports() {
             if exp_name == name {
-                // Estimate size from next export
-                let size = estimate_export_size(pe.exports(), rva);
+                let size = estimate_export_size(bin.exports(), rva);
                 return Ok((exp_name.clone(), rva, size));
             }
         }
@@ -314,7 +336,7 @@ fn find_by_name(
 fn find_by_offset(
     offset: u64,
     sym_file: &Option<SymFile>,
-    pe_file: &Option<PeFile>,
+    binary: Option<&dyn BinaryFile>,
 ) -> Result<(String, u64, u64)> {
     // Try sym file first
     if let Some(sym) = sym_file {
@@ -329,9 +351,9 @@ fn find_by_offset(
         }
     }
 
-    // Try PE exports
-    if let Some(pe) = pe_file {
-        let exports = pe.exports();
+    // Try binary exports
+    if let Some(bin) = binary {
+        let exports = bin.exports();
         // Find the export at or just before the offset
         let idx = exports.partition_point(|(rva, _)| *rva <= offset);
         if idx > 0 {

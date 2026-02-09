@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+pub mod debuginfod;
 pub mod microsoft;
 pub mod tecken;
 
@@ -135,6 +136,56 @@ pub async fn fetch_binary(
     bail!(
         "binary not found: {code_file}/{code_id}\n\
          Tried: Mozilla Tecken, Microsoft Symbol Server"
+    )
+}
+
+/// Fetch a Linux binary via debuginfod, checking cache first.
+///
+/// If `code_id` is provided, it is used directly as the build ID (for ELF
+/// binaries, the code ID IS the build ID). Otherwise, the build ID is derived
+/// from the debug ID by reversing the GUID byte-swapping.
+pub async fn fetch_binary_debuginfod(
+    client: &Client,
+    cache: &Cache,
+    code_file: &str,
+    code_id: Option<&str>,
+    debug_id: &str,
+) -> Result<PathBuf> {
+    let build_id = match code_id {
+        Some(id) => id.to_lowercase(),
+        None => crate::symbols::id_convert::debug_id_to_build_id(debug_id)?,
+    };
+
+    // Use build_id as the cache code_id to avoid collisions with code_id-based lookups
+    let key = BinaryCacheKey {
+        code_file: code_file.to_string(),
+        code_id: format!("buildid-{build_id}"),
+        filename: code_file.to_string(),
+    };
+
+    // Check cache
+    match cache.get_binary(&key) {
+        CacheResult::Hit(path) => return Ok(path),
+        CacheResult::NegativeHit => bail!("binary not available via debuginfod (cached negative result)"),
+        CacheResult::Miss => {}
+    }
+
+    let servers = debuginfod::server_urls();
+    match debuginfod::fetch_executable(client, &build_id, &servers).await {
+        FetchResult::Ok(data) => {
+            let path = cache.store_binary(&key, &data)?;
+            return Ok(path);
+        }
+        FetchResult::NotFound => {}
+        FetchResult::Error(e) => {
+            eprintln!("warning: debuginfod fetch error: {e}");
+        }
+    }
+
+    cache.store_binary_miss(&key)?;
+    bail!(
+        "binary not found: {code_file} (build ID: {build_id})\n\
+         Tried: debuginfod"
     )
 }
 

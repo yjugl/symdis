@@ -48,6 +48,24 @@ pub async fn run(args: &InfoArgs, cli: &Cli) -> Result<()> {
         Err(_) => None,
     };
 
+    // If binary fetch failed and sym file indicates Linux, try debuginfod
+    let bin_result = match bin_result {
+        Ok(path) => Ok(path),
+        Err(e) => {
+            let is_linux = sym_summary.as_ref()
+                .is_some_and(|s| s.module.os.eq_ignore_ascii_case("linux"));
+            if is_linux {
+                let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                match fetch::fetch_binary_debuginfod(&client, &cache, code_file, args.code_id.as_deref(), &args.debug_id).await {
+                    Ok(path) => Ok(path),
+                    Err(_) => Err(e),
+                }
+            } else {
+                Err(e)
+            }
+        }
+    };
+
     // Gather info
     let mut info = ModuleMetadata {
         debug_file: args.debug_file.clone(),
