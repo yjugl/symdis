@@ -56,7 +56,7 @@ An AI agent analyzing a crash report follows this workflow:
 
 1. **Obtain crash report data.** The agent has a processed crash report (JSON) or a Crash Stats URL. The report contains a modules list and stack traces with frames referencing module names, debug IDs, offsets, and (possibly) function names.
 
-2. **Identify frames of interest.** The agent picks stack frames to investigate — typically the crashing frame (frame 0 of the crashing thread) and nearby callers.
+2. **Identify frames of interest.** The agent picks stack frames to investigate — typically the crashing frame (frame 0 of the crashing thread) and nearby callers. The agent is responsible for selecting which frames are worth disassembling.
 
 3. **Request disassembly.** For each frame of interest, the agent calls `symdis disasm` with the module's debug file, debug ID, and either the function name or the module offset.
 
@@ -101,12 +101,6 @@ $ symdis info \
 $ symdis fetch \
     --debug-file xul.pdb \
     --debug-id 44E4EC8C2F41492B9369D6B9A059577C2
-
-# Disassemble multiple frames from a crash report
-$ symdis frames \
-    --crash-report crash.json \
-    --thread crashing \
-    --frames 0-5
 ```
 
 ---
@@ -295,27 +289,7 @@ PUBLIC symbols: 12,445
 
 **Behavior:** Downloads the `.sym` file and binary module (if available) to the local cache. Reports what was downloaded and what failed.
 
-### 4.5. `symdis frames`
-
-**Purpose:** Process multiple stack frames at once from a crash report. For each frame, produces the same output as `disasm` with the return address highlighted.
-
-**Parameters:**
-
-| Parameter | Description |
-|---|---|
-| `--crash-report <PATH>` | Path to a processed crash report JSON file (rust-minidump / Socorro format). |
-| `--crash-id <ID>` | Socorro crash ID (e.g., `bp-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`). Fetches the report from Crash Stats. |
-| `--thread <SPEC>` | Which thread: `crashing` (default), or a thread index (0-based). |
-| `--frames <RANGE>` | Which frames: `all`, a single index `N`, or a range `N-M`. Default: `0-9`. |
-| `--format <FMT>` | `text` or `json`. Default: `text`. |
-
-**Behavior:**
-
-1. Parse the crash report to extract the modules list and the requested thread's frames.
-2. For each requested frame, resolve the module and offset, then produce disassembly of the enclosing function with the return address highlighted.
-3. Output the results sequentially (text) or as a JSON array.
-
-### 4.6. `symdis cache`
+### 4.5. `symdis cache`
 
 **Purpose:** Manage the local cache.
 
@@ -717,7 +691,6 @@ symdis/
 │   │   ├── lookup.rs         # lookup command
 │   │   ├── info.rs           # info command
 │   │   ├── fetch.rs          # fetch command
-│   │   ├── frames.rs         # frames command
 │   │   └── cache.rs          # cache management
 │   ├── symbols/
 │   │   ├── mod.rs
@@ -743,7 +716,6 @@ symdis/
 │   │   ├── mod.rs
 │   │   ├── text.rs           # Text formatter
 │   │   └── json.rs           # JSON formatter
-│   └── crash_report.rs       # Crash report JSON parser
 └── tests/
     ├── integration/
     └── fixtures/
@@ -795,39 +767,7 @@ Accept register values from a crash report and annotate the disassembly with kno
 
 ---
 
-## Appendix A: Crash Report Field Reference
-
-Fields from processed crash reports (rust-minidump / Socorro format) that `symdis` consumes:
-
-### Module fields
-
-| Field | Type | Description |
-|---|---|---|
-| `filename` | string | Module file name (e.g., `xul.dll`, `libxul.so`) |
-| `debug_file` | string | Debug file name (e.g., `xul.pdb`, `libxul.so`) |
-| `debug_id` | string | 33-char hex debug identifier |
-| `code_id` | string | Code identifier (platform-specific) |
-| `base_addr` | hex string | Module load address in the crashing process |
-| `end_addr` | hex string | Module end address |
-| `version` | string | Module version (may be null) |
-
-### Stack frame fields
-
-| Field | Type | Description |
-|---|---|---|
-| `frame` | integer | Frame index (0 = top of stack) |
-| `module` | string | Module filename |
-| `module_offset` | hex string | Offset relative to module base address |
-| `function` | string | Symbolicated function name (may be null) |
-| `function_offset` | hex string | Offset within the function (may be null) |
-| `offset` | hex string | Absolute instruction pointer address |
-| `file` | string | Source file (may be null) |
-| `line` | integer | Source line (may be null) |
-| `trust` | string | Frame recovery method: `context`, `cfi`, `frame_pointer`, `scan` |
-
----
-
-## Appendix B: Breakpad Symbol File Quick Reference
+## Appendix A: Breakpad Symbol File Quick Reference
 
 Key record types that `symdis` parses from `.sym` files:
 
@@ -845,7 +785,7 @@ All addresses are hexadecimal, lowercase, no `0x` prefix, relative to the module
 
 ---
 
-## Appendix C: Debug ID Conversion Examples
+## Appendix B: Debug ID Conversion Examples
 
 ### Windows
 

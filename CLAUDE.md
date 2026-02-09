@@ -15,7 +15,7 @@ cargo run -- disasm --help           # Run CLI with args
 
 ## Project Status
 
-Phases 0-11 of the [implementation plan](IMPLEMENTATION.md) are complete. The `disasm` command works end-to-end for Windows (PE), Linux (ELF), and macOS (Mach-O) modules: fetch sym+binary from symbol servers, find a function, disassemble, annotate with source lines/call targets/inlines/highlight, and print text or JSON output (`--format text|json`). Mach-O supports fat (universal) binaries with automatic arch selection. The FTP archive fallback supports both Linux (tar.xz) and macOS (PKG/XAR/cpio). The `lookup` and `info` commands are also implemented. Remaining commands (`fetch`, `frames`) and features (demangling) are stubbed but not yet implemented.
+Phases 0-11 of the [implementation plan](IMPLEMENTATION.md) are complete. The `disasm` command works end-to-end for Windows (PE), Linux (ELF), and macOS (Mach-O) modules: fetch sym+binary from symbol servers, find a function, disassemble, annotate with source lines/call targets/inlines/highlight, and print text or JSON output (`--format text|json`). Mach-O supports fat (universal) binaries with automatic arch selection. The FTP archive fallback supports both Linux (tar.xz) and macOS (PKG/XAR/cpio). The `lookup` and `info` commands are also implemented. The remaining `fetch` command and demangling feature are stubbed but not yet implemented. The `frames` command has been removed from the plan — the AI agent selects interesting frames and calls `disasm` individually.
 
 `#![allow(dead_code)]` is set in `main.rs` because many pub items are defined ahead of use for later phases. Remove this once all phases are complete.
 

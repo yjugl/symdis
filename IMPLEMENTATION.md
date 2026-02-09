@@ -29,7 +29,7 @@ Phases are designed so that the tool is useful as early as Phase 6.
    ```
 
 3. **Define the CLI structure with clap derive in `src/main.rs`.**
-   - Top-level `Cli` struct with subcommands: `disasm`, `lookup`, `info`, `fetch`, `frames`, `cache`.
+   - Top-level `Cli` struct with subcommands: `disasm`, `lookup`, `info`, `fetch`, `cache`.
    - Each subcommand as a struct with its parameters from the spec.
    - Global options: `--cache-dir`, `--format`, `--verbose`.
    - Each subcommand prints a "not yet implemented" message and exits.
@@ -37,13 +37,12 @@ Phases are designed so that the tool is useful as early as Phase 6.
 4. **Create the module directory structure.**
    Create all `mod.rs` files so the project structure from the spec exists, with stub modules:
    ```
-   src/commands/{mod,disasm,lookup,info,fetch,frames,cache}.rs
+   src/commands/{mod,disasm,lookup,info,fetch,cache}.rs
    src/symbols/{mod,breakpad,resolver,id_convert}.rs
    src/fetch/{mod,tecken,microsoft,debuginfod,cache}.rs
    src/binary/{mod,pe,elf,macho}.rs
    src/disasm/{mod,engine,annotate}.rs
    src/output/{mod,text,json}.rs
-   src/crash_report.rs
    ```
 
 5. **Set up error handling pattern.**
@@ -644,7 +643,7 @@ Disassembly of a function from a module where both binary and `.sym` are availab
 
 ### Acceptance Criteria
 
-- Debug ID → Build ID conversion matches known test vectors (from Appendix C of the spec).
+- Debug ID → Build ID conversion matches known test vectors (from Appendix B of the spec).
 - `symdis disasm --debug-file libxul.so --debug-id <linux_id> --function <func>` works when the binary is available via debuginfod or Tecken.
 - ELF code extraction produces valid bytes for disassembly.
 - ARM and AArch64 ELF binaries are handled correctly.
@@ -708,13 +707,7 @@ The build ID timestamp `YYYYMMDDHHMMSS` maps to the directory name `YYYY-MM-DD-H
 
 The FTP lookup requires: **version**, **channel**, **platform** (OS + arch), and for nightlies, the **build ID timestamp**.
 
-**From the `frames` command** (crash report JSON):
-- `version`: top-level field (e.g., `"135.0"`, `"149.0a1"`)
-- `release_channel`: top-level field (`"release"`, `"beta"`, `"nightly"`, `"esr"`)
-- `build`: top-level field — Firefox build ID timestamp (e.g., `"20260208200320"`)
-- OS and arch: from the crash report's system info or from the `.sym` MODULE record
-
-**From standalone commands** (`disasm`, `lookup`, `info`):
+**From CLI flags** (`disasm`, `lookup`, `info`):
 - New flags: `--version`, `--channel`, `--build-id` (Firefox build ID, not ELF build ID)
 - Or: `--crash-id` to fetch metadata from Socorro's API
 - Platform can be inferred from the `.sym` MODULE record's OS/arch fields
@@ -748,9 +741,7 @@ The FTP lookup requires: **version**, **channel**, **platform** (OS + arch), and
      3. Extract the requested binary (e.g., `libxul.so`).
      4. Verify the build ID matches.
      5. Store in the symbol cache with the normal cache key.
-   - For the `frames` command: extract version/channel/build_id from the crash report JSON and pass them through the pipeline. One archive download populates cache entries for all modules from that build.
-
-5. **Add CLI flags for standalone commands.**
+5. **Add CLI flags.**
    - `--version <version>` — Firefox version string (e.g., `"135.0"`, `"149.0a1"`)
    - `--channel <channel>` — Release channel (`release`, `beta`, `nightly`, `esr`)
    - `--build-id <id>` — Firefox build ID timestamp (required for nightly, since the version alone is ambiguous)
@@ -767,7 +758,7 @@ tar = "0.4"       # Tar archive extraction
 - Given a Linux crash report with version `"135.0"` and channel `"release"`, `symdis disasm` fetches the `.tar.xz` from the FTP, extracts `libxul.so`, verifies its build ID, caches it, and disassembles successfully.
 - Nightly builds: the build ID timestamp correctly maps to the FTP directory.
 - A second invocation for the same module uses the cached binary (no re-download).
-- Multiple frames from the same crash reuse the single archive download.
+- Multiple modules from the same build reuse the single archive download.
 - Build ID mismatch produces a clear warning and falls back to sym-only.
 
 ### Tests
@@ -825,56 +816,9 @@ tar = "0.4"       # Tar archive extraction
 
 ---
 
-## Phase 12: `frames` Command & Crash Report Parsing
+## ~~Phase 12: `frames` Command & Crash Report Parsing~~ (Removed)
 
-**Goal:** Parse processed crash report JSON files and batch-disassemble stack frames.
-
-### Tasks
-
-1. **Implement crash report parser** in `src/crash_report.rs`.
-   - Define types for the rust-minidump / Socorro JSON format:
-     ```rust
-     pub struct CrashReport {
-         pub crash_info: Option<CrashInfo>,
-         pub crashing_thread: Option<usize>,
-         pub threads: Vec<Thread>,
-         pub modules: Vec<Module>,
-     }
-     ```
-   - Parse with `serde_json`. Be tolerant of missing fields (everything optional, use `#[serde(default)]`).
-   - `get_thread(spec: &str) -> &Thread`: resolve `"crashing"` to `threads[crashing_thread]`, or parse as index.
-   - `get_module_for_frame(frame: &Frame) -> Option<&Module>`: Match frame's module name to modules list.
-
-2. **Implement frame range parsing.**
-   - Parse `--frames` argument: `"all"`, `"5"`, `"0-9"`, `"3,5,7"`.
-
-3. **Implement the `frames` command** in `src/commands/frames.rs`.
-   - Read crash report from file path.
-   - Extract requested thread and frames.
-   - For each frame:
-     1. Find the module in the modules list.
-     2. Call the same resolve → disassemble → annotate pipeline as `disasm`.
-     3. Use `module_offset` as the `--offset` and also as `--highlight-offset`.
-   - Deduplicate module fetches: if multiple frames reference the same module, fetch it once.
-   - Text output: print each frame's disassembly separated by a header line.
-   - JSON output: array of per-frame results.
-
-4. **Handle frames with missing modules.**
-   - If a frame has no module (address not in any loaded module), skip it with a warning.
-   - If a frame's module can't be fetched, include a partial result.
-
-### Acceptance Criteria
-
-- Given a real processed crash report JSON, `symdis frames --crash-report crash.json --frames 0-3` produces disassembly for the top 4 frames of the crashing thread.
-- Frames with different modules trigger separate fetches.
-- Frames in the same module reuse the cached data.
-- `--format json` produces an array of results.
-
-### Tests
-
-- Unit test: crash report JSON parsing with a fixture file.
-- Unit test: frame range parsing (`"all"`, `"5"`, `"0-9"`, `"3,5,7"`).
-- Integration test: `frames` command with a mock crash report and mock HTTP server.
+Phase 12 has been removed from the plan. Instead of a batch `frames` command, the AI agent is responsible for selecting which stack frames are interesting (from the crash report JSON) and invoking `symdis disasm` individually for each one. This keeps the tool simpler and gives the agent full control over frame selection and prioritization.
 
 ---
 
@@ -1019,10 +963,10 @@ tracing-subscriber = "0.3"
      - macOS x86-64.
      - macOS AArch64 (Apple Silicon).
      - Android AArch64.
-   - For each, save the processed crash report JSON as a test fixture.
+   - For each, extract the debug file, debug ID, and a module offset from the crashing frame.
 
 2. **Write end-to-end tests.**
-   - For each crash report: run `symdis frames --crash-report <fixture> --frames 0 --format json`.
+   - For each crash report: run `symdis disasm --debug-file <file> --debug-id <id> --offset <offset> --format json`.
    - Verify the output is valid JSON with the expected structure.
    - Verify that at least the top frame produces disassembly (for Windows) or symbol info (for other platforms).
    - These tests require network access; gate behind a feature flag or env var (`SYMDIS_INTEGRATION_TESTS=1`).
@@ -1060,7 +1004,7 @@ tracing-subscriber = "0.3"
 | 9 | `lookup` + `info` commands | All query commands working | 3, 8 |
 | 10 | ELF + debuginfod | Linux module support | 6 |
 | 11 | Mach-O support | macOS module support | 6 |
-| 12 | `frames` command | Batch crash report processing | 6, 8 |
+| ~~12~~ | ~~`frames` command~~ | ~~Batch crash report processing~~ | ~~Removed~~ |
 | 13 | Demangling | Readable C++/Rust names | 6 |
 | 14 | Configuration file | Persistent settings | 1, 2 |
 | 15 | Robustness & polish | Production-ready error handling | All |
@@ -1078,8 +1022,8 @@ Phase 0 ──┬──> Phase 1 ──> Phase 2 ──┐
                                   │
                     ┌─────────────┼─────────────┐
                     v             v              v
-                Phase 7      Phase 10       Phase 12
-                    │         Phase 11       Phase 13
+                Phase 7      Phase 10       Phase 13
+                    │         Phase 11
                     v
                 Phase 8
                     │
@@ -1096,4 +1040,4 @@ Phase 0 ──┬──> Phase 1 ──> Phase 2 ──┐
                Phase 16
 ```
 
-Phases 10, 11, 12, 13 are independent of each other and can be developed in parallel after Phase 6.
+Phases 10, 11, 13 are independent of each other and can be developed in parallel after Phase 6. (Phase 12 has been removed.)

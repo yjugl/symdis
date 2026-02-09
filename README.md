@@ -144,7 +144,6 @@ symdis disasm \
 | `lookup` | Resolve an offset to a symbol, or a name to an address | Implemented |
 | `info` | Show module metadata | Implemented |
 | `fetch` | Pre-fetch symbols and binary for a module | Planned |
-| `frames` | Process multiple stack frames from a crash report | Planned |
 | `cache` | Manage the local cache (`path`, `size`, `clear`) | Implemented |
 
 ## Global Options
