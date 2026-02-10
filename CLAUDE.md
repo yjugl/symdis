@@ -13,9 +13,22 @@ cargo test test_rva_to_offset        # Run a single test by name
 cargo run -- disasm --help           # Run CLI with args
 ```
 
+## After Making Changes
+
+Always run these before proposing a commit:
+
+```bash
+cargo clippy -- -D warnings          # Must pass with zero warnings
+cargo test                           # All tests must pass
+```
+
+Also verify:
+- **`--help` is complete**: An AI agent without access to the source code relies on `--help` as its sole reference. Ensure all flags, fetch chain behavior, examples, and edge cases are documented in the `after_long_help` text in `commands/mod.rs`.
+- **CLAUDE.md is up-to-date**: Update the Project Status, Architecture, and Key Conventions sections to reflect any new modules, commands, flags, or behavioral changes.
+
 ## Project Status
 
-All commands are fully implemented and the project is ready for real-life testing. The `disasm` command works end-to-end for Windows (PE), Linux (ELF), and macOS (Mach-O) modules: fetch sym+binary from symbol servers, find a function, disassemble, annotate with source lines/call targets/inlines/highlight, and print text or JSON output (`--format text|json`). Mach-O supports fat (universal) binaries with automatic arch selection. The FTP archive fallback supports both Linux (tar.xz) and macOS (PKG/XAR/cpio). The `lookup`, `info`, and `fetch` commands are implemented. The `cache` command supports `path`, `size`, `clear` (with `--older-than`), and `list`. C++/Rust symbol demangling is applied at display time (`--no-demangle` to disable). Configuration is loaded from a TOML config file, environment variables, and CLI flags with layered precedence (defaults < config file < env vars < CLI). Structured logging via `tracing` outputs to stderr at configurable verbosity (`-v` for info, `-vv` for debug). The `--offline` flag restricts operation to cached data only. HTML error page detection prevents caching corrupted downloads. Empty functions (size 0) are handled gracefully.
+All commands are fully implemented and the project is ready for real-life testing. The `disasm` command works end-to-end for Windows (PE), Linux (ELF), and macOS (Mach-O) modules: fetch sym+binary from symbol servers, find a function, disassemble, annotate with source lines/call targets/inlines/highlight, and print text or JSON output (`--format text|json`). Mach-O supports fat (universal) binaries with automatic arch selection. Binary fetch chain: Tecken → Microsoft (Windows PE only) → debuginfod (Linux) → Snap Store (Linux) → FTP archive (Linux tar.xz, macOS PKG/XAR/cpio, Android APK). When the sym file is unavailable, platform is inferred from code_id format (40-char hex → Linux, 32-char hex → macOS) so fallback sources are still attempted. The "Tried:" line in binary-not-found errors accurately lists only the sources that were actually attempted. Fenix (Firefox for Android) is supported via `--product fenix` with APK extraction. Ubuntu snap libraries are supported via the Snap Store backend (auto-detected or `--snap`). The `lookup`, `info`, and `fetch` commands are implemented. The `cache` command supports `path`, `size`, `clear` (with `--older-than`), and `list`. C++/Rust symbol demangling is applied at display time (`--no-demangle` to disable). Configuration is loaded from a TOML config file, environment variables, and CLI flags with layered precedence (defaults < config file < env vars < CLI). Structured logging via `tracing` outputs to stderr at configurable verbosity (`-v` for info, `-vv` for debug). The `--offline` flag restricts operation to cached data only. HTML error page detection prevents caching corrupted downloads. Empty functions (size 0) are handled gracefully.
 
 ## Architecture
 
@@ -34,9 +47,10 @@ All commands are fully implemented and the project is ready for real-life testin
 **Key modules**:
 - `config.rs` — TOML config file parsing (`toml 0.8`); `Config::resolve()` merges defaults < config file < env vars < CLI flags; `_NT_SYMBOL_PATH` parsing for cache dir; config file located via `SYMDIS_CONFIG` env var or platform default (`%APPDATA%\symdis\config.toml` / `~/.config/symdis/config.toml`)
 - `cache.rs` — Flat WinDbg-compatible layout (`<root>/<file>/<id>/<file>`); atomic writes via tempfile; negative cache markers with configurable TTL
-- `fetch/` — Orchestrator tries Tecken then Microsoft symbol server; both clients handle CAB-compressed downloads (`.dl_`/`.pd_` variants); server URLs parameterized from config; shared `compress_filename`/`decompress_cab` in `fetch/mod.rs`; `is_html_response()` detects corrupted downloads; offline mode skips network after cache miss; cache hit/miss logging via `tracing`
+- `fetch/` — Orchestrator: Tecken → Microsoft (Windows PE only) → debuginfod (Linux) → Snap Store (Linux) → FTP archive; CAB-compressed downloads (`.dl_`/`.pd_` variants); server URLs parameterized from config; shared `compress_filename`/`decompress_cab` in `fetch/mod.rs`; `is_html_response()` detects corrupted downloads; offline mode skips network after cache miss; cache hit/miss logging via `tracing`
 - `fetch/debuginfod.rs` — debuginfod client for Linux executables; server URLs from config (sourced from `DEBUGINFOD_URLS` env var or config file)
-- `fetch/archive.rs` — Mozilla FTP archive client; downloads `.tar.xz` (Linux) or `.pkg` (macOS) build archives; extracts binaries; verifies ELF build IDs and Mach-O UUIDs; archive caching avoids re-downloading for multiple binaries from the same release
+- `fetch/archive.rs` — Mozilla FTP archive client; downloads `.tar.xz` (Linux), `.pkg` (macOS), or `.apk` (Android/Fenix) build archives; extracts binaries; verifies ELF build IDs and Mach-O UUIDs; archive caching avoids re-downloading for multiple binaries from the same release
+- `fetch/snap.rs` — Snap Store client for Ubuntu snap libraries; squashfs extraction via backhand; snap name auto-detection from sym file source paths
 - `symbols/breakpad.rs` — Line-by-line parser for `.sym` files; functions and publics sorted by address for binary search; name→index HashMap for exact lookup; `resolve_address` caps PUBLIC symbol distance at 64KB; `get_inline_at` returns active inline frames; `SymFileSummary` for lightweight scanning
 - `symbols/id_convert.rs` — Debug ID ↔ Build ID conversion (GUID byte-swapping for ELF)
 - `binary/pe.rs` — Goblin-based PE parser implementing `BinaryFile` trait; RVA-to-file-offset via section table walk; IAT import resolution for call target annotation
@@ -73,7 +87,9 @@ All commands are fully implemented and the project is ready for real-life testin
 - **capstone 0.13** (not 0.14): stable API
 - **reqwest 0.12** with `rustls-tls`
 - **cab 0.6** for Microsoft CAB decompression
-- **xz2 0.1** + **tar 0.4** for Linux `.tar.xz` archive extraction
+- **liblzma 0.4** + **tar 0.4** for Linux `.tar.xz` archive extraction (liblzma replaces xz2 to avoid linking conflict with backhand)
+- **backhand 0.24** (`default-features = false`, features `xz`+`lzo`) for squashfs (snap) extraction
+- **zip 2** (`default-features = false`, feature `deflate`) for APK extraction (lzma disabled to avoid linking conflict with backhand)
 - **quick-xml 0.37** + **cpio_reader 0.1** for macOS `.pkg` (XAR/cpio) archive extraction
 - **cpp_demangle 0.4** + **rustc-demangle 0.1** for C++/Rust symbol demangling
 - **toml 0.8** for TOML config file parsing
