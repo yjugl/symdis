@@ -43,6 +43,13 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
     let version = &locator.version;
     let is_mac = platform == "mac";
 
+    if version.ends_with("esr") && locator.channel != "esr" {
+        bail!(
+            "version '{version}' contains 'esr' but channel is '{}' (expected 'esr')",
+            locator.channel
+        );
+    }
+
     match locator.channel.as_str() {
         "release" => {
             if is_mac {
@@ -67,13 +74,15 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
             }
         }
         "esr" => {
+            // Strip trailing "esr" if the user already included it in the version
+            let ver = version.strip_suffix("esr").unwrap_or(version);
             if is_mac {
                 Ok(format!(
-                    "{FTP_BASE}/releases/{version}esr/{platform}/en-US/Firefox%20{version}esr.pkg"
+                    "{FTP_BASE}/releases/{ver}esr/{platform}/en-US/Firefox%20{ver}esr.pkg"
                 ))
             } else {
                 Ok(format!(
-                    "{FTP_BASE}/releases/{version}esr/{platform}/en-US/firefox-{version}esr.tar.xz"
+                    "{FTP_BASE}/releases/{ver}esr/{platform}/en-US/firefox-{ver}esr.tar.xz"
                 ))
             }
         }
@@ -712,6 +721,37 @@ mod tests {
     }
 
     #[test]
+    fn test_build_archive_url_esr_with_suffix() {
+        // Version already contains "esr" — should not be doubled
+        let locator = ArchiveLocator {
+            version: "128.10.0esr".to_string(),
+            channel: "esr".to_string(),
+            platform: "linux-x86_64".to_string(),
+            build_id: None,
+        };
+        let url = build_archive_url(&locator).unwrap();
+        assert_eq!(
+            url,
+            "https://ftp.mozilla.org/pub/firefox/releases/128.10.0esr/linux-x86_64/en-US/firefox-128.10.0esr.tar.xz"
+        );
+    }
+
+    #[test]
+    fn test_build_archive_url_esr_mac_with_suffix() {
+        let locator = ArchiveLocator {
+            version: "115.32.0esr".to_string(),
+            channel: "esr".to_string(),
+            platform: "mac".to_string(),
+            build_id: None,
+        };
+        let url = build_archive_url(&locator).unwrap();
+        assert_eq!(
+            url,
+            "https://ftp.mozilla.org/pub/firefox/releases/115.32.0esr/mac/en-US/Firefox%20115.32.0esr.pkg"
+        );
+    }
+
+    #[test]
     fn test_build_archive_url_nightly() {
         let locator = ArchiveLocator {
             version: "149.0a1".to_string(),
@@ -772,6 +812,18 @@ mod tests {
             build_id: None,
         };
         assert!(build_archive_url(&locator).is_err());
+    }
+
+    #[test]
+    fn test_build_archive_url_esr_version_wrong_channel() {
+        let locator = ArchiveLocator {
+            version: "128.10.0esr".to_string(),
+            channel: "release".to_string(),
+            platform: "linux-x86_64".to_string(),
+            build_id: None,
+        };
+        let err = build_archive_url(&locator).unwrap_err();
+        assert!(err.to_string().contains("expected 'esr'"));
     }
 
     #[test]
