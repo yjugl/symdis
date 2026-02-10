@@ -445,7 +445,13 @@ pub async fn fetch_binary_snap(
         .context("snap extraction")?;
 
     // Verify build ID
-    archive::verify_binary_id(&binary_data, &build_id)?;
+    archive::verify_binary_id(&binary_data, &build_id).map_err(|e| {
+        e.context(
+            "the Snap Store only serves the current revision — \
+             if the crash is from an older version, the binary \
+             cannot be retrieved from this source",
+        )
+    })?;
     info!("build ID verified ({build_id})");
 
     let path = cache.store_binary(&key, &binary_data)?;

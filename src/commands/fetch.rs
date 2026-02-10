@@ -116,7 +116,7 @@ pub async fn run(args: &FetchArgs, config: &Config) -> Result<()> {
                         {
                             Ok(path) => Ok(path),
                             Err(snap_err) => {
-                                warn!("Snap Store fallback failed: {snap_err}");
+                                warn!("Snap Store fallback failed: {snap_err:#}");
                                 Err(e)
                             }
                         }
@@ -169,14 +169,14 @@ pub async fn run(args: &FetchArgs, config: &Config) -> Result<()> {
                         {
                             Ok(path) => Ok(path),
                             Err(ftp_err) => {
-                                warn!("FTP archive fallback failed: {ftp_err}");
+                                warn!("FTP archive fallback failed: {ftp_err:#}");
                                 Err(e)
                             }
                         }
                     }
                     Ok(None) => Err(e),
                     Err(product_err) => {
-                        warn!("product/platform resolution failed: {product_err}");
+                        warn!("product/platform resolution failed: {product_err:#}");
                         Err(e)
                     }
                 }
