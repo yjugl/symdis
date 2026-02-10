@@ -28,6 +28,7 @@ const DISASM_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   (from release info)    --channel           release|beta|esr|nightly|aurora
   (from release info)    --build-id          14-digit timestamp (nightly only)
   (snap source paths)    --snap              Snap package name (auto-detected)
+  (from product name)    --product           firefox (default) or thunderbird
 
 BINARY FETCH CHAIN:
 
@@ -88,6 +89,14 @@ EXAMPLES:
       --code-id 4ac2f78e021ba6b54f56bea31dcf2b1e19c7f3bc \
       --offset 0x625f6
 
+  # Thunderbird module -- specify --product for non-Firefox products:
+  symdis disasm \
+      --debug-file libxul.so \
+      --debug-id AABBCCDD11223344AABBCCDD11223344A \
+      --product thunderbird \
+      --version 147.0.1 --channel release \
+      --offset 0x6cad38e
+
   # Search by function name (substring match):
   symdis disasm \
       --debug-file xul.pdb \
@@ -112,7 +121,9 @@ TIPS:
   - Use 'symdis lookup --offset 0x...' for quick symbol resolution
     without full disassembly.
   - For nightly builds, --build-id is the 14-digit build timestamp
-    (YYYYMMDDHHmmSS) from the crash report's build_id field."#;
+    (YYYYMMDDHHmmSS) from the crash report's build_id field.
+  - For Thunderbird crashes, add --product thunderbird to fetch
+    binaries from the Thunderbird FTP archive instead of Firefox."#;
 
 const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 
@@ -153,6 +164,7 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   (from release info)    --channel       release|beta|esr|nightly|aurora
   (from release info)    --build-id      14-digit timestamp (nightly only)
   (snap source paths)    --snap          Snap package name (explicit only)
+  (from product name)    --product       firefox (default) or thunderbird
 
   Pre-fetches the .sym file and native binary into the local cache so
   that subsequent disasm calls are instant cache hits. Useful when you
@@ -321,21 +333,25 @@ pub struct DisasmArgs {
     #[arg(long)]
     pub code_id: Option<String>,
 
-    /// Firefox version (e.g., "147.0.3") for FTP archive fallback
+    /// Product version (e.g., "147.0.3") for FTP archive fallback
     #[arg(long)]
     pub version: Option<String>,
 
-    /// Firefox release channel (release, beta, nightly, esr, aurora) for FTP archive fallback
+    /// Release channel (release, beta, nightly, esr, aurora) for FTP archive fallback
     #[arg(long)]
     pub channel: Option<String>,
 
-    /// Firefox build ID timestamp (required for nightly channel only)
+    /// Build ID timestamp (required for nightly channel only)
     #[arg(long)]
     pub build_id: Option<String>,
 
     /// Snap package name (auto-detected from sym file source paths if not specified)
     #[arg(long)]
     pub snap: Option<String>,
+
+    /// Mozilla product (firefox, thunderbird). Defaults to firefox.
+    #[arg(long, default_value = "firefox")]
+    pub product: String,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -387,17 +403,21 @@ pub struct InfoArgs {
     #[arg(long)]
     pub code_id: Option<String>,
 
-    /// Firefox version (e.g., "147.0.3") for FTP archive fallback
+    /// Product version (e.g., "147.0.3") for FTP archive fallback
     #[arg(long)]
     pub version: Option<String>,
 
-    /// Firefox release channel (release, beta, nightly, esr, aurora) for FTP archive fallback
+    /// Release channel (release, beta, nightly, esr, aurora) for FTP archive fallback
     #[arg(long)]
     pub channel: Option<String>,
 
-    /// Firefox build ID timestamp (required for nightly channel only)
+    /// Build ID timestamp (required for nightly channel only)
     #[arg(long)]
     pub build_id: Option<String>,
+
+    /// Mozilla product (firefox, thunderbird). Defaults to firefox.
+    #[arg(long, default_value = "firefox")]
+    pub product: String,
 }
 
 #[derive(Parser)]
@@ -419,21 +439,25 @@ pub struct FetchArgs {
     #[arg(long)]
     pub code_id: Option<String>,
 
-    /// Firefox version (e.g., "147.0.3") for FTP archive fallback
+    /// Product version (e.g., "147.0.3") for FTP archive fallback
     #[arg(long)]
     pub version: Option<String>,
 
-    /// Firefox release channel (release, beta, nightly, esr, aurora) for FTP archive fallback
+    /// Release channel (release, beta, nightly, esr, aurora) for FTP archive fallback
     #[arg(long)]
     pub channel: Option<String>,
 
-    /// Firefox build ID timestamp (required for nightly channel only)
+    /// Build ID timestamp (required for nightly channel only)
     #[arg(long)]
     pub build_id: Option<String>,
 
     /// Snap package name (not auto-detected; use --snap explicitly for fetch)
     #[arg(long)]
     pub snap: Option<String>,
+
+    /// Mozilla product (firefox, thunderbird). Defaults to firefox.
+    #[arg(long, default_value = "firefox")]
+    pub product: String,
 }
 
 #[derive(Parser)]

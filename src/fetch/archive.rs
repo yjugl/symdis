@@ -12,9 +12,11 @@ use super::FetchResult;
 
 const FTP_BASE: &str = "https://ftp.mozilla.org/pub/firefox";
 const DEVEDITION_FTP_BASE: &str = "https://ftp.mozilla.org/pub/devedition";
+const THUNDERBIRD_FTP_BASE: &str = "https://ftp.mozilla.org/pub/thunderbird";
 
-/// Parameters needed to locate a Firefox build archive on the FTP server.
+/// Parameters needed to locate a Mozilla product build archive on the FTP server.
 pub struct ArchiveLocator {
+    pub product: String,
     pub version: String,
     pub channel: String,
     pub platform: String,
@@ -51,26 +53,22 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
         );
     }
 
+    // Determine FTP base URL and filename prefix based on product
+    let (ftp_base, prefix, prefix_cap) = match locator.product.as_str() {
+        "firefox" => (FTP_BASE, "firefox", "Firefox"),
+        "thunderbird" => (THUNDERBIRD_FTP_BASE, "thunderbird", "Thunderbird"),
+        other => bail!("unknown product: {other} (expected: firefox, thunderbird)"),
+    };
+
     match locator.channel.as_str() {
-        "release" => {
+        "release" | "beta" => {
             if is_mac {
                 Ok(format!(
-                    "{FTP_BASE}/releases/{version}/{platform}/en-US/Firefox%20{version}.pkg"
+                    "{ftp_base}/releases/{version}/{platform}/en-US/{prefix_cap}%20{version}.pkg"
                 ))
             } else {
                 Ok(format!(
-                    "{FTP_BASE}/releases/{version}/{platform}/en-US/firefox-{version}.tar.xz"
-                ))
-            }
-        }
-        "beta" => {
-            if is_mac {
-                Ok(format!(
-                    "{FTP_BASE}/releases/{version}/{platform}/en-US/Firefox%20{version}.pkg"
-                ))
-            } else {
-                Ok(format!(
-                    "{FTP_BASE}/releases/{version}/{platform}/en-US/firefox-{version}.tar.xz"
+                    "{ftp_base}/releases/{version}/{platform}/en-US/{prefix}-{version}.tar.xz"
                 ))
             }
         }
@@ -79,11 +77,11 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
             let ver = version.strip_suffix("esr").unwrap_or(version);
             if is_mac {
                 Ok(format!(
-                    "{FTP_BASE}/releases/{ver}esr/{platform}/en-US/Firefox%20{ver}esr.pkg"
+                    "{ftp_base}/releases/{ver}esr/{platform}/en-US/{prefix_cap}%20{ver}esr.pkg"
                 ))
             } else {
                 Ok(format!(
-                    "{FTP_BASE}/releases/{ver}esr/{platform}/en-US/firefox-{ver}esr.tar.xz"
+                    "{ftp_base}/releases/{ver}esr/{platform}/en-US/{prefix}-{ver}esr.tar.xz"
                 ))
             }
         }
@@ -91,6 +89,9 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
             // Firefox Developer Edition — hosted under /pub/devedition/releases/
             // Uses beta version numbering (e.g. 147.0b9).
             // macOS only has .dmg (no .pkg), so FTP extraction is Linux-only.
+            if locator.product != "firefox" {
+                bail!("aurora channel is only available for Firefox (Developer Edition)");
+            }
             if is_mac {
                 bail!(
                     "FTP archive extraction is not supported for Developer Edition on macOS \
@@ -115,13 +116,15 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
             let min = &build_id[10..12];
             let sec = &build_id[12..14];
             let timestamp = format!("{year}-{month}-{day}-{hour}-{min}-{sec}");
+            // Thunderbird nightly: /pub/thunderbird/nightly/YYYY/MM/... with comm-central
+            let tree = if locator.product == "thunderbird" { "comm-central" } else { "mozilla-central" };
             if is_mac {
                 Ok(format!(
-                    "{FTP_BASE}/nightly/{year}/{month}/{timestamp}-mozilla-central/firefox-{version}.en-US.{platform}.pkg"
+                    "{ftp_base}/nightly/{year}/{month}/{timestamp}-{tree}/{prefix}-{version}.en-US.{platform}.pkg"
                 ))
             } else {
                 Ok(format!(
-                    "{FTP_BASE}/nightly/{year}/{month}/{timestamp}-mozilla-central/firefox-{version}.en-US.{platform}.tar.xz"
+                    "{ftp_base}/nightly/{year}/{month}/{timestamp}-{tree}/{prefix}-{version}.en-US.{platform}.tar.xz"
                 ))
             }
         }
@@ -684,6 +687,7 @@ mod tests {
     #[test]
     fn test_build_archive_url_release_linux() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "147.0.3".to_string(),
             channel: "release".to_string(),
             platform: "linux-aarch64".to_string(),
@@ -699,6 +703,7 @@ mod tests {
     #[test]
     fn test_build_archive_url_release_mac() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "147.0.3".to_string(),
             channel: "release".to_string(),
             platform: "mac".to_string(),
@@ -714,6 +719,7 @@ mod tests {
     #[test]
     fn test_build_archive_url_beta() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "148.0b5".to_string(),
             channel: "beta".to_string(),
             platform: "linux-x86_64".to_string(),
@@ -729,6 +735,7 @@ mod tests {
     #[test]
     fn test_build_archive_url_beta_mac() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "148.0b5".to_string(),
             channel: "beta".to_string(),
             platform: "mac".to_string(),
@@ -744,6 +751,7 @@ mod tests {
     #[test]
     fn test_build_archive_url_esr() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "128.10.0".to_string(),
             channel: "esr".to_string(),
             platform: "linux-x86_64".to_string(),
@@ -759,6 +767,7 @@ mod tests {
     #[test]
     fn test_build_archive_url_esr_mac() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "128.10.0".to_string(),
             channel: "esr".to_string(),
             platform: "mac".to_string(),
@@ -775,6 +784,7 @@ mod tests {
     fn test_build_archive_url_esr_with_suffix() {
         // Version already contains "esr" — should not be doubled
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "128.10.0esr".to_string(),
             channel: "esr".to_string(),
             platform: "linux-x86_64".to_string(),
@@ -790,6 +800,7 @@ mod tests {
     #[test]
     fn test_build_archive_url_esr_mac_with_suffix() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "115.32.0esr".to_string(),
             channel: "esr".to_string(),
             platform: "mac".to_string(),
@@ -805,6 +816,7 @@ mod tests {
     #[test]
     fn test_build_archive_url_nightly() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "149.0a1".to_string(),
             channel: "nightly".to_string(),
             platform: "linux-x86_64".to_string(),
@@ -820,6 +832,7 @@ mod tests {
     #[test]
     fn test_build_archive_url_nightly_mac() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "149.0a1".to_string(),
             channel: "nightly".to_string(),
             platform: "mac".to_string(),
@@ -835,6 +848,7 @@ mod tests {
     #[test]
     fn test_build_archive_url_nightly_no_build_id() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "149.0a1".to_string(),
             channel: "nightly".to_string(),
             platform: "linux-x86_64".to_string(),
@@ -846,6 +860,7 @@ mod tests {
     #[test]
     fn test_build_archive_url_nightly_bad_build_id() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "149.0a1".to_string(),
             channel: "nightly".to_string(),
             platform: "linux-x86_64".to_string(),
@@ -857,6 +872,7 @@ mod tests {
     #[test]
     fn test_build_archive_url_unknown_channel() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "147.0".to_string(),
             channel: "canary".to_string(),
             platform: "linux-x86_64".to_string(),
@@ -868,6 +884,7 @@ mod tests {
     #[test]
     fn test_build_archive_url_aurora_linux() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "147.0b9".to_string(),
             channel: "aurora".to_string(),
             platform: "linux-x86_64".to_string(),
@@ -882,6 +899,7 @@ mod tests {
     #[test]
     fn test_build_archive_url_aurora_mac_unsupported() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "147.0b9".to_string(),
             channel: "aurora".to_string(),
             platform: "mac".to_string(),
@@ -892,8 +910,70 @@ mod tests {
     }
 
     #[test]
+    fn test_build_archive_url_thunderbird_release_linux() {
+        let locator = ArchiveLocator {
+            product: "thunderbird".to_string(),
+            version: "147.0".to_string(),
+            channel: "release".to_string(),
+            platform: "linux-x86_64".to_string(),
+            build_id: None,
+        };
+        let url = build_archive_url(&locator).unwrap();
+        assert_eq!(
+            url,
+            "https://ftp.mozilla.org/pub/thunderbird/releases/147.0/linux-x86_64/en-US/thunderbird-147.0.tar.xz"
+        );
+    }
+
+    #[test]
+    fn test_build_archive_url_thunderbird_release_mac() {
+        let locator = ArchiveLocator {
+            product: "thunderbird".to_string(),
+            version: "147.0".to_string(),
+            channel: "release".to_string(),
+            platform: "mac".to_string(),
+            build_id: None,
+        };
+        let url = build_archive_url(&locator).unwrap();
+        assert_eq!(
+            url,
+            "https://ftp.mozilla.org/pub/thunderbird/releases/147.0/mac/en-US/Thunderbird%20147.0.pkg"
+        );
+    }
+
+    #[test]
+    fn test_build_archive_url_thunderbird_esr() {
+        let locator = ArchiveLocator {
+            product: "thunderbird".to_string(),
+            version: "140.7.1".to_string(),
+            channel: "esr".to_string(),
+            platform: "linux-x86_64".to_string(),
+            build_id: None,
+        };
+        let url = build_archive_url(&locator).unwrap();
+        assert_eq!(
+            url,
+            "https://ftp.mozilla.org/pub/thunderbird/releases/140.7.1esr/linux-x86_64/en-US/thunderbird-140.7.1esr.tar.xz"
+        );
+    }
+
+    #[test]
+    fn test_build_archive_url_thunderbird_aurora_rejected() {
+        let locator = ArchiveLocator {
+            product: "thunderbird".to_string(),
+            version: "147.0b9".to_string(),
+            channel: "aurora".to_string(),
+            platform: "linux-x86_64".to_string(),
+            build_id: None,
+        };
+        let err = build_archive_url(&locator).unwrap_err();
+        assert!(err.to_string().contains("only available for Firefox"));
+    }
+
+    #[test]
     fn test_build_archive_url_esr_version_wrong_channel() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "128.10.0esr".to_string(),
             channel: "release".to_string(),
             platform: "linux-x86_64".to_string(),
@@ -950,6 +1030,7 @@ mod tests {
     #[test]
     fn test_archive_cache_key_release() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "147.0.3".to_string(),
             channel: "release".to_string(),
             platform: "linux-x86_64".to_string(),
@@ -963,6 +1044,7 @@ mod tests {
     #[test]
     fn test_archive_cache_key_nightly() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "149.0a1".to_string(),
             channel: "nightly".to_string(),
             platform: "linux-x86_64".to_string(),
@@ -976,6 +1058,7 @@ mod tests {
     #[test]
     fn test_archive_cache_key_mac_release() {
         let locator = ArchiveLocator {
+            product: "firefox".to_string(),
             version: "147.0.3".to_string(),
             channel: "release".to_string(),
             platform: "mac".to_string(),

@@ -146,6 +146,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                 if let Some(platform) = fetch::archive::ftp_platform(os, arch_str) {
                     let archive_client = fetch::build_archive_http_client(config)?;
                     let locator = fetch::archive::ArchiveLocator {
+                        product: args.product.clone(),
                         version: version.clone(),
                         channel: channel.clone(),
                         platform: platform.to_string(),
