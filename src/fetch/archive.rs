@@ -6,7 +6,7 @@ use std::io::Read;
 
 use anyhow::{Result, Context, bail};
 use reqwest::Client;
-use tracing::info;
+use tracing::{info, warn, debug};
 
 use super::FetchResult;
 
@@ -133,9 +133,11 @@ pub fn extract_from_tar_xz(data: &[u8], target_name: &str) -> Result<Vec<u8>> {
 
 /// Extract a file from a macOS `.pkg` (XAR) archive.
 ///
-/// PKG files are XAR archives containing a gzip-compressed cpio Payload.
-/// The XAR header and TOC are parsed to find the Payload, which is then
-/// decompressed and searched for the target file.
+/// PKG files are XAR archives. A simple component package has a gzip- or
+/// pbzx-compressed cpio Payload at the top level. A distribution package
+/// contains multiple component packages as subdirectories, each with its own
+/// Payload. This function tries all Payloads found in the TOC until one
+/// yields the target file.
 pub fn extract_from_pkg(data: &[u8], target_name: &str) -> Result<Vec<u8>> {
     // XAR header: magic(4) + header_size(2) + version(2) + toc_compressed_len(8) + toc_uncompressed_len(8) + cksum_algo(4)
     const XAR_MAGIC: u32 = 0x78617221; // "xar!"
@@ -165,38 +167,144 @@ pub fn extract_from_pkg(data: &[u8], target_name: &str) -> Result<Vec<u8>> {
     let mut decoder = flate2::read::ZlibDecoder::new(toc_compressed);
     decoder.read_to_end(&mut toc_xml).context("decompressing XAR TOC")?;
 
-    // Parse TOC XML to find the Payload file entry
+    // Parse TOC XML to find all Payload file entries
     let heap_start = header_size + toc_compressed_len;
-    let (payload_offset, payload_length) = parse_xar_toc_for_payload(&toc_xml)?;
+    let payloads = parse_xar_toc_for_payloads(&toc_xml)?;
+    debug!("found {} Payload(s) in XAR TOC", payloads.len());
 
-    let abs_offset = heap_start + payload_offset;
-    let abs_end = abs_offset + payload_length;
-    if abs_end > data.len() {
-        bail!("XAR Payload extends beyond file");
+    // Try each Payload until we find the target file
+    let mut last_err = None;
+    for (i, &(payload_offset, payload_length)) in payloads.iter().enumerate() {
+        let abs_offset = heap_start + payload_offset;
+        let abs_end = abs_offset + payload_length;
+        if abs_end > data.len() {
+            debug!("Payload #{} extends beyond file, skipping", i);
+            continue;
+        }
+
+        let payload_raw = &data[abs_offset..abs_end];
+        debug!(
+            "trying Payload #{} (offset={}, size={:.1} MB)",
+            i,
+            payload_offset,
+            payload_length as f64 / 1_048_576.0
+        );
+
+        match decompress_payload(payload_raw) {
+            Ok(payload) => {
+                match extract_from_cpio(&payload, target_name) {
+                    Ok(data) => return Ok(data),
+                    Err(e) => {
+                        debug!("Payload #{}: target not found in cpio: {e}", i);
+                        last_err = Some(e);
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("Payload #{}: decompression failed: {e}", i);
+                last_err = Some(e);
+            }
+        }
     }
 
-    let payload_raw = &data[abs_offset..abs_end];
-
-    // Decompress Payload — try gzip first (most common), then raw cpio
-    let payload = if payload_raw.len() >= 2 && payload_raw[0] == 0x1f && payload_raw[1] == 0x8b {
-        let mut buf = Vec::new();
-        let mut gz_decoder = flate2::read::GzDecoder::new(payload_raw);
-        gz_decoder.read_to_end(&mut buf).context("decompressing gzip PKG Payload")?;
-        buf
-    } else {
-        payload_raw.to_vec()
-    };
-
-    // Search cpio archive for target file
-    extract_from_cpio(&payload, target_name)
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Payload not found in XAR TOC")))
 }
 
-/// Parse XAR TOC XML to find the Payload file's heap offset and length.
+/// Decompress a Payload blob, detecting the compression format automatically.
 ///
-/// In PKG files, the XML structure has `<data>` (with offset/length) BEFORE
-/// `<name>`, so we collect all fields per `<file>` element and check the
-/// name when we reach `</file>`.
-fn parse_xar_toc_for_payload(toc_xml: &[u8]) -> Result<(usize, usize)> {
+/// Supported formats:
+/// - gzip (magic `1f 8b`)
+/// - XZ (magic `fd 37 7a 58 5a 00`)
+/// - pbzx (magic `pbzx`) — chunked LZMA used by modern macOS PKGs
+/// - raw (uncompressed cpio)
+fn decompress_payload(payload_raw: &[u8]) -> Result<Vec<u8>> {
+    if payload_raw.len() >= 2 && payload_raw[0] == 0x1f && payload_raw[1] == 0x8b {
+        debug!("Payload compression: gzip");
+        let mut buf = Vec::new();
+        let mut gz = flate2::read::GzDecoder::new(payload_raw);
+        gz.read_to_end(&mut buf).context("decompressing gzip Payload")?;
+        Ok(buf)
+    } else if payload_raw.len() >= 6 && &payload_raw[0..6] == b"\xfd7zXZ\x00" {
+        debug!("Payload compression: XZ");
+        let mut buf = Vec::new();
+        let mut xz = liblzma::read::XzDecoder::new(payload_raw);
+        xz.read_to_end(&mut buf).context("decompressing XZ Payload")?;
+        Ok(buf)
+    } else if payload_raw.len() >= 4 && &payload_raw[0..4] == b"pbzx" {
+        debug!("Payload compression: pbzx");
+        decode_pbzx(payload_raw)
+    } else {
+        debug!("Payload compression: none (raw)");
+        Ok(payload_raw.to_vec())
+    }
+}
+
+/// Decode a pbzx-compressed stream.
+///
+/// pbzx format:
+///   magic: "pbzx" (4 bytes)
+///   u64 BE: uncompressed chunk size (flags)
+///   then chunks:
+///     u64 BE: compressed size
+///     u64 BE: uncompressed size
+///     data: `compressed_size` bytes (XZ if starts with XZ magic, else raw)
+fn decode_pbzx(data: &[u8]) -> Result<Vec<u8>> {
+    if data.len() < 12 {
+        bail!("pbzx stream too short");
+    }
+
+    let mut pos = 4; // skip "pbzx"
+    // Skip the flags/chunk-size u64
+    pos += 8;
+
+    let mut output = Vec::new();
+
+    while pos + 16 <= data.len() {
+        let compressed_size = u64::from_be_bytes([
+            data[pos], data[pos + 1], data[pos + 2], data[pos + 3],
+            data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7],
+        ]) as usize;
+        let uncompressed_size = u64::from_be_bytes([
+            data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11],
+            data[pos + 12], data[pos + 13], data[pos + 14], data[pos + 15],
+        ]) as usize;
+        pos += 16;
+
+        if compressed_size == 0 && uncompressed_size == 0 {
+            break;
+        }
+
+        if pos + compressed_size > data.len() {
+            bail!("pbzx chunk extends beyond stream (need {} more bytes)", pos + compressed_size - data.len());
+        }
+
+        let chunk = &data[pos..pos + compressed_size];
+        pos += compressed_size;
+
+        if chunk.len() >= 6 && &chunk[0..6] == b"\xfd7zXZ\x00" {
+            let mut buf = Vec::with_capacity(uncompressed_size);
+            let mut xz = liblzma::read::XzDecoder::new(chunk);
+            xz.read_to_end(&mut buf).context("decompressing pbzx XZ chunk")?;
+            output.extend_from_slice(&buf);
+        } else {
+            // Raw (uncompressed) chunk
+            output.extend_from_slice(chunk);
+        }
+    }
+
+    if output.is_empty() {
+        bail!("pbzx produced no output");
+    }
+
+    debug!("pbzx decoded: {:.1} MB", output.len() as f64 / 1_048_576.0);
+    Ok(output)
+}
+
+/// Parse XAR TOC XML to find all Payload files' heap offsets and lengths.
+///
+/// Returns all Payloads found (distribution PKGs may have multiple component
+/// packages, each with its own Payload). They are returned in document order.
+fn parse_xar_toc_for_payloads(toc_xml: &[u8]) -> Result<Vec<(usize, usize)>> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
@@ -214,6 +322,7 @@ fn parse_xar_toc_for_payload(toc_xml: &[u8]) -> Result<(usize, usize)> {
     let mut file_stack: Vec<FileContext> = Vec::new();
     let mut path: Vec<String> = Vec::new();
     let mut current_text = String::new();
+    let mut payloads = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
@@ -239,12 +348,12 @@ fn parse_xar_toc_for_payload(toc_xml: &[u8]) -> Result<(usize, usize)> {
                     }
                 }
 
-                // On </file>, check if this was the Payload file
+                // On </file>, check if this was a Payload file
                 if tag == "file" {
                     if let Some(ctx) = file_stack.pop() {
                         if ctx.name.as_deref() == Some("Payload") {
                             if let (Some(off), Some(len)) = (ctx.data_offset, ctx.data_length) {
-                                return Ok((off, len));
+                                payloads.push((off, len));
                             }
                         }
                     }
@@ -263,7 +372,11 @@ fn parse_xar_toc_for_payload(toc_xml: &[u8]) -> Result<(usize, usize)> {
         buf.clear();
     }
 
-    bail!("Payload not found in XAR TOC")
+    if payloads.is_empty() {
+        bail!("Payload not found in XAR TOC");
+    }
+
+    Ok(payloads)
 }
 
 /// Check if any element in the path matches the given tag name.
@@ -434,11 +547,15 @@ pub async fn download_archive(
 /// The `platform` parameter determines the archive format:
 /// - `"mac"` → PKG (XAR + cpio)
 /// - anything else → tar.xz
+///
+/// When `strict` is `false`, a build ID mismatch logs a warning but still
+/// returns the binary (best-effort mode for distro-packaged binaries).
 pub fn extract_and_verify(
     archive_data: &[u8],
     binary_name: &str,
     expected_build_id: &str,
     platform: &str,
+    strict: bool,
 ) -> Result<Vec<u8>> {
     info!(
         "extracting {binary_name} from archive ({:.1} MB)",
@@ -453,9 +570,15 @@ pub fn extract_and_verify(
             .with_context(|| format!("extracting {binary_name}"))?
     };
 
-    verify_binary_id(&binary_data, expected_build_id)?;
-
-    info!("build ID verified ({expected_build_id})");
+    match verify_binary_id(&binary_data, expected_build_id) {
+        Ok(()) => info!("build ID verified ({expected_build_id})"),
+        Err(e) => {
+            if strict {
+                return Err(e);
+            }
+            warn!("build ID mismatch (continuing with best-effort binary): {e}");
+        }
+    }
 
     Ok(binary_data)
 }
@@ -872,5 +995,218 @@ mod tests {
         assert!(path_contains(&path, "data"));
         assert!(path_contains(&path, "file"));
         assert!(!path_contains(&path, "name"));
+    }
+
+    #[test]
+    fn test_parse_xar_toc_single_payload() {
+        let toc = br#"<?xml version="1.0" encoding="UTF-8"?>
+<xar>
+  <toc>
+    <file>
+      <data><offset>0</offset><length>1000</length></data>
+      <name>Payload</name>
+    </file>
+  </toc>
+</xar>"#;
+        let payloads = parse_xar_toc_for_payloads(toc).unwrap();
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0], (0, 1000));
+    }
+
+    #[test]
+    fn test_parse_xar_toc_multiple_payloads() {
+        // Distribution PKG with two component packages, each containing a Payload
+        let toc = br#"<?xml version="1.0" encoding="UTF-8"?>
+<xar>
+  <toc>
+    <file>
+      <data><offset>0</offset><length>100</length></data>
+      <name>Distribution</name>
+    </file>
+    <file>
+      <name>org.mozilla.firefox.pkg</name>
+      <data><offset>100</offset><length>50</length></data>
+      <file>
+        <data><offset>200</offset><length>5000</length></data>
+        <name>Payload</name>
+      </file>
+      <file>
+        <data><offset>5200</offset><length>100</length></data>
+        <name>Bom</name>
+      </file>
+    </file>
+    <file>
+      <name>org.mozilla.helper.pkg</name>
+      <data><offset>6000</offset><length>30</length></data>
+      <file>
+        <data><offset>6100</offset><length>2000</length></data>
+        <name>Payload</name>
+      </file>
+    </file>
+  </toc>
+</xar>"#;
+        let payloads = parse_xar_toc_for_payloads(toc).unwrap();
+        assert_eq!(payloads.len(), 2);
+        assert_eq!(payloads[0], (200, 5000));
+        assert_eq!(payloads[1], (6100, 2000));
+    }
+
+    #[test]
+    fn test_parse_xar_toc_no_payload() {
+        let toc = br#"<?xml version="1.0" encoding="UTF-8"?>
+<xar>
+  <toc>
+    <file>
+      <data><offset>0</offset><length>100</length></data>
+      <name>SomeOtherFile</name>
+    </file>
+  </toc>
+</xar>"#;
+        let result = parse_xar_toc_for_payloads(toc);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Payload not found"));
+    }
+
+    #[test]
+    fn test_decompress_payload_raw() {
+        let raw = b"070701"; // cpio magic-ish
+        let result = decompress_payload(raw).unwrap();
+        assert_eq!(result, raw);
+    }
+
+    #[test]
+    fn test_decompress_payload_gzip() {
+        // Create a gzip-compressed payload
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let original = b"test data for gzip compression";
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(original).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        let result = decompress_payload(&compressed).unwrap();
+        assert_eq!(result, original);
+    }
+
+    #[test]
+    fn test_decode_pbzx_empty() {
+        let result = decode_pbzx(b"pbz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_binary_id_non_elf_strict() {
+        // Non-ELF data should fail verification
+        let result = verify_binary_id(&[0u8; 100], "abc123");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_verify_binary_id_elf_mismatch() {
+        // Construct a minimal ELF with a build ID that doesn't match
+        let elf_data = build_elf_with_build_id(b"\xaa\xbb\xcc\xdd");
+        let result = verify_binary_id(&elf_data, "11223344");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("mismatch"));
+    }
+
+    #[test]
+    fn test_verify_binary_id_elf_match() {
+        let elf_data = build_elf_with_build_id(b"\xaa\xbb\xcc\xdd");
+        let result = verify_binary_id(&elf_data, "aabbccdd");
+        assert!(result.is_ok());
+    }
+
+    /// Helper: build a minimal 64-bit little-endian ELF with a .note.gnu.build-id section.
+    fn build_elf_with_build_id(id_bytes: &[u8]) -> Vec<u8> {
+        // ELF64 header (64 bytes) + section header string table + .note.gnu.build-id + section headers
+        let mut buf = Vec::new();
+
+        // -- ELF header (64 bytes) --
+        buf.extend_from_slice(&[0x7f, b'E', b'L', b'F']); // e_ident magic
+        buf.push(2); // EI_CLASS = ELFCLASS64
+        buf.push(1); // EI_DATA = ELFDATA2LSB
+        buf.push(1); // EI_VERSION
+        buf.extend_from_slice(&[0; 9]); // padding
+        buf.extend_from_slice(&2u16.to_le_bytes()); // e_type = ET_EXEC
+        buf.extend_from_slice(&0x3eu16.to_le_bytes()); // e_machine = EM_X86_64
+        buf.extend_from_slice(&1u32.to_le_bytes()); // e_version
+        buf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
+        buf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
+        // e_shoff: section headers at end (we'll fill this in)
+        let shoff_pos = buf.len();
+        buf.extend_from_slice(&0u64.to_le_bytes()); // placeholder
+        buf.extend_from_slice(&0u32.to_le_bytes()); // e_flags
+        buf.extend_from_slice(&64u16.to_le_bytes()); // e_ehsize
+        buf.extend_from_slice(&0u16.to_le_bytes()); // e_phentsize
+        buf.extend_from_slice(&0u16.to_le_bytes()); // e_phnum
+        buf.extend_from_slice(&64u16.to_le_bytes()); // e_shentsize
+        buf.extend_from_slice(&3u16.to_le_bytes()); // e_shnum (null + shstrtab + note)
+        buf.extend_from_slice(&1u16.to_le_bytes()); // e_shstrndx = 1
+        assert_eq!(buf.len(), 64);
+
+        // -- Section data --
+
+        // Section header string table (section 1)
+        let shstrtab_offset = buf.len();
+        // Index 0: null byte
+        // Index 1: ".shstrtab\0"
+        // Index 11: ".note.gnu.build-id\0"
+        let shstrtab = b"\0.shstrtab\0.note.gnu.build-id\0";
+        buf.extend_from_slice(shstrtab);
+
+        // .note.gnu.build-id data (section 2)
+        let note_offset = buf.len();
+        let namesz = 4u32; // "GNU\0"
+        let descsz = id_bytes.len() as u32;
+        buf.extend_from_slice(&namesz.to_le_bytes());
+        buf.extend_from_slice(&descsz.to_le_bytes());
+        buf.extend_from_slice(&3u32.to_le_bytes()); // NT_GNU_BUILD_ID
+        buf.extend_from_slice(b"GNU\0");
+        buf.extend_from_slice(id_bytes);
+        let note_size = buf.len() - note_offset;
+
+        // Align to 8 bytes for section headers
+        while buf.len() % 8 != 0 {
+            buf.push(0);
+        }
+
+        // -- Section headers --
+        let shoff = buf.len();
+
+        // Section 0: null
+        buf.extend_from_slice(&[0u8; 64]);
+
+        // Section 1: .shstrtab
+        buf.extend_from_slice(&1u32.to_le_bytes()); // sh_name (index into shstrtab)
+        buf.extend_from_slice(&3u32.to_le_bytes()); // sh_type = SHT_STRTAB
+        buf.extend_from_slice(&0u64.to_le_bytes()); // sh_flags
+        buf.extend_from_slice(&0u64.to_le_bytes()); // sh_addr
+        buf.extend_from_slice(&(shstrtab_offset as u64).to_le_bytes()); // sh_offset
+        buf.extend_from_slice(&(shstrtab.len() as u64).to_le_bytes()); // sh_size
+        buf.extend_from_slice(&0u32.to_le_bytes()); // sh_link
+        buf.extend_from_slice(&0u32.to_le_bytes()); // sh_info
+        buf.extend_from_slice(&1u64.to_le_bytes()); // sh_addralign
+        buf.extend_from_slice(&0u64.to_le_bytes()); // sh_entsize
+
+        // Section 2: .note.gnu.build-id
+        buf.extend_from_slice(&11u32.to_le_bytes()); // sh_name (index 11 in shstrtab)
+        buf.extend_from_slice(&7u32.to_le_bytes()); // sh_type = SHT_NOTE
+        buf.extend_from_slice(&0u64.to_le_bytes()); // sh_flags
+        buf.extend_from_slice(&0u64.to_le_bytes()); // sh_addr
+        buf.extend_from_slice(&(note_offset as u64).to_le_bytes()); // sh_offset
+        buf.extend_from_slice(&(note_size as u64).to_le_bytes()); // sh_size
+        buf.extend_from_slice(&0u32.to_le_bytes()); // sh_link
+        buf.extend_from_slice(&0u32.to_le_bytes()); // sh_info
+        buf.extend_from_slice(&4u64.to_le_bytes()); // sh_addralign
+        buf.extend_from_slice(&0u64.to_le_bytes()); // sh_entsize
+
+        // Patch e_shoff
+        let shoff_bytes = (shoff as u64).to_le_bytes();
+        buf[shoff_pos..shoff_pos + 8].copy_from_slice(&shoff_bytes);
+
+        buf
     }
 }

@@ -19,7 +19,7 @@ use crate::disasm::annotate;
 use crate::disasm::engine::Disassembler;
 use crate::fetch;
 use crate::output::json;
-use crate::output::text::{self, DataSource, FunctionInfo, ModuleInfo};
+use crate::output::text::{self, DataSource, FunctionInfo, ModuleInfo, SymOnlyData, SymOnlyLine, SymOnlyInline};
 use crate::symbols::breakpad::SymFile;
 
 /// Parse a hex offset string (with or without 0x prefix) to u64.
@@ -278,15 +278,16 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                 println!("{output}");
             }
         }
-    } else if sym_file.is_some() {
+    } else if let Some(ref sym) = sym_file {
         // Sym only - no binary available
+        let sym_data = func_record.map(|func| build_sym_only_data(sym, func, demangle_enabled));
         match config.format {
             OutputFormat::Text => {
-                let output = text::format_sym_only(&module_info, &function_info);
+                let output = text::format_sym_only(&module_info, &function_info, sym_data.as_ref());
                 print!("{output}");
             }
             OutputFormat::Json => {
-                let output = json::format_json_sym_only(&module_info, &function_info);
+                let output = json::format_json_sym_only(&module_info, &function_info, sym_data.as_ref());
                 println!("{output}");
             }
         }
@@ -539,5 +540,69 @@ fn estimate_public_size(publics: &[crate::symbols::breakpad::PublicRecord], addr
         (next_addr - addr).min(MAX_ESTIMATED_SIZE)
     } else {
         MAX_ESTIMATED_SIZE
+    }
+}
+
+/// Build enriched sym-only data from a parsed .sym file and function record.
+fn build_sym_only_data(
+    sym: &SymFile,
+    func: &crate::symbols::breakpad::FuncRecord,
+    demangle: bool,
+) -> SymOnlyData {
+    use std::collections::BTreeSet;
+
+    // Source lines
+    let source_lines: Vec<SymOnlyLine> = func
+        .lines
+        .iter()
+        .map(|lr| SymOnlyLine {
+            address: lr.address,
+            size: lr.size,
+            file: sym.files.get(lr.file_index).cloned().unwrap_or_default(),
+            line: lr.line,
+        })
+        .collect();
+
+    // Inline frames — one entry per range per inline record
+    let inline_frames: Vec<SymOnlyInline> = func
+        .inlines
+        .iter()
+        .flat_map(|inl| {
+            let name = sym
+                .inline_origins
+                .get(inl.origin_index)
+                .cloned()
+                .unwrap_or_default();
+            let name = maybe_demangle(&name, demangle);
+            let call_file = sym.files.get(inl.call_file_index).cloned();
+            inl.ranges.iter().map(move |&(start, size)| SymOnlyInline {
+                address: start,
+                end_address: start + size,
+                depth: inl.depth,
+                name: name.clone(),
+                call_file: call_file.clone(),
+                call_line: inl.call_line,
+            })
+        })
+        .collect();
+
+    // Collect unique source files
+    let mut file_set = BTreeSet::new();
+    for sl in &source_lines {
+        if !sl.file.is_empty() {
+            file_set.insert(sl.file.clone());
+        }
+    }
+    for inf in &inline_frames {
+        if let Some(ref f) = inf.call_file {
+            file_set.insert(f.clone());
+        }
+    }
+    let source_files: Vec<String> = file_set.into_iter().collect();
+
+    SymOnlyData {
+        source_lines,
+        inline_frames,
+        source_files,
     }
 }

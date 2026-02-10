@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::disasm::annotate::AnnotatedInstruction;
 
-use super::text::{DataSource, FunctionInfo, ModuleInfo};
+use super::text::{DataSource, FunctionInfo, ModuleInfo, SymOnlyData};
 
 #[derive(Serialize)]
 struct JsonDisasmOutput {
@@ -58,6 +58,40 @@ struct JsonInlineFrame {
     call_file: Option<String>,
     call_line: u32,
     depth: u32,
+}
+
+#[derive(Serialize)]
+struct JsonSymOnlyOutput {
+    module: JsonModule,
+    function: JsonFunction,
+    instructions: Vec<JsonInstruction>,
+    source: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    source_lines: Vec<JsonSourceLine>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    inline_frames: Vec<JsonSymOnlyInline>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    source_files: Vec<String>,
+    warnings: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct JsonSourceLine {
+    address: String,
+    size: String,
+    file: String,
+    line: u32,
+}
+
+#[derive(Serialize)]
+struct JsonSymOnlyInline {
+    address: String,
+    end_address: String,
+    depth: u32,
+    function: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    call_file: Option<String>,
+    call_line: u32,
 }
 
 #[derive(Serialize)]
@@ -143,12 +177,52 @@ pub fn format_json(
 }
 
 /// Format a "sym only" result as JSON (no binary available).
-pub fn format_json_sym_only(module: &ModuleInfo, function: &FunctionInfo) -> String {
-    let output = JsonDisasmOutput {
+///
+/// When `sym_data` is `Some`, includes enriched source line mapping, inline
+/// frames, and source file list. When `None`, these arrays are omitted.
+pub fn format_json_sym_only(
+    module: &ModuleInfo,
+    function: &FunctionInfo,
+    sym_data: Option<&SymOnlyData>,
+) -> String {
+    let (source_lines, inline_frames, source_files) = match sym_data {
+        Some(data) => {
+            let sl: Vec<JsonSourceLine> = data
+                .source_lines
+                .iter()
+                .map(|s| JsonSourceLine {
+                    address: format!("0x{:x}", s.address),
+                    size: format!("0x{:x}", s.size),
+                    file: s.file.clone(),
+                    line: s.line,
+                })
+                .collect();
+            let inf: Vec<JsonSymOnlyInline> = data
+                .inline_frames
+                .iter()
+                .map(|i| JsonSymOnlyInline {
+                    address: format!("0x{:x}", i.address),
+                    end_address: format!("0x{:x}", i.end_address),
+                    depth: i.depth,
+                    function: i.name.clone(),
+                    call_file: i.call_file.clone(),
+                    call_line: i.call_line,
+                })
+                .collect();
+            let sf: Vec<String> = data.source_files.clone();
+            (sl, inf, sf)
+        }
+        None => (Vec::new(), Vec::new(), Vec::new()),
+    };
+
+    let output = JsonSymOnlyOutput {
         module: JsonModule::from_info(module),
         function: JsonFunction::from_info(function),
         instructions: Vec::new(),
         source: DataSource::SymOnly.to_string(),
+        source_lines,
+        inline_frames,
+        source_files,
         warnings: Vec::new(),
     };
     serde_json::to_string_pretty(&output).expect("JSON serialization should not fail")
@@ -350,12 +424,83 @@ mod tests {
         let module = make_module_info();
         let function = make_function_info();
 
-        let json_str = format_json_sym_only(&module, &function);
+        let json_str = format_json_sym_only(&module, &function, None);
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         assert_eq!(v["source"], "sym");
         assert!(v["instructions"].as_array().unwrap().is_empty());
         assert_eq!(v["function"]["name"], "TestFunction");
+        // No enriched fields when sym_data is None
+        assert!(v.get("source_lines").is_none());
+        assert!(v.get("inline_frames").is_none());
+        assert!(v.get("source_files").is_none());
+    }
+
+    #[test]
+    fn test_json_sym_only_enriched() {
+        use crate::output::text::{SymOnlyData, SymOnlyLine, SymOnlyInline};
+
+        let module = make_module_info();
+        let function = make_function_info();
+
+        let sym_data = SymOnlyData {
+            source_lines: vec![
+                SymOnlyLine {
+                    address: 0x1a3e80,
+                    size: 0x10,
+                    file: "src/main.cpp".to_string(),
+                    line: 10,
+                },
+                SymOnlyLine {
+                    address: 0x1a3e90,
+                    size: 0x30,
+                    file: "src/main.cpp".to_string(),
+                    line: 11,
+                },
+            ],
+            inline_frames: vec![SymOnlyInline {
+                address: 0x1a3e90,
+                end_address: 0x1a3ec0,
+                depth: 0,
+                name: "InlinedHelper".to_string(),
+                call_file: Some("src/helper.h".to_string()),
+                call_line: 40,
+            }],
+            source_files: vec![
+                "src/main.cpp".to_string(),
+                "src/helper.h".to_string(),
+            ],
+        };
+
+        let json_str = format_json_sym_only(&module, &function, Some(&sym_data));
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(v["source"], "sym");
+        assert!(v["instructions"].as_array().unwrap().is_empty());
+
+        // source_lines
+        let sl = v["source_lines"].as_array().unwrap();
+        assert_eq!(sl.len(), 2);
+        assert_eq!(sl[0]["address"], "0x1a3e80");
+        assert_eq!(sl[0]["size"], "0x10");
+        assert_eq!(sl[0]["file"], "src/main.cpp");
+        assert_eq!(sl[0]["line"], 10);
+
+        // inline_frames
+        let inf = v["inline_frames"].as_array().unwrap();
+        assert_eq!(inf.len(), 1);
+        assert_eq!(inf[0]["address"], "0x1a3e90");
+        assert_eq!(inf[0]["end_address"], "0x1a3ec0");
+        assert_eq!(inf[0]["depth"], 0);
+        assert_eq!(inf[0]["function"], "InlinedHelper");
+        assert_eq!(inf[0]["call_file"], "src/helper.h");
+        assert_eq!(inf[0]["call_line"], 40);
+
+        // source_files
+        let sf = v["source_files"].as_array().unwrap();
+        assert_eq!(sf.len(), 2);
+        assert_eq!(sf[0], "src/main.cpp");
+        assert_eq!(sf[1], "src/helper.h");
     }
 
     #[test]

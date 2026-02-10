@@ -94,6 +94,7 @@ impl Default for Config {
                 "https://debuginfod.debian.net/".to_string(),
                 "https://debuginfod.archlinux.org/".to_string(),
                 "https://debuginfod.elfutils.org/".to_string(),
+                "https://debuginfod.centos.org/".to_string(),
             ],
             timeout_seconds: 30,
             archive_timeout_seconds: 300,
@@ -365,7 +366,7 @@ mod tests {
         assert!(!config.no_demangle);
         assert!(!config.offline);
         assert_eq!(config.symbol_servers.len(), 2);
-        assert_eq!(config.debuginfod_urls.len(), 5);
+        assert_eq!(config.debuginfod_urls.len(), 6);
         assert!(config.user_agent.starts_with("symdis/"));
     }
 

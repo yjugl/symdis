@@ -345,8 +345,8 @@ pub async fn fetch_binary_ftp(
         }
     };
 
-    // Extract binary from archive and verify build ID
-    let binary_data = archive::extract_and_verify(&archive_data, code_file, &build_id, &locator.platform)
+    // Extract binary from archive and verify build ID (best-effort: distro builds may differ)
+    let binary_data = archive::extract_and_verify(&archive_data, code_file, &build_id, &locator.platform, false)
         .context("FTP archive extraction")?;
 
     let path = cache.store_binary(&key, &binary_data)?;
