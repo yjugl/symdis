@@ -13,6 +13,7 @@ use super::FetchResult;
 const FTP_BASE: &str = "https://ftp.mozilla.org/pub/firefox";
 const DEVEDITION_FTP_BASE: &str = "https://ftp.mozilla.org/pub/devedition";
 const THUNDERBIRD_FTP_BASE: &str = "https://ftp.mozilla.org/pub/thunderbird";
+const FENIX_FTP_BASE: &str = "https://ftp.mozilla.org/pub/fenix";
 
 /// Parameters needed to locate a Mozilla product build archive on the FTP server.
 pub struct ArchiveLocator {
@@ -35,8 +36,61 @@ pub fn ftp_platform(os: &str, arch: &str) -> Option<&'static str> {
         }
     } else if os.eq_ignore_ascii_case("mac") {
         Some("mac") // Universal binary, single platform directory
+    } else if os.eq_ignore_ascii_case("android") {
+        Some("android")
     } else {
         None
+    }
+}
+
+/// Map a Breakpad architecture to an Android ABI name.
+pub fn fenix_arch(breakpad_arch: &str) -> Option<&'static str> {
+    match breakpad_arch {
+        "arm64" => Some("arm64-v8a"),
+        "arm" => Some("armeabi-v7a"),
+        "x86_64" => Some("x86_64"),
+        "x86" => Some("x86"),
+        _ => None,
+    }
+}
+
+/// Resolve the effective product and platform for FTP archive fallback.
+///
+/// Rules:
+/// - `--product fenix` -> always treated as Fenix regardless of OS
+///   (Android builds have `MODULE Linux` in their sym files)
+/// - `--product firefox` + Android OS -> treated as fenix
+/// - Other products + Android OS -> error
+/// - Normal products + non-Android OS -> use ftp_platform()
+pub fn resolve_product_platform(
+    product: &str,
+    os: &str,
+    arch: &str,
+) -> Result<Option<(String, String)>> {
+    let is_android = os.eq_ignore_ascii_case("android");
+
+    match product {
+        "fenix" => {
+            // Trust the user — Android builds have MODULE line saying "Linux",
+            // so we can't rely on OS detection.
+            let abi = fenix_arch(arch)
+                .ok_or_else(|| anyhow::anyhow!("unsupported architecture for Fenix: {arch}"))?;
+            Ok(Some(("fenix".to_string(), format!("android-{abi}"))))
+        }
+        "firefox" if is_android => {
+            let abi = fenix_arch(arch)
+                .ok_or_else(|| anyhow::anyhow!("unsupported architecture for Fenix: {arch}"))?;
+            Ok(Some(("fenix".to_string(), format!("android-{abi}"))))
+        }
+        _ if is_android => {
+            bail!("product '{product}' is not available for Android")
+        }
+        _ => {
+            match ftp_platform(os, arch) {
+                Some(platform) => Ok(Some((product.to_string(), platform.to_string()))),
+                None => Ok(None),
+            }
+        }
     }
 }
 
@@ -53,11 +107,16 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
         );
     }
 
+    // Fenix has a completely different URL structure — handle it early
+    if locator.product == "fenix" {
+        return build_fenix_archive_url(locator);
+    }
+
     // Determine FTP base URL and filename prefix based on product
     let (ftp_base, prefix, prefix_cap) = match locator.product.as_str() {
         "firefox" => (FTP_BASE, "firefox", "Firefox"),
         "thunderbird" => (THUNDERBIRD_FTP_BASE, "thunderbird", "Thunderbird"),
-        other => bail!("unknown product: {other} (expected: firefox, thunderbird)"),
+        other => bail!("unknown product: {other} (expected: firefox, thunderbird, fenix)"),
     };
 
     match locator.channel.as_str() {
@@ -132,6 +191,49 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
     }
 }
 
+/// Construct the FTP archive URL for Fenix (Firefox for Android).
+///
+/// Fenix URLs have a different structure from Firefox/Thunderbird:
+/// - Release/Beta: `{FENIX_FTP_BASE}/releases/{version}/android/fenix-{version}-android-{abi}/fenix-{version}.multi.android-{abi}.apk`
+/// - Nightly: `{FENIX_FTP_BASE}/nightly/{year}/{month}/{timestamp}-fenix-{version}-android-{abi}/fenix-{version}.multi.android-{abi}.apk`
+fn build_fenix_archive_url(locator: &ArchiveLocator) -> Result<String> {
+    let version = &locator.version;
+    let abi = locator.platform.strip_prefix("android-")
+        .ok_or_else(|| anyhow::anyhow!("Fenix platform must be android-{{abi}}, got: {}", locator.platform))?;
+
+    match locator.channel.as_str() {
+        "release" | "beta" => {
+            Ok(format!(
+                "{FENIX_FTP_BASE}/releases/{version}/android/fenix-{version}-android-{abi}/fenix-{version}.multi.android-{abi}.apk"
+            ))
+        }
+        "nightly" => {
+            let build_id = locator.build_id.as_deref()
+                .ok_or_else(|| anyhow::anyhow!("--build-id is required for nightly channel"))?;
+            if build_id.len() != 14 || !build_id.chars().all(|c| c.is_ascii_digit()) {
+                bail!("nightly build ID must be 14 digits (YYYYMMDDHHmmSS), got: {build_id}");
+            }
+            let year = &build_id[0..4];
+            let month = &build_id[4..6];
+            let day = &build_id[6..8];
+            let hour = &build_id[8..10];
+            let min = &build_id[10..12];
+            let sec = &build_id[12..14];
+            let timestamp = format!("{year}-{month}-{day}-{hour}-{min}-{sec}");
+            Ok(format!(
+                "{FENIX_FTP_BASE}/nightly/{year}/{month}/{timestamp}-fenix-{version}-android-{abi}/fenix-{version}.multi.android-{abi}.apk"
+            ))
+        }
+        "esr" => {
+            bail!("ESR channel is not available for Fenix")
+        }
+        "aurora" => {
+            bail!("aurora channel is not available for Fenix")
+        }
+        other => bail!("unknown channel: {other} (expected: release, beta, nightly)"),
+    }
+}
+
 /// Extract a file from a tar.xz archive by matching the filename (ignoring directory prefix).
 /// Returns the file contents as bytes.
 pub fn extract_from_tar_xz(data: &[u8], target_name: &str) -> Result<Vec<u8>> {
@@ -144,6 +246,20 @@ pub fn extract_from_tar_xz(data: &[u8], target_name: &str) -> Result<Vec<u8>> {
 pub fn extract_from_tar_bz2(data: &[u8], target_name: &str) -> Result<Vec<u8>> {
     let decoder = bzip2::read::BzDecoder::new(data);
     extract_from_tar(decoder, target_name)
+}
+
+/// Extract a file from an APK (ZIP) archive.
+///
+/// Looks for `lib/{abi}/{target_name}` inside the APK.
+pub fn extract_from_apk(data: &[u8], target_name: &str, abi: &str) -> Result<Vec<u8>> {
+    let cursor = std::io::Cursor::new(data);
+    let mut archive = zip::ZipArchive::new(cursor).context("opening APK as ZIP")?;
+    let entry_path = format!("lib/{abi}/{target_name}");
+    let mut file = archive.by_name(&entry_path)
+        .with_context(|| format!("'{entry_path}' not found in APK"))?;
+    let mut buf = Vec::new();
+    file.read_to_end(&mut buf).context("reading APK entry")?;
+    Ok(buf)
 }
 
 /// Extract a file from a tar archive (any decompressor) by matching the filename.
@@ -620,14 +736,19 @@ pub fn extract_and_verify(
     archive_data: &[u8],
     binary_name: &str,
     expected_build_id: &str,
-    _platform: &str,
+    platform: &str,
 ) -> Result<Vec<u8>> {
     info!(
         "extracting {binary_name} from archive ({:.1} MB)",
         archive_data.len() as f64 / 1_048_576.0
     );
 
-    let binary_data = if archive_data.starts_with(b"xar!") {
+    let binary_data = if archive_data.starts_with(b"PK\x03\x04") {
+        let abi = platform.strip_prefix("android-")
+            .ok_or_else(|| anyhow::anyhow!("APK extraction requires android platform, got: {platform}"))?;
+        extract_from_apk(archive_data, binary_name, abi)
+            .with_context(|| format!("extracting {binary_name} from APK"))?
+    } else if archive_data.starts_with(b"xar!") {
         extract_from_pkg(archive_data, binary_name)
             .with_context(|| format!("extracting {binary_name} from PKG"))?
     } else if archive_data.starts_with(b"\xfd7zXZ\x00") {
@@ -637,7 +758,7 @@ pub fn extract_and_verify(
         extract_from_tar_bz2(archive_data, binary_name)
             .with_context(|| format!("extracting {binary_name} from tar.bz2"))?
     } else {
-        bail!("unrecognized archive format (expected XAR, tar.xz, or tar.bz2)")
+        bail!("unrecognized archive format (expected APK, XAR, tar.xz, or tar.bz2)")
     };
 
     verify_binary_id(&binary_data, expected_build_id)?;
@@ -1329,6 +1450,175 @@ mod tests {
         let elf_data = build_elf_with_build_id(b"\xaa\xbb\xcc\xdd");
         let result = verify_binary_id(&elf_data, "aabbccdd");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_ftp_platform_android() {
+        assert_eq!(ftp_platform("Android", "arm64"), Some("android"));
+        assert_eq!(ftp_platform("android", "x86_64"), Some("android"));
+    }
+
+    #[test]
+    fn test_fenix_arch() {
+        assert_eq!(fenix_arch("arm64"), Some("arm64-v8a"));
+        assert_eq!(fenix_arch("arm"), Some("armeabi-v7a"));
+        assert_eq!(fenix_arch("x86_64"), Some("x86_64"));
+        assert_eq!(fenix_arch("x86"), Some("x86"));
+        assert_eq!(fenix_arch("mips"), None);
+    }
+
+    #[test]
+    fn test_build_archive_url_fenix_release() {
+        let locator = ArchiveLocator {
+            product: "fenix".to_string(),
+            version: "134.0.2".to_string(),
+            channel: "release".to_string(),
+            platform: "android-arm64-v8a".to_string(),
+            build_id: None,
+        };
+        let url = build_archive_url(&locator).unwrap();
+        assert_eq!(
+            url,
+            "https://ftp.mozilla.org/pub/fenix/releases/134.0.2/android/fenix-134.0.2-android-arm64-v8a/fenix-134.0.2.multi.android-arm64-v8a.apk"
+        );
+    }
+
+    #[test]
+    fn test_build_archive_url_fenix_beta() {
+        let locator = ArchiveLocator {
+            product: "fenix".to_string(),
+            version: "135.0b5".to_string(),
+            channel: "beta".to_string(),
+            platform: "android-armeabi-v7a".to_string(),
+            build_id: None,
+        };
+        let url = build_archive_url(&locator).unwrap();
+        assert_eq!(
+            url,
+            "https://ftp.mozilla.org/pub/fenix/releases/135.0b5/android/fenix-135.0b5-android-armeabi-v7a/fenix-135.0b5.multi.android-armeabi-v7a.apk"
+        );
+    }
+
+    #[test]
+    fn test_build_archive_url_fenix_nightly() {
+        let locator = ArchiveLocator {
+            product: "fenix".to_string(),
+            version: "136.0a1".to_string(),
+            channel: "nightly".to_string(),
+            platform: "android-arm64-v8a".to_string(),
+            build_id: Some("20250601093042".to_string()),
+        };
+        let url = build_archive_url(&locator).unwrap();
+        assert_eq!(
+            url,
+            "https://ftp.mozilla.org/pub/fenix/nightly/2025/06/2025-06-01-09-30-42-fenix-136.0a1-android-arm64-v8a/fenix-136.0a1.multi.android-arm64-v8a.apk"
+        );
+    }
+
+    #[test]
+    fn test_build_archive_url_fenix_esr_rejected() {
+        let locator = ArchiveLocator {
+            product: "fenix".to_string(),
+            version: "128.10.0".to_string(),
+            channel: "esr".to_string(),
+            platform: "android-arm64-v8a".to_string(),
+            build_id: None,
+        };
+        let err = build_archive_url(&locator).unwrap_err();
+        assert!(err.to_string().contains("not available for Fenix"));
+    }
+
+    #[test]
+    fn test_build_archive_url_fenix_aurora_rejected() {
+        let locator = ArchiveLocator {
+            product: "fenix".to_string(),
+            version: "135.0b9".to_string(),
+            channel: "aurora".to_string(),
+            platform: "android-arm64-v8a".to_string(),
+            build_id: None,
+        };
+        let err = build_archive_url(&locator).unwrap_err();
+        assert!(err.to_string().contains("not available for Fenix"));
+    }
+
+    #[test]
+    fn test_extract_from_apk() {
+        use std::io::Write;
+
+        // Create a synthetic ZIP with lib/arm64-v8a/libtest.so
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("lib/arm64-v8a/libtest.so", options).unwrap();
+            zip.write_all(b"fake ELF data").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let result = extract_from_apk(&buf, "libtest.so", "arm64-v8a").unwrap();
+        assert_eq!(result, b"fake ELF data");
+    }
+
+    #[test]
+    fn test_extract_from_apk_not_found() {
+        use std::io::Write;
+
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("lib/arm64-v8a/other.so", options).unwrap();
+            zip.write_all(b"data").unwrap();
+            zip.finish().unwrap();
+        }
+
+        let result = extract_from_apk(&buf, "libtest.so", "arm64-v8a");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found in APK"));
+    }
+
+    #[test]
+    fn test_resolve_product_platform_firefox_android() {
+        let result = resolve_product_platform("firefox", "Android", "arm64").unwrap();
+        assert_eq!(result, Some(("fenix".to_string(), "android-arm64-v8a".to_string())));
+    }
+
+    #[test]
+    fn test_resolve_product_platform_fenix_linux() {
+        // Android builds have MODULE line saying "Linux", so --product fenix
+        // should work regardless of OS.
+        let result = resolve_product_platform("fenix", "Linux", "arm").unwrap();
+        assert_eq!(result, Some(("fenix".to_string(), "android-armeabi-v7a".to_string())));
+    }
+
+    #[test]
+    fn test_resolve_product_platform_fenix_android() {
+        let result = resolve_product_platform("fenix", "Android", "arm64").unwrap();
+        assert_eq!(result, Some(("fenix".to_string(), "android-arm64-v8a".to_string())));
+    }
+
+    #[test]
+    fn test_resolve_product_platform_thunderbird_android() {
+        let result = resolve_product_platform("thunderbird", "Android", "arm64");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not available for Android"));
+    }
+
+    #[test]
+    fn test_resolve_product_platform_firefox_linux() {
+        // Normal case — should pass through to ftp_platform
+        let result = resolve_product_platform("firefox", "Linux", "x86_64").unwrap();
+        assert_eq!(result, Some(("firefox".to_string(), "linux-x86_64".to_string())));
+    }
+
+    #[test]
+    fn test_resolve_product_platform_unsupported_os() {
+        let result = resolve_product_platform("firefox", "Windows", "x86_64").unwrap();
+        assert_eq!(result, None);
     }
 
     /// Helper: build a minimal 64-bit little-endian ELF with a .note.gnu.build-id section.

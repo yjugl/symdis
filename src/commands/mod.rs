@@ -28,7 +28,7 @@ const DISASM_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   (from release info)    --channel           release|beta|esr|nightly|aurora
   (from release info)    --build-id          14-digit timestamp (nightly only)
   (snap source paths)    --snap              Snap package name (auto-detected)
-  (from product name)    --product           firefox (default) or thunderbird
+  (from product name)    --product           firefox|thunderbird|fenix (default: firefox)
 
 BINARY FETCH CHAIN:
 
@@ -123,7 +123,18 @@ TIPS:
   - For nightly builds, --build-id is the 14-digit build timestamp
     (YYYYMMDDHHmmSS) from the crash report's build_id field.
   - For Thunderbird crashes, add --product thunderbird to fetch
-    binaries from the Thunderbird FTP archive instead of Firefox."#;
+    binaries from the Thunderbird FTP archive instead of Firefox.
+  - For Fenix (Firefox for Android) crashes, use --product fenix or
+    just --product firefox (auto-promoted to fenix for Android modules).
+    Requires --version and --channel for FTP archive fallback.
+
+  # Fenix (Firefox for Android) module:
+  symdis disasm \
+      --debug-file libxul.so \
+      --debug-id AABBCCDD11223344AABBCCDD11223344A \
+      --product fenix \
+      --version 134.0.2 --channel release \
+      --offset 0x1234567"#;
 
 const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 
@@ -164,7 +175,7 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   (from release info)    --channel       release|beta|esr|nightly|aurora
   (from release info)    --build-id      14-digit timestamp (nightly only)
   (snap source paths)    --snap          Snap package name (explicit only)
-  (from product name)    --product       firefox (default) or thunderbird
+  (from product name)    --product       firefox|thunderbird|fenix (default: firefox)
 
   Pre-fetches the .sym file and native binary into the local cache so
   that subsequent disasm calls are instant cache hits. Useful when you
@@ -349,7 +360,8 @@ pub struct DisasmArgs {
     #[arg(long)]
     pub snap: Option<String>,
 
-    /// Mozilla product (firefox, thunderbird). Defaults to firefox.
+    /// Mozilla product (firefox, thunderbird, fenix). Defaults to firefox.
+    /// For Android modules, --product firefox is auto-promoted to fenix.
     #[arg(long, default_value = "firefox")]
     pub product: String,
 }
@@ -415,7 +427,7 @@ pub struct InfoArgs {
     #[arg(long)]
     pub build_id: Option<String>,
 
-    /// Mozilla product (firefox, thunderbird). Defaults to firefox.
+    /// Mozilla product (firefox, thunderbird, fenix). Defaults to firefox.
     #[arg(long, default_value = "firefox")]
     pub product: String,
 }
@@ -455,7 +467,7 @@ pub struct FetchArgs {
     #[arg(long)]
     pub snap: Option<String>,
 
-    /// Mozilla product (firefox, thunderbird). Defaults to firefox.
+    /// Mozilla product (firefox, thunderbird, fenix). Defaults to firefox.
     #[arg(long, default_value = "firefox")]
     pub product: String,
 }

@@ -145,35 +145,40 @@ pub async fn run(args: &FetchArgs, config: &Config) -> Result<()> {
                 .map(|s| s.module.arch.as_str())
                 .unwrap_or("");
             if let (Some(version), Some(channel)) = (&args.version, &args.channel) {
-                if let Some(platform) = fetch::archive::ftp_platform(os, arch_str) {
-                    let archive_client = fetch::build_archive_http_client(config)?;
-                    let locator = fetch::archive::ArchiveLocator {
-                        product: args.product.clone(),
-                        version: version.clone(),
-                        channel: channel.clone(),
-                        platform: platform.to_string(),
-                        build_id: args.build_id.clone(),
-                    };
-                    let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                    match fetch::fetch_binary_ftp(
-                        &archive_client,
-                        &cache,
-                        config,
-                        code_file,
-                        args.code_id.as_deref(),
-                        &args.debug_id,
-                        &locator,
-                    )
-                    .await
-                    {
-                        Ok(path) => Ok(path),
-                        Err(ftp_err) => {
-                            warn!("FTP archive fallback failed: {ftp_err}");
-                            Err(e)
+                match fetch::archive::resolve_product_platform(&args.product, os, arch_str) {
+                    Ok(Some((product, platform))) => {
+                        let archive_client = fetch::build_archive_http_client(config)?;
+                        let locator = fetch::archive::ArchiveLocator {
+                            product,
+                            version: version.clone(),
+                            channel: channel.clone(),
+                            platform,
+                            build_id: args.build_id.clone(),
+                        };
+                        let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                        match fetch::fetch_binary_ftp(
+                            &archive_client,
+                            &cache,
+                            config,
+                            code_file,
+                            args.code_id.as_deref(),
+                            &args.debug_id,
+                            &locator,
+                        )
+                        .await
+                        {
+                            Ok(path) => Ok(path),
+                            Err(ftp_err) => {
+                                warn!("FTP archive fallback failed: {ftp_err}");
+                                Err(e)
+                            }
                         }
                     }
-                } else {
-                    Err(e)
+                    Ok(None) => Err(e),
+                    Err(product_err) => {
+                        warn!("product/platform resolution failed: {product_err}");
+                        Err(e)
+                    }
                 }
             } else {
                 Err(e)
