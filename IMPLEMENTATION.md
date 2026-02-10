@@ -988,6 +988,121 @@ tracing-subscriber = "0.3"
 
 ---
 
+## Phase 17: Thunderbird Support
+
+**Goal:** Support Thunderbird crash reports by routing FTP archive downloads to `https://ftp.mozilla.org/pub/thunderbird/` instead of the Firefox FTP base.
+
+### Background
+
+Thunderbird shares the same Breakpad symbol format, the same symbol server (Tecken), and the same binary formats (PE, ELF, Mach-O) as Firefox. The `.sym` files, binary parsing, disassembly engine, and annotation pipeline all work unmodified. The only difference is the FTP archive download path: Thunderbird builds are published under `/pub/thunderbird/releases/` with the same directory structure as Firefox (`<version>/<platform>/en-US/`).
+
+The archive formats match Firefox: `.tar.xz` (or `.tar.bz2` for older releases) on Linux, `.pkg` on macOS. Thunderbird supports the same channels: release, beta, ESR.
+
+### Tasks
+
+1. **Add `--product` CLI flag to `disasm`, `fetch`, and `info` commands.**
+   - Type: `Option<String>`, values: `firefox` (default), `thunderbird`.
+   - Add to `DisasmArgs`, `FetchArgs`, `InfoArgs` structs in `commands/mod.rs`.
+   - Update help text to document the flag.
+   - Pass through to `ArchiveLocator`.
+
+2. **Extend `ArchiveLocator` with a `product` field.**
+   - In `src/fetch/archive.rs`, add `pub product: String` to `ArchiveLocator`.
+   - Default to `"firefox"` at all call sites.
+
+3. **Route FTP URLs by product.**
+   - In `build_archive_url`, select the FTP base URL based on `locator.product`:
+     - `"firefox"` → `https://ftp.mozilla.org/pub/firefox`
+     - `"thunderbird"` → `https://ftp.mozilla.org/pub/thunderbird`
+   - Thunderbird uses the same URL structure for release/beta/ESR/nightly as Firefox.
+   - Thunderbird filenames use the `thunderbird` prefix instead of `firefox` (e.g., `thunderbird-147.0.tar.xz`, `Thunderbird%20147.0.pkg`).
+   - The aurora channel is not applicable to Thunderbird (Developer Edition does not exist for Thunderbird).
+
+4. **Update all `ArchiveLocator` construction sites.**
+   - In `commands/disasm.rs`, `commands/fetch.rs`, `commands/info.rs`: pass `args.product` (or default `"firefox"`) to the locator.
+
+5. **Add tests.**
+   - Test `build_archive_url` with `product: "thunderbird"` for release, ESR, and macOS.
+   - Test that the aurora channel errors for Thunderbird.
+   - Test filenames use "thunderbird" prefix.
+
+### Acceptance Criteria
+
+- `symdis disasm --product thunderbird --version 140.7.1esr --channel esr ...` fetches from `/pub/thunderbird/releases/`.
+- `--product firefox` (or omitting `--product`) behaves exactly as before — no regressions.
+- `clippy` clean, all tests pass.
+
+---
+
+## Phase 18: Fenix (Firefox for Android) Support
+
+**Goal:** Support Fenix crash reports by extracting native `.so` libraries from APK archives downloaded from `https://ftp.mozilla.org/pub/fenix/`.
+
+### Background
+
+Fenix (Firefox for Android) is distributed as APK files, which are ZIP archives. Native libraries (e.g., `libxul.so`) are stored inside the APK under `lib/<abi>/` (e.g., `lib/arm64-v8a/libxul.so`). The APK files are published under `/pub/fenix/releases/<version>/android/fenix-<version>-android-<arch>/`.
+
+Fenix uses the same Breakpad symbol format and the same Tecken symbol server as Firefox. The binary format is ELF (Android is Linux-based). The disassembly engine, annotation pipeline, and ELF parser all work unmodified. The key new capability needed is APK (ZIP) extraction.
+
+### Architecture-specific APKs
+
+Fenix publishes per-architecture APKs:
+- `fenix-<version>-android-arm64-v8a/` — AArch64 (most common)
+- `fenix-<version>-android-armeabi-v7a/` — ARM 32-bit
+- `fenix-<version>-android-x86_64/` — x86-64 (emulator)
+- `fenix-<version>-android/` — universal APK (all architectures, larger)
+
+### Tasks
+
+1. **Map Breakpad arch strings to Fenix APK architecture directories.**
+   - `"arm64"` → `"arm64-v8a"`
+   - `"arm"` → `"armeabi-v7a"`
+   - `"x86_64"` → `"x86_64"`
+   - Add a `fenix_arch()` helper in `archive.rs`.
+
+2. **Construct Fenix FTP URLs.**
+   - Extend `build_archive_url` to handle `product: "fenix"`:
+     ```
+     https://ftp.mozilla.org/pub/fenix/releases/<version>/android/fenix-<version>-android-<arch>/fenix-<version>.multi.android-<arch>.apk
+     ```
+   - Only the release channel is supported (Fenix nightly uses a different distribution mechanism).
+   - Fenix does not have ESR, beta, or aurora channels on the FTP.
+
+3. **Add APK (ZIP) extraction.**
+   - APK files are standard ZIP archives.
+   - Add `extract_from_apk(data: &[u8], target_name: &str, arch: &str) -> Result<Vec<u8>>`.
+   - Search for `lib/<abi>/<target_name>` inside the ZIP (e.g., `lib/arm64-v8a/libxul.so`).
+   - Use the `zip` crate for extraction.
+   - Detect APK format by ZIP magic bytes (`PK\x03\x04`) in `extract_and_verify`.
+
+4. **Map Breakpad OS to Fenix platform.**
+   - Fenix crashes report OS as `"Android"` in the `.sym` file.
+   - Add `"android"` to `ftp_platform()` mapping, returning a suitable platform string.
+
+5. **Update `ArchiveLocator` construction and `download_archive`.**
+   - For Fenix, the platform directory structure is different (no `<platform>/en-US/` prefix).
+   - The filename pattern differs (`fenix-<version>.multi.android-<arch>.apk`).
+
+6. **Add tests.**
+   - Test URL construction for each architecture.
+   - Test APK extraction with a synthetic ZIP containing `lib/<abi>/libtest.so`.
+   - Test that unsupported channels error for Fenix.
+
+### Dependencies to add
+
+```toml
+zip = "2.6"
+```
+
+### Acceptance Criteria
+
+- `symdis disasm --product fenix --version 147.0 --channel release ...` fetches the APK and extracts `libxul.so`.
+- Architecture is auto-detected from the `.sym` file.
+- Build ID verification works for the extracted ELF.
+- `clippy` clean, all tests pass.
+
+---
+
 ## Phase Summary
 
 | Phase | Description | Key Deliverable | Depends On |
@@ -1009,6 +1124,8 @@ tracing-subscriber = "0.3"
 | 14 | Configuration file | Persistent settings | 1, 2 |
 | 15 | Robustness & polish | Production-ready error handling | All |
 | 16 | Integration testing | Verified with real data | All |
+| 17 | Thunderbird support | FTP archive routing by product | 16 |
+| 18 | Fenix (Android) support | APK extraction for native libraries | 17 |
 
 ### Dependency Graph
 
@@ -1038,6 +1155,12 @@ Phase 0 ──┬──> Phase 1 ──> Phase 2 ──┐
                     │
                     v
                Phase 16
+                    │
+                    v
+               Phase 17
+                    │
+                    v
+               Phase 18
 ```
 
-Phases 10, 11, 13 are independent of each other and can be developed in parallel after Phase 6. (Phase 12 has been removed.)
+Phases 10, 11, 13 are independent of each other and can be developed in parallel after Phase 6. Phases 17-18 add multi-product support. (Phase 12 has been removed.)
