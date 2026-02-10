@@ -189,10 +189,17 @@ pub async fn fetch_binary(
 
     // Store miss marker
     cache.store_binary_miss(&key)?;
-    bail!(
-        "binary not found: {code_file}/{code_id}\n\
-         Tried: Mozilla Tecken, Microsoft Symbol Server"
-    )
+    if looks_like_windows_binary(code_file) {
+        bail!(
+            "binary not found: {code_file}/{code_id}\n\
+             Tried: Mozilla Tecken, Microsoft Symbol Server"
+        )
+    } else {
+        bail!(
+            "binary not found: {code_file}/{code_id}\n\
+             Tried: Mozilla Tecken"
+        )
+    }
 }
 
 /// Fetch a Linux binary via debuginfod, checking cache first.

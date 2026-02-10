@@ -60,7 +60,14 @@ pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
                 let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
                 match fetch::fetch_binary_debuginfod(&client, &cache, config, code_file, args.code_id.as_deref(), &args.debug_id).await {
                     Ok(path) => Ok(path),
-                    Err(_) => Err(e),
+                    Err(_) => {
+                        let msg = e.to_string();
+                        if msg.contains("\nTried: ") {
+                            Err(anyhow::anyhow!("{msg}, debuginfod"))
+                        } else {
+                            Err(e)
+                        }
+                    }
                 }
             } else {
                 Err(e)
@@ -72,8 +79,9 @@ pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
     let bin_result = match bin_result {
         Ok(path) => Ok(path),
         Err(e) => {
-            let os = sym_summary.as_ref().map(|s| s.module.os.as_str()).unwrap_or("");
-            let arch_str = sym_summary.as_ref().map(|s| s.module.arch.as_str()).unwrap_or("");
+            let (os, arch_str) = sym_summary.as_ref()
+                .map(|s| (s.module.os.as_str(), s.module.arch.as_str()))
+                .unwrap_or_else(|| infer_platform_from_code_id(args.code_id.as_deref()));
             if let (Some(version), Some(channel)) = (&args.version, &args.channel) {
                 match fetch::archive::resolve_product_platform(&args.product, os, arch_str) {
                     Ok(Some((product, platform))) => {
@@ -162,6 +170,20 @@ pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Infer OS and architecture from code_id format when sym file is unavailable.
+/// 40-char hex = ELF (Linux, guess x86_64). 32-char hex = Mach-O (macOS).
+fn infer_platform_from_code_id(code_id: Option<&str>) -> (&'static str, &'static str) {
+    match code_id {
+        Some(id) if id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            ("Linux", "x86_64")
+        }
+        Some(id) if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            ("mac", "")
+        }
+        _ => ("", ""),
+    }
 }
 
 /// Heuristic: module looks like a Linux ELF binary.
