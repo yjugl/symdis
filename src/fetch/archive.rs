@@ -133,7 +133,19 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
 /// Returns the file contents as bytes.
 pub fn extract_from_tar_xz(data: &[u8], target_name: &str) -> Result<Vec<u8>> {
     let decoder = liblzma::read::XzDecoder::new(data);
-    let mut archive = tar::Archive::new(decoder);
+    extract_from_tar(decoder, target_name)
+}
+
+/// Extract a file from a tar.bz2 archive by matching the filename (ignoring directory prefix).
+/// Returns the file contents as bytes.
+pub fn extract_from_tar_bz2(data: &[u8], target_name: &str) -> Result<Vec<u8>> {
+    let decoder = bzip2::read::BzDecoder::new(data);
+    extract_from_tar(decoder, target_name)
+}
+
+/// Extract a file from a tar archive (any decompressor) by matching the filename.
+fn extract_from_tar<R: Read>(reader: R, target_name: &str) -> Result<Vec<u8>> {
+    let mut archive = tar::Archive::new(reader);
 
     let mut entry_count = 0;
     let mut last_few: Vec<String> = Vec::new();
@@ -551,6 +563,9 @@ pub fn verify_binary_id(data: &[u8], expected: &str) -> Result<()> {
 }
 
 /// Download a Firefox archive from the FTP server.
+///
+/// For Linux archives, tries `.tar.xz` first and falls back to `.tar.bz2`
+/// on 404 (older ESR releases use bzip2 instead of xz).
 pub async fn download_archive(
     client: &Client,
     locator: &ArchiveLocator,
@@ -560,50 +575,66 @@ pub async fn download_archive(
         Err(e) => return FetchResult::Error(format!("building archive URL: {e}")),
     };
 
-    info!("downloading archive from {url}");
-
-    let response = match client.get(&url).send().await {
-        Ok(r) => r,
-        Err(e) => return FetchResult::Error(format!("request failed: {e}")),
+    let urls = if url.ends_with(".tar.xz") {
+        vec![url.clone(), url.replace(".tar.xz", ".tar.bz2")]
+    } else {
+        vec![url]
     };
 
-    let status = response.status();
-    if status == reqwest::StatusCode::NOT_FOUND {
-        return FetchResult::NotFound;
-    }
-    if !status.is_success() {
-        return FetchResult::Error(format!("HTTP {status} from {url}"));
+    for url in &urls {
+        info!("downloading archive from {url}");
+
+        let response = match client.get(url).send().await {
+            Ok(r) => r,
+            Err(e) => return FetchResult::Error(format!("request failed: {e}")),
+        };
+
+        let status = response.status();
+        if status == reqwest::StatusCode::NOT_FOUND {
+            debug!("not found: {url}");
+            continue;
+        }
+        if !status.is_success() {
+            return FetchResult::Error(format!("HTTP {status} from {url}"));
+        }
+
+        return match response.bytes().await {
+            Ok(b) => FetchResult::Ok(b.to_vec()),
+            Err(e) => FetchResult::Error(format!("reading response body: {e}")),
+        };
     }
 
-    match response.bytes().await {
-        Ok(b) => FetchResult::Ok(b.to_vec()),
-        Err(e) => FetchResult::Error(format!("reading response body: {e}")),
-    }
+    FetchResult::NotFound
 }
 
 /// Extract a binary from archive bytes, then verify its build ID.
 ///
-/// The `platform` parameter determines the archive format:
-/// - `"mac"` → PKG (XAR + cpio)
-/// - anything else → tar.xz
-///
+/// The archive format is detected by magic bytes:
+/// - XAR magic (`xar!`) → PKG (macOS)
+/// - XZ magic (`\xfd7zXZ\x00`) → tar.xz
+/// - bzip2 magic (`BZ`) → tar.bz2
 pub fn extract_and_verify(
     archive_data: &[u8],
     binary_name: &str,
     expected_build_id: &str,
-    platform: &str,
+    _platform: &str,
 ) -> Result<Vec<u8>> {
     info!(
         "extracting {binary_name} from archive ({:.1} MB)",
         archive_data.len() as f64 / 1_048_576.0
     );
 
-    let binary_data = if platform == "mac" {
+    let binary_data = if archive_data.starts_with(b"xar!") {
         extract_from_pkg(archive_data, binary_name)
             .with_context(|| format!("extracting {binary_name} from PKG"))?
-    } else {
+    } else if archive_data.starts_with(b"\xfd7zXZ\x00") {
         extract_from_tar_xz(archive_data, binary_name)
-            .with_context(|| format!("extracting {binary_name}"))?
+            .with_context(|| format!("extracting {binary_name} from tar.xz"))?
+    } else if archive_data.starts_with(b"BZ") {
+        extract_from_tar_bz2(archive_data, binary_name)
+            .with_context(|| format!("extracting {binary_name} from tar.bz2"))?
+    } else {
+        bail!("unrecognized archive format (expected XAR, tar.xz, or tar.bz2)")
     };
 
     verify_binary_id(&binary_data, expected_build_id)?;
