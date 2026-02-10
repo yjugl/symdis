@@ -25,7 +25,7 @@ const DISASM_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   module.filename        --code-file         Improves binary fetch (Windows)
   module.code_id         --code-id           Improves binary fetch (Windows)
   (from release info)    --version           E.g. "128.0.3". FTP fallback
-  (from release info)    --channel           release|beta|esr|nightly
+  (from release info)    --channel           release|beta|esr|nightly|aurora
   (from release info)    --build-id          14-digit timestamp (nightly only)
   (snap source paths)    --snap              Snap package name (auto-detected)
 
@@ -150,7 +150,7 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   module.filename        --code-file     Improves binary fetch (Windows)
   module.code_id         --code-id       Improves binary fetch (Windows)
   (from release info)    --version       E.g. "128.0.3". FTP fallback
-  (from release info)    --channel       release|beta|esr|nightly
+  (from release info)    --channel       release|beta|esr|nightly|aurora
   (from release info)    --build-id      14-digit timestamp (nightly only)
   (snap source paths)    --snap          Snap package name (explicit only)
 
@@ -325,7 +325,7 @@ pub struct DisasmArgs {
     #[arg(long)]
     pub version: Option<String>,
 
-    /// Firefox release channel (release, beta, nightly, esr) for FTP archive fallback
+    /// Firefox release channel (release, beta, nightly, esr, aurora) for FTP archive fallback
     #[arg(long)]
     pub channel: Option<String>,
 
@@ -391,7 +391,7 @@ pub struct InfoArgs {
     #[arg(long)]
     pub version: Option<String>,
 
-    /// Firefox release channel (release, beta, nightly, esr) for FTP archive fallback
+    /// Firefox release channel (release, beta, nightly, esr, aurora) for FTP archive fallback
     #[arg(long)]
     pub channel: Option<String>,
 
@@ -423,7 +423,7 @@ pub struct FetchArgs {
     #[arg(long)]
     pub version: Option<String>,
 
-    /// Firefox release channel (release, beta, nightly, esr) for FTP archive fallback
+    /// Firefox release channel (release, beta, nightly, esr, aurora) for FTP archive fallback
     #[arg(long)]
     pub channel: Option<String>,
 

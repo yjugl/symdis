@@ -11,6 +11,7 @@ use tracing::{info, debug};
 use super::FetchResult;
 
 const FTP_BASE: &str = "https://ftp.mozilla.org/pub/firefox";
+const DEVEDITION_FTP_BASE: &str = "https://ftp.mozilla.org/pub/devedition";
 
 /// Parameters needed to locate a Firefox build archive on the FTP server.
 pub struct ArchiveLocator {
@@ -86,6 +87,20 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
                 ))
             }
         }
+        "aurora" => {
+            // Firefox Developer Edition — hosted under /pub/devedition/releases/
+            // Uses beta version numbering (e.g. 147.0b9).
+            // macOS only has .dmg (no .pkg), so FTP extraction is Linux-only.
+            if is_mac {
+                bail!(
+                    "FTP archive extraction is not supported for Developer Edition on macOS \
+                     (only .dmg is available, not .pkg)"
+                );
+            }
+            Ok(format!(
+                "{DEVEDITION_FTP_BASE}/releases/{version}/{platform}/en-US/firefox-{version}.tar.xz"
+            ))
+        }
         "nightly" => {
             let build_id = locator.build_id.as_deref()
                 .ok_or_else(|| anyhow::anyhow!("--build-id is required for nightly channel"))?;
@@ -110,7 +125,7 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
                 ))
             }
         }
-        other => bail!("unknown channel: {other} (expected: release, beta, esr, nightly)"),
+        other => bail!("unknown channel: {other} (expected: release, beta, esr, nightly, aurora)"),
     }
 }
 
@@ -812,11 +827,37 @@ mod tests {
     fn test_build_archive_url_unknown_channel() {
         let locator = ArchiveLocator {
             version: "147.0".to_string(),
-            channel: "aurora".to_string(),
+            channel: "canary".to_string(),
             platform: "linux-x86_64".to_string(),
             build_id: None,
         };
         assert!(build_archive_url(&locator).is_err());
+    }
+
+    #[test]
+    fn test_build_archive_url_aurora_linux() {
+        let locator = ArchiveLocator {
+            version: "147.0b9".to_string(),
+            channel: "aurora".to_string(),
+            platform: "linux-x86_64".to_string(),
+            build_id: None,
+        };
+        let url = build_archive_url(&locator).unwrap();
+        assert!(url.contains("/pub/devedition/releases/"));
+        assert!(url.contains("147.0b9"));
+        assert!(url.ends_with(".tar.xz"));
+    }
+
+    #[test]
+    fn test_build_archive_url_aurora_mac_unsupported() {
+        let locator = ArchiveLocator {
+            version: "147.0b9".to_string(),
+            channel: "aurora".to_string(),
+            platform: "mac".to_string(),
+            build_id: None,
+        };
+        let err = build_archive_url(&locator).unwrap_err();
+        assert!(err.to_string().contains("not supported"));
     }
 
     #[test]
