@@ -165,23 +165,25 @@ pub async fn fetch_binary(
         }
     }
 
-    // Try Microsoft Symbol Server
-    let ms_url = config.symbol_servers.get(1)
-        .map(|s| s.as_str())
-        .unwrap_or(microsoft::DEFAULT_MS_SYMBOL_SERVER);
+    // Try Microsoft Symbol Server (only for Windows binaries)
+    if looks_like_windows_binary(code_file) {
+        let ms_url = config.symbol_servers.get(1)
+            .map(|s| s.as_str())
+            .unwrap_or(microsoft::DEFAULT_MS_SYMBOL_SERVER);
 
-    match microsoft::fetch_pe(client, ms_url, code_file, code_id).await {
-        FetchResult::Ok(data) => {
-            if is_html_response(&data) {
-                warn!("Microsoft returned HTML instead of binary for {code_file}/{code_id}");
-            } else {
-                let path = cache.store_binary(&key, &data)?;
-                return Ok(path);
+        match microsoft::fetch_pe(client, ms_url, code_file, code_id).await {
+            FetchResult::Ok(data) => {
+                if is_html_response(&data) {
+                    warn!("Microsoft returned HTML instead of binary for {code_file}/{code_id}");
+                } else {
+                    let path = cache.store_binary(&key, &data)?;
+                    return Ok(path);
+                }
             }
-        }
-        FetchResult::NotFound => {}
-        FetchResult::Error(e) => {
-            warn!("Microsoft symbol server fetch error: {e}");
+            FetchResult::NotFound => {}
+            FetchResult::Error(e) => {
+                warn!("Microsoft symbol server fetch error: {e}");
+            }
         }
     }
 
@@ -448,6 +450,13 @@ pub async fn fetch_binary_snap(
 
     let path = cache.store_binary(&key, &binary_data)?;
     Ok(path)
+}
+
+/// Heuristic: file name looks like a Windows binary (PE).
+/// Used to skip the Microsoft Symbol Server for non-Windows modules.
+fn looks_like_windows_binary(code_file: &str) -> bool {
+    let lower = code_file.to_ascii_lowercase();
+    lower.ends_with(".dll") || lower.ends_with(".exe") || lower.ends_with(".pdb")
 }
 
 /// Check if response data looks like an HTML error page rather than real data.
