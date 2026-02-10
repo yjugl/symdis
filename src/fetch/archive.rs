@@ -681,23 +681,50 @@ pub fn verify_binary_id(data: &[u8], expected: &str) -> Result<()> {
     bail!("cannot verify binary identity: neither ELF build ID nor Mach-O UUID found")
 }
 
-/// Download a Firefox archive from the FTP server.
+/// Build the list of candidate archive URLs to try, in priority order.
 ///
-/// For Linux archives, tries `.tar.xz` first and falls back to `.tar.bz2`
-/// on 404 (older ESR releases use bzip2 instead of xz).
+/// Handles two fallback strategies:
+/// - `.tar.xz` → `.tar.bz2` for older ESR releases that use bzip2
+/// - With "esr" suffix → without "esr" suffix for Thunderbird 115.x ESR
+///   releases, which were published without "esr" in directory names and
+///   filenames (unlike Firefox ESR and Thunderbird 128+)
+fn candidate_archive_urls(locator: &ArchiveLocator) -> Result<Vec<String>> {
+    let url = build_archive_url(locator)?;
+
+    let mut urls = if url.ends_with(".tar.xz") {
+        vec![url.clone(), url.replace(".tar.xz", ".tar.bz2")]
+    } else {
+        vec![url]
+    };
+
+    // Thunderbird ESR 115.x was published without the "esr" suffix in
+    // directory names and filenames (e.g. `115.18.0/` not `115.18.0esr/`).
+    // From 128.x onwards, Thunderbird aligned with Firefox's convention.
+    // Try the no-suffix variant as a fallback.
+    if locator.product == "thunderbird" && locator.channel == "esr" {
+        let ver = locator.version.strip_suffix("esr").unwrap_or(&locator.version);
+        let ver_esr = format!("{ver}esr");
+        let no_esr: Vec<String> = urls
+            .iter()
+            .map(|u| u.replace(&ver_esr, ver))
+            .filter(|u| !urls.contains(u))
+            .collect();
+        urls.extend(no_esr);
+    }
+
+    Ok(urls)
+}
+
+/// Download a Mozilla product archive from the FTP server.
+///
+/// Tries multiple URL candidates in order (see `candidate_archive_urls`).
 pub async fn download_archive(
     client: &Client,
     locator: &ArchiveLocator,
 ) -> FetchResult {
-    let url = match build_archive_url(locator) {
+    let urls = match candidate_archive_urls(locator) {
         Ok(u) => u,
         Err(e) => return FetchResult::Error(format!("building archive URL: {e}")),
-    };
-
-    let urls = if url.ends_with(".tar.xz") {
-        vec![url.clone(), url.replace(".tar.xz", ".tar.bz2")]
-    } else {
-        vec![url]
     };
 
     for url in &urls {
@@ -1619,6 +1646,96 @@ mod tests {
     fn test_resolve_product_platform_unsupported_os() {
         let result = resolve_product_platform("firefox", "Windows", "x86_64").unwrap();
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_candidate_urls_thunderbird_esr_115() {
+        // Thunderbird 115.x ESR: should try with "esr" first, then without
+        let locator = ArchiveLocator {
+            product: "thunderbird".to_string(),
+            version: "115.18.0".to_string(),
+            channel: "esr".to_string(),
+            platform: "linux-x86_64".to_string(),
+            build_id: None,
+        };
+        let urls = candidate_archive_urls(&locator).unwrap();
+        assert_eq!(urls.len(), 4);
+        // Primary: with esr + tar.xz
+        assert!(urls[0].contains("115.18.0esr"));
+        assert!(urls[0].ends_with(".tar.xz"));
+        // Fallback 1: with esr + tar.bz2
+        assert!(urls[1].contains("115.18.0esr"));
+        assert!(urls[1].ends_with(".tar.bz2"));
+        // Fallback 2: without esr + tar.xz
+        assert!(urls[2].contains("115.18.0/"));
+        assert!(urls[2].contains("thunderbird-115.18.0.tar.xz"));
+        // Fallback 3: without esr + tar.bz2
+        assert!(urls[3].contains("115.18.0/"));
+        assert!(urls[3].contains("thunderbird-115.18.0.tar.bz2"));
+    }
+
+    #[test]
+    fn test_candidate_urls_thunderbird_esr_128() {
+        // Thunderbird 128.x ESR: the no-esr fallback is generated but won't be needed
+        let locator = ArchiveLocator {
+            product: "thunderbird".to_string(),
+            version: "128.10.0".to_string(),
+            channel: "esr".to_string(),
+            platform: "linux-x86_64".to_string(),
+            build_id: None,
+        };
+        let urls = candidate_archive_urls(&locator).unwrap();
+        assert_eq!(urls.len(), 4);
+        assert!(urls[0].contains("128.10.0esr"));
+    }
+
+    #[test]
+    fn test_candidate_urls_thunderbird_esr_mac() {
+        // macOS: no tar.xz/bz2 variants, but still has esr/no-esr
+        let locator = ArchiveLocator {
+            product: "thunderbird".to_string(),
+            version: "115.18.0".to_string(),
+            channel: "esr".to_string(),
+            platform: "mac".to_string(),
+            build_id: None,
+        };
+        let urls = candidate_archive_urls(&locator).unwrap();
+        assert_eq!(urls.len(), 2);
+        assert!(urls[0].contains("115.18.0esr"));
+        assert!(urls[0].ends_with(".pkg"));
+        assert!(urls[1].contains("115.18.0/"));
+        assert!(urls[1].contains("Thunderbird%20115.18.0.pkg"));
+    }
+
+    #[test]
+    fn test_candidate_urls_firefox_esr_no_extra_fallback() {
+        // Firefox ESR: should NOT generate no-esr fallback (only Thunderbird has this issue)
+        let locator = ArchiveLocator {
+            product: "firefox".to_string(),
+            version: "115.18.0".to_string(),
+            channel: "esr".to_string(),
+            platform: "linux-x86_64".to_string(),
+            build_id: None,
+        };
+        let urls = candidate_archive_urls(&locator).unwrap();
+        assert_eq!(urls.len(), 2); // only tar.xz + tar.bz2
+        assert!(urls[0].contains("115.18.0esr"));
+        assert!(urls[1].contains("115.18.0esr"));
+    }
+
+    #[test]
+    fn test_candidate_urls_thunderbird_release_no_extra_fallback() {
+        // Thunderbird release (not ESR): should NOT generate no-esr fallback
+        let locator = ArchiveLocator {
+            product: "thunderbird".to_string(),
+            version: "140.0".to_string(),
+            channel: "release".to_string(),
+            platform: "linux-x86_64".to_string(),
+            build_id: None,
+        };
+        let urls = candidate_archive_urls(&locator).unwrap();
+        assert_eq!(urls.len(), 2); // only tar.xz + tar.bz2
+        assert!(!urls[0].contains("esr"));
     }
 
     /// Helper: build a minimal 64-bit little-endian ELF with a .note.gnu.build-id section.
