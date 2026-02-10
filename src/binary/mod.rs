@@ -54,4 +54,10 @@ pub trait BinaryFile {
 
     /// Get all exports as (rva, name) pairs.
     fn exports(&self) -> &[(u64, String)];
+
+    /// Return the binary's build identifier (ELF build ID or Mach-O UUID).
+    /// Returns `None` for formats without a build ID (e.g., PE).
+    fn build_id(&self) -> Option<String> {
+        None
+    }
 }

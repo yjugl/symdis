@@ -238,6 +238,14 @@ impl BinaryFile for MachOFile {
     fn exports(&self) -> &[(u64, String)] {
         &self.exports_list
     }
+
+    fn build_id(&self) -> Option<String> {
+        // MachOFile stores the architecture slice data, so extract_macho_uuids
+        // returns exactly one UUID for this slice.
+        extract_macho_uuids(&self.data)
+            .ok()
+            .and_then(|uuids| uuids.into_iter().next())
+    }
 }
 
 #[cfg(test)]

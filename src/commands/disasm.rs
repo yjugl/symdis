@@ -173,7 +173,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         .and_then(|sym| CpuArch::from_sym_arch(&sym.module.arch));
 
     // Parse binary if available — try PE first, then ELF, then Mach-O
-    let binary_file: Option<Box<dyn BinaryFile>> = match &bin_result {
+    let mut binary_file: Option<Box<dyn BinaryFile>> = match &bin_result {
         Ok(path) => load_binary(path, target_arch),
         Err(e) => {
             warn!("binary not available: {e}");
@@ -231,6 +231,21 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         source_file,
     };
 
+    // Verify binary identity — discard the binary on mismatch to avoid
+    // showing disassembly from a different build.
+    if let Some(ref bin) = binary_file {
+        if let Some(msg) = check_binary_identity(
+            bin.as_ref(),
+            args.code_id.as_deref(),
+            &args.debug_id,
+        ) {
+            warn!("{msg}");
+            binary_file = None;
+        }
+    }
+
+    let warnings: Vec<String> = Vec::new();
+
     // Disassemble if binary is available
     if let Some(ref bin) = binary_file {
         let code = bin.extract_code(func_addr, func_size)
@@ -270,11 +285,11 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
 
         match config.format {
             OutputFormat::Text => {
-                let output = text::format_text(&module_info, &function_info, &annotated, &data_source);
+                let output = text::format_text(&module_info, &function_info, &annotated, &data_source, &warnings);
                 print!("{output}");
             }
             OutputFormat::Json => {
-                let output = json::format_json(&module_info, &function_info, &annotated, &data_source);
+                let output = json::format_json(&module_info, &function_info, &annotated, &data_source, &warnings);
                 println!("{output}");
             }
         }
@@ -283,11 +298,11 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         let sym_data = func_record.map(|func| build_sym_only_data(sym, func, demangle_enabled));
         match config.format {
             OutputFormat::Text => {
-                let output = text::format_sym_only(&module_info, &function_info, sym_data.as_ref());
+                let output = text::format_sym_only(&module_info, &function_info, sym_data.as_ref(), &warnings);
                 print!("{output}");
             }
             OutputFormat::Json => {
-                let output = json::format_json_sym_only(&module_info, &function_info, sym_data.as_ref());
+                let output = json::format_json_sym_only(&module_info, &function_info, sym_data.as_ref(), &warnings);
                 println!("{output}");
             }
         }
@@ -605,4 +620,42 @@ fn build_sym_only_data(
         inline_frames,
         source_files,
     }
+}
+
+/// Check whether the loaded binary's identity matches the expected ID.
+///
+/// Compares the binary's build ID (ELF) or UUID (Mach-O) against the
+/// code_id (if available) or the debug_id (converted via GUID byte-swapping).
+/// Returns a mismatch message on failure, or `None` if the identity matches
+/// or cannot be determined (e.g. PE binaries without a build ID).
+fn check_binary_identity(
+    binary: &dyn BinaryFile,
+    code_id: Option<&str>,
+    debug_id: &str,
+) -> Option<String> {
+    let actual_id = binary.build_id()?;
+
+    // If we have code_id, compare directly (most reliable)
+    if let Some(code_id) = code_id {
+        if actual_id.eq_ignore_ascii_case(code_id) {
+            return None;
+        }
+        return Some(format!(
+            "Binary identity mismatch: expected {}, got {} -- disassembly may be from a different build",
+            code_id, actual_id
+        ));
+    }
+
+    // Derive expected ID from debug_id (handles both ELF build ID and Mach-O UUID)
+    if let Ok(expected) = crate::symbols::id_convert::debug_id_to_build_id(debug_id) {
+        if actual_id.to_lowercase().starts_with(&expected) {
+            return None;
+        }
+        return Some(format!(
+            "Binary identity mismatch: expected {}, got {} -- disassembly may be from a different build",
+            expected, actual_id
+        ));
+    }
+
+    None
 }

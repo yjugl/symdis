@@ -6,7 +6,7 @@ use std::io::Read;
 
 use anyhow::{Result, Context, bail};
 use reqwest::Client;
-use tracing::{info, warn, debug};
+use tracing::{info, debug};
 
 use super::FetchResult;
 
@@ -120,9 +120,14 @@ pub fn extract_from_tar_xz(data: &[u8], target_name: &str) -> Result<Vec<u8>> {
     let decoder = liblzma::read::XzDecoder::new(data);
     let mut archive = tar::Archive::new(decoder);
 
+    let mut entry_count = 0;
+    let mut last_few: Vec<String> = Vec::new();
+
     for entry in archive.entries().context("reading tar entries")? {
         let mut entry = entry.context("reading tar entry")?;
         let path = entry.path().context("reading entry path")?;
+        let path_str = path.to_string_lossy().to_string();
+        entry_count += 1;
 
         // Match by filename component only (ignore directory prefix like "firefox/")
         let filename = path
@@ -131,13 +136,23 @@ pub fn extract_from_tar_xz(data: &[u8], target_name: &str) -> Result<Vec<u8>> {
             .unwrap_or("");
 
         if filename == target_name {
+            debug!("found '{target_name}' at '{}' (entry #{entry_count})", path_str);
             let mut buf = Vec::new();
             entry.read_to_end(&mut buf).context("reading tar entry contents")?;
             return Ok(buf);
         }
+
+        // Track last few entries for diagnostic output
+        if last_few.len() < 20 {
+            last_few.push(path_str);
+        }
     }
 
-    bail!("file '{target_name}' not found in archive")
+    debug!(
+        "'{target_name}' not found in archive ({entry_count} entries). First entries: {:?}",
+        last_few
+    );
+    bail!("file '{target_name}' not found in archive ({entry_count} entries searched)")
 }
 
 /// Extract a file from a macOS `.pkg` (XAR) archive.
@@ -557,14 +572,11 @@ pub async fn download_archive(
 /// - `"mac"` → PKG (XAR + cpio)
 /// - anything else → tar.xz
 ///
-/// When `strict` is `false`, a build ID mismatch logs a warning but still
-/// returns the binary (best-effort mode for distro-packaged binaries).
 pub fn extract_and_verify(
     archive_data: &[u8],
     binary_name: &str,
     expected_build_id: &str,
     platform: &str,
-    strict: bool,
 ) -> Result<Vec<u8>> {
     info!(
         "extracting {binary_name} from archive ({:.1} MB)",
@@ -579,15 +591,8 @@ pub fn extract_and_verify(
             .with_context(|| format!("extracting {binary_name}"))?
     };
 
-    match verify_binary_id(&binary_data, expected_build_id) {
-        Ok(()) => info!("build ID verified ({expected_build_id})"),
-        Err(e) => {
-            if strict {
-                return Err(e);
-            }
-            warn!("build ID mismatch (continuing with best-effort binary): {e}");
-        }
-    }
+    verify_binary_id(&binary_data, expected_build_id)?;
+    info!("build ID verified ({expected_build_id})");
 
     Ok(binary_data)
 }

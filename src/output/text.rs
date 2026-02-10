@@ -45,6 +45,7 @@ pub fn format_text(
     function: &FunctionInfo,
     instructions: &[AnnotatedInstruction],
     data_source: &DataSource,
+    warnings: &[String],
 ) -> String {
     let mut out = String::new();
 
@@ -67,6 +68,10 @@ pub fn format_text(
     }
     writeln!(out, "; Architecture: {}", module.arch).unwrap();
     writeln!(out, "; Data sources: {}", data_source).unwrap();
+
+    for w in warnings {
+        writeln!(out, "; WARNING: {}", w).unwrap();
+    }
 
     if let DataSource::SymOnly = data_source {
         writeln!(out, ";").unwrap();
@@ -178,6 +183,7 @@ pub fn format_sym_only(
     module: &ModuleInfo,
     function: &FunctionInfo,
     sym_data: Option<&SymOnlyData>,
+    warnings: &[String],
 ) -> String {
     let mut out = String::new();
 
@@ -200,6 +206,10 @@ pub fn format_sym_only(
     }
     writeln!(out, "; Architecture: {}", module.arch).unwrap();
     writeln!(out, "; Data sources: {}", DataSource::SymOnly).unwrap();
+
+    for w in warnings {
+        writeln!(out, "; WARNING: {}", w).unwrap();
+    }
 
     if let Some(data) = sym_data {
         // Source line mapping
@@ -284,7 +294,7 @@ mod tests {
     fn test_sym_only_none_minimal() {
         let module = make_module_info();
         let function = make_function_info();
-        let output = format_sym_only(&module, &function, None);
+        let output = format_sym_only(&module, &function, None, &[]);
 
         assert!(output.contains("; Data sources: sym"));
         assert!(output.contains("Function metadata only."));
@@ -327,7 +337,7 @@ mod tests {
             ],
         };
 
-        let output = format_sym_only(&module, &function, Some(&sym_data));
+        let output = format_sym_only(&module, &function, Some(&sym_data), &[]);
 
         assert!(output.contains("; Source line mapping:"));
         assert!(output.contains("0x001a3e80 - 0x001a3e90  src/main.cpp:10"));

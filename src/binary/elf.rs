@@ -198,6 +198,10 @@ impl BinaryFile for ElfFile {
     fn exports(&self) -> &[(u64, String)] {
         &self.exports_list
     }
+
+    fn build_id(&self) -> Option<String> {
+        crate::fetch::archive::extract_elf_build_id(&self.data).ok().flatten()
+    }
 }
 
 #[cfg(test)]

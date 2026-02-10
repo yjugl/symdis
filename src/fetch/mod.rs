@@ -334,7 +334,7 @@ pub async fn fetch_binary_ftp(
                 }
                 FetchResult::NotFound => {
                     bail!(
-                        "binary not found in FTP archive: {code_file}\n\
+                        "FTP archive not found on server (HTTP 404) for {code_file}\n\
                          Check that --version and --channel are correct"
                     )
                 }
@@ -345,8 +345,7 @@ pub async fn fetch_binary_ftp(
         }
     };
 
-    // Extract binary from archive and verify build ID (best-effort: distro builds may differ)
-    let binary_data = archive::extract_and_verify(&archive_data, code_file, &build_id, &locator.platform, false)
+    let binary_data = archive::extract_and_verify(&archive_data, code_file, &build_id, &locator.platform)
         .context("FTP archive extraction")?;
 
     let path = cache.store_binary(&key, &binary_data)?;
