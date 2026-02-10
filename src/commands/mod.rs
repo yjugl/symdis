@@ -38,7 +38,11 @@ BINARY FETCH CHAIN:
     3. Microsoft symbol server (Windows PE only)
     4. debuginfod servers (Linux ELF only, build ID from debug ID)
     5. Snap Store (Linux, when snap detected from sym file or --snap flag)
-    6. Mozilla FTP archive (Linux/macOS, requires --version + --channel)
+    6. Mozilla FTP archive (--version + --channel required):
+       - Linux: downloads .tar.xz from /pub/firefox/releases/
+       - macOS: downloads .pkg from /pub/firefox/releases/
+       - Android: downloads .apk from /pub/fenix/releases/
+         (requires --product fenix; see FENIX section below)
 
   Providing --code-file and --code-id significantly improves success for
   steps 2-3. Step 5 auto-detects the snap name from source file paths in
@@ -46,6 +50,27 @@ BINARY FETCH CHAIN:
   to specify it explicitly. Providing --version and --channel enables
   step 6 as a last resort. The .sym file is always fetched from Tecken
   using --debug-file and --debug-id.
+
+FENIX (FIREFOX FOR ANDROID):
+
+  For Android/Fenix crashes, you MUST pass --product fenix explicitly.
+  Auto-detection is not possible because Android .sym files report their
+  OS as "Linux", not "Android".
+
+  How to recognize a Fenix crash report:
+    - The crash report OS field says "Android"
+    - The package name is org.mozilla.firefox or org.mozilla.fenix
+    - The build architecture is arm or arm64 (sometimes x86/x86_64)
+
+  Required flags for Fenix binary fetch:
+    --product fenix --version <VERSION> --channel <CHANNEL>
+
+  Supported channels: release, beta, nightly (no ESR or aurora).
+  For nightly, --build-id is also required.
+
+  The binary is extracted from the APK archive at lib/{abi}/libxul.so,
+  where the ABI (arm64-v8a, armeabi-v7a, x86_64, x86) is derived from
+  the architecture in the .sym file.
 
 GRACEFUL DEGRADATION:
 
@@ -97,6 +122,16 @@ EXAMPLES:
       --version 147.0.1 --channel release \
       --offset 0x6cad38e
 
+  # Fenix (Firefox for Android) -- MUST use --product fenix:
+  symdis disasm \
+      --debug-file libxul.so \
+      --debug-id 9E915B1A91D7345C4FF0753CF13E53280 \
+      --code-file libxul.so \
+      --code-id 1a5b919ed7915c344ff0753cf13e532814635a84 \
+      --product fenix \
+      --version 147.0.3 --channel release \
+      --offset 0x03fc39d4 --highlight-offset 0x03fc39d4
+
   # Search by function name (substring match):
   symdis disasm \
       --debug-file xul.pdb \
@@ -124,17 +159,9 @@ TIPS:
     (YYYYMMDDHHmmSS) from the crash report's build_id field.
   - For Thunderbird crashes, add --product thunderbird to fetch
     binaries from the Thunderbird FTP archive instead of Firefox.
-  - For Fenix (Firefox for Android) crashes, use --product fenix or
-    just --product firefox (auto-promoted to fenix for Android modules).
-    Requires --version and --channel for FTP archive fallback.
-
-  # Fenix (Firefox for Android) module:
-  symdis disasm \
-      --debug-file libxul.so \
-      --debug-id AABBCCDD11223344AABBCCDD11223344A \
-      --product fenix \
-      --version 134.0.2 --channel release \
-      --offset 0x1234567"#;
+  - For Fenix (Firefox for Android) crashes, --product fenix is
+    REQUIRED. It cannot be auto-detected because Android .sym files
+    report OS as "Linux". See the FENIX section above for details."#;
 
 const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 
@@ -184,6 +211,11 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   Binary fetch chain: cache → Tecken → Microsoft (Windows) → debuginfod
   (Linux) → Snap Store (Linux, --snap) → FTP archive (--version + --channel).
 
+  For Android/Fenix crashes, --product fenix is REQUIRED (it cannot be
+  auto-detected because Android .sym files report OS as "Linux").
+  Fenix binary fetch downloads the APK from Mozilla's FTP server and
+  extracts the native library from lib/{abi}/ inside the APK.
+
   Note: snap auto-detection from sym file source paths is only available
   in the disasm command. For fetch, use --snap explicitly.
 
@@ -200,6 +232,13 @@ EXAMPLES:
       --debug-file libxul.so \
       --debug-id 0200CE7B29CF2F761BB067BC519155A00 \
       --version 128.0.3 --channel release
+
+  # Pre-fetch a Fenix (Android) module:
+  symdis fetch \
+      --debug-file libxul.so \
+      --debug-id 9E915B1A91D7345C4FF0753CF13E53280 \
+      --product fenix \
+      --version 147.0.3 --channel release
 
   # Pre-fetch a snap library:
   symdis fetch \
@@ -360,8 +399,9 @@ pub struct DisasmArgs {
     #[arg(long)]
     pub snap: Option<String>,
 
-    /// Mozilla product (firefox, thunderbird, fenix). Defaults to firefox.
-    /// For Android modules, --product firefox is auto-promoted to fenix.
+    /// Mozilla product: firefox (default), thunderbird, or fenix.
+    /// For Android/Fenix crashes, you MUST specify --product fenix.
+    /// It cannot be auto-detected (Android .sym files report OS as "Linux").
     #[arg(long, default_value = "firefox")]
     pub product: String,
 }
@@ -427,7 +467,8 @@ pub struct InfoArgs {
     #[arg(long)]
     pub build_id: Option<String>,
 
-    /// Mozilla product (firefox, thunderbird, fenix). Defaults to firefox.
+    /// Mozilla product: firefox (default), thunderbird, or fenix.
+    /// For Android/Fenix crashes, you MUST specify --product fenix.
     #[arg(long, default_value = "firefox")]
     pub product: String,
 }
@@ -467,7 +508,8 @@ pub struct FetchArgs {
     #[arg(long)]
     pub snap: Option<String>,
 
-    /// Mozilla product (firefox, thunderbird, fenix). Defaults to firefox.
+    /// Mozilla product: firefox (default), thunderbird, or fenix.
+    /// For Android/Fenix crashes, you MUST specify --product fenix.
     #[arg(long, default_value = "firefox")]
     pub product: String,
 }
