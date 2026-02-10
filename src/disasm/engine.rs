@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use capstone::prelude::*;
+use tracing::info;
 
 use crate::binary::CpuArch;
 use crate::config::Syntax;
@@ -86,14 +87,23 @@ impl Disassembler {
     }
 
     /// Disassemble code bytes starting at base_addr.
+    ///
+    /// If `must_include_addr` is set and the instruction at that address would
+    /// be beyond `max_instructions`, the limit is automatically extended to
+    /// include it plus 200 instructions of trailing context.
+    ///
+    /// Returns `(instructions, total_instruction_count)` where
+    /// `total_instruction_count` is the number of instructions in the full
+    /// function (before any truncation).
     pub fn disassemble(
         &self,
         code: &[u8],
         base_addr: u64,
         max_instructions: usize,
-    ) -> Result<Vec<Instruction>> {
+        must_include_addr: Option<u64>,
+    ) -> Result<(Vec<Instruction>, usize)> {
         if code.is_empty() {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), 0));
         }
 
         let insns = self
@@ -101,8 +111,35 @@ impl Disassembler {
             .disasm_all(code, base_addr)
             .map_err(|e| anyhow::anyhow!("disassembly failed: {e}"))?;
 
+        let total_count = insns.as_ref().len();
+
+        // Determine effective limit: auto-extend if must_include_addr is beyond max_instructions
+        let effective_limit = if let Some(target_addr) = must_include_addr {
+            let target_index = insns.as_ref().iter().position(|insn| {
+                let addr = insn.address();
+                let end = addr + insn.len() as u64;
+                target_addr >= addr && target_addr < end
+            });
+            if let Some(idx) = target_index {
+                if idx >= max_instructions {
+                    let extended = idx + 201; // target + 200 trailing context
+                    info!(
+                        "auto-extending instruction limit from {} to {} to include highlight offset at instruction #{}",
+                        max_instructions, extended.min(total_count), idx + 1
+                    );
+                    extended
+                } else {
+                    max_instructions
+                }
+            } else {
+                max_instructions
+            }
+        } else {
+            max_instructions
+        };
+
         let mut result = Vec::new();
-        for insn in insns.as_ref().iter().take(max_instructions) {
+        for insn in insns.as_ref().iter().take(effective_limit) {
             let mnemonic = insn.mnemonic().unwrap_or("???").to_string();
             let operands = insn.op_str().unwrap_or("").to_string();
 
@@ -120,7 +157,7 @@ impl Disassembler {
             });
         }
 
-        Ok(result)
+        Ok((result, total_count))
     }
 
     /// Extract call/jmp target from an instruction.
@@ -172,9 +209,10 @@ mod tests {
         let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
         // push rbp; mov rbp, rsp; sub rsp, 0x10
         let code = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x10];
-        let insns = disasm.disassemble(&code, 0x1000, 100).unwrap();
+        let (insns, total) = disasm.disassemble(&code, 0x1000, 100, None).unwrap();
 
         assert_eq!(insns.len(), 3);
+        assert_eq!(total, 3);
         assert_eq!(insns[0].mnemonic, "push");
         assert_eq!(insns[0].address, 0x1000);
         assert_eq!(insns[1].mnemonic, "mov");
@@ -185,7 +223,7 @@ mod tests {
     fn test_x86_64_att_syntax() {
         let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Att).unwrap();
         let code = [0x55]; // push rbp
-        let insns = disasm.disassemble(&code, 0x1000, 100).unwrap();
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None).unwrap();
 
         assert_eq!(insns.len(), 1);
         assert_eq!(insns[0].mnemonic, "pushq");
@@ -197,7 +235,7 @@ mod tests {
         let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel).unwrap();
         // push ebp; mov ebp, esp
         let code = [0x55, 0x89, 0xe5];
-        let insns = disasm.disassemble(&code, 0x1000, 100).unwrap();
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None).unwrap();
 
         assert_eq!(insns.len(), 2);
         assert_eq!(insns[0].mnemonic, "push");
@@ -210,7 +248,7 @@ mod tests {
         let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
         // call +0x100 (E8 relative call, target = 0x1005 + 0x100 = 0x1105)
         let code = [0xe8, 0x00, 0x01, 0x00, 0x00];
-        let insns = disasm.disassemble(&code, 0x1000, 100).unwrap();
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None).unwrap();
 
         assert_eq!(insns.len(), 1);
         assert_eq!(insns[0].mnemonic, "call");
@@ -224,7 +262,7 @@ mod tests {
         let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
         // call rax (FF D0)
         let code = [0xff, 0xd0];
-        let insns = disasm.disassemble(&code, 0x1000, 100).unwrap();
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None).unwrap();
 
         assert_eq!(insns.len(), 1);
         assert_eq!(insns[0].mnemonic, "call");
@@ -237,15 +275,68 @@ mod tests {
         let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
         // nop sled
         let code = vec![0x90; 100];
-        let insns = disasm.disassemble(&code, 0x1000, 5).unwrap();
+        let (insns, total) = disasm.disassemble(&code, 0x1000, 5, None).unwrap();
 
         assert_eq!(insns.len(), 5);
+        assert_eq!(total, 100);
     }
 
     #[test]
     fn test_empty_code() {
         let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
-        let insns = disasm.disassemble(&[], 0x1000, 100).unwrap();
+        let (insns, total) = disasm.disassemble(&[], 0x1000, 100, None).unwrap();
         assert!(insns.is_empty());
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn test_disassemble_auto_extend_for_highlight() {
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        // 100 nops — each is 1 byte at address 0x1000 + i
+        let code = vec![0x90; 100];
+        // Highlight at instruction #50 (address 0x1032), with max_instructions = 10
+        let (insns, total) = disasm
+            .disassemble(&code, 0x1000, 10, Some(0x1032))
+            .unwrap();
+
+        assert_eq!(total, 100);
+        // Should auto-extend: instruction at index 50, so limit = 50 + 201 = 251, capped at 100
+        assert_eq!(insns.len(), 100);
+        // The highlighted instruction should be present
+        assert!(insns.iter().any(|i| i.address == 0x1032));
+    }
+
+    #[test]
+    fn test_disassemble_no_extend_within_limit() {
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        let code = vec![0x90; 100];
+        // Highlight at instruction #3 (address 0x1003), within max_instructions = 10
+        let (insns, total) = disasm
+            .disassemble(&code, 0x1000, 10, Some(0x1003))
+            .unwrap();
+
+        assert_eq!(total, 100);
+        // Should NOT extend — highlight is within limit
+        assert_eq!(insns.len(), 10);
+    }
+
+    #[test]
+    fn test_disassemble_total_count() {
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        let code = vec![0x90; 500];
+        let (insns, total) = disasm.disassemble(&code, 0x1000, 100, None).unwrap();
+
+        assert_eq!(total, 500);
+        assert_eq!(insns.len(), 100);
+    }
+
+    #[test]
+    fn test_disassemble_no_highlight_backward_compat() {
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        let code = vec![0x90; 50];
+        let (insns, total) = disasm.disassemble(&code, 0x1000, 20, None).unwrap();
+
+        assert_eq!(total, 50);
+        assert_eq!(insns.len(), 20);
     }
 }

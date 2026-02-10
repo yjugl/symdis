@@ -239,12 +239,19 @@ pub async fn fetch_binary_debuginfod(
         bail!("binary not in cache and --offline is set: {code_file} (build ID: {build_id})");
     }
 
+    info!(
+        "trying debuginfod for {} (build ID: {}, {} server(s))",
+        code_file, build_id, config.debuginfod_urls.len()
+    );
+
     match debuginfod::fetch_executable(client, &build_id, &config.debuginfod_urls).await {
         FetchResult::Ok(data) => {
             let path = cache.store_binary(&key, &data)?;
             return Ok(path);
         }
-        FetchResult::NotFound => {}
+        FetchResult::NotFound => {
+            info!("debuginfod: {} not found on any server", code_file);
+        }
         FetchResult::Error(e) => {
             warn!("debuginfod fetch error: {e}");
         }

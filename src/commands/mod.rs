@@ -363,7 +363,7 @@ pub struct DisasmArgs {
     #[arg(long, default_value = "intel")]
     pub syntax: SyntaxArg,
 
-    /// Mark a specific offset in the output
+    /// Mark a specific offset in the output (auto-extends --max-instructions if needed)
     #[arg(long)]
     pub highlight_offset: Option<String>,
 
@@ -371,7 +371,7 @@ pub struct DisasmArgs {
     #[arg(long)]
     pub fuzzy: bool,
 
-    /// Safety limit on output size
+    /// Safety limit on output size (auto-extended when --highlight-offset falls beyond it)
     #[arg(long, default_value = "2000")]
     pub max_instructions: usize,
 
