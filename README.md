@@ -6,8 +6,8 @@ Designed primarily for use by AI agents analyzing [Socorro/Crash Stats](https://
 
 ## Features
 
-- **Fetch symbols and binaries** from Mozilla's [Tecken](https://symbols.mozilla.org/) symbol server, Microsoft's public symbol server, [debuginfod](https://sourceware.org/elfutils/Debuginfod.html) servers, and Mozilla's FTP archive — with automatic CAB decompression, `.tar.xz` extraction, and `.pkg` (XAR/cpio) extraction
-- **Windows, Linux, and macOS** module support: PE (via section table), ELF (via PT_LOAD segments), and Mach-O (including fat/universal binaries) binary formats
+- **Fetch symbols and binaries** from Mozilla's [Tecken](https://symbols.mozilla.org/) symbol server, Microsoft's public symbol server, [debuginfod](https://sourceware.org/elfutils/Debuginfod.html) servers, the [Snap Store](https://snapcraft.io/) (Ubuntu snaps), and Mozilla's FTP archive — with automatic CAB decompression, `.tar.xz` extraction, `.pkg` (XAR/cpio) extraction, and `.apk` (ZIP) extraction
+- **Windows, Linux, macOS, and Android** module support: PE (via section table), ELF (via PT_LOAD segments), and Mach-O (including fat/universal binaries) binary formats; Android support for Fenix (Firefox for Android) and Focus (Firefox Focus) via APK extraction
 - **Find functions** by exact name, substring match (`--fuzzy`), or by RVA/offset
 - **Disassemble** x86, x86-64, ARM32, and AArch64 code via [Capstone](https://www.capstone-engine.org/)
 - **Annotate** instructions with source file/line, resolved call targets (FUNC/PUBLIC/IAT/PLT/dylib imports), and inline function boundaries
@@ -31,46 +31,41 @@ cargo install --path .
 ## Quick Start
 
 ```bash
-# Disassemble a function by name
+# Disassemble the function containing a specific offset, with crash address highlight
 symdis disasm \
     --debug-file xul.pdb \
-    --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
-    --function "mozilla::dom::Element::SetAttribute"
-
-# Disassemble the function containing a specific offset, with highlight
-symdis disasm \
-    --debug-file ntdll.pdb \
-    --debug-id 1EB9FACB04EA273BB24BA52C8B8D336A1 \
-    --offset 0xa2c30 \
-    --highlight-offset 0xa2c47
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --code-file xul.dll --code-id 68d1a3cd87be000 \
+    --offset 0x0144c8d2 --highlight-offset 0x0144c8d2
 
 # Fuzzy name search
 symdis disasm \
     --debug-file xul.pdb \
-    --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
-    --function SetAttribute --fuzzy
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --function ProcessIncomingMessages --fuzzy
 
 # Linux module with FTP archive fallback
 symdis disasm \
     --debug-file libxul.so \
-    --debug-id 0200CE7B29CF2F761BB067BC519155A00 \
-    --code-id 7bce0002cf29762f1bb067bc519155a0cb3f4a31 \
-    --version 147.0.3 --channel release \
-    --offset 0x3bb5231 --highlight-offset 0x3bb5231
+    --debug-id A3453044A5701E725A49D1F7B641B08B0 \
+    --code-id 443045a370a5721e5a49d1f7b641b08b63c76557 \
+    --version 147.0.2 --channel release \
+    --offset 0x71327c6 --highlight-offset 0x71327c6
 
 # macOS module (fat/universal binary from PKG archive)
 symdis disasm \
     --debug-file XUL \
-    --debug-id 697EB30464C83C329FF3A1B119BAC88D0 \
-    --code-id 697eb30464c83c329ff3a1b119bac88d \
-    --version 147.0.3 --channel release \
-    --offset 0x1c019fb --highlight-offset 0x1c019fb
+    --debug-id EA25538ED7533E56A4263F6D7050F3D20 \
+    --code-id ea25538ed7533e56a4263f6d7050f3d2 \
+    --version 140.6.0esr --channel esr \
+    --offset 0x1cb6dd --highlight-offset 0x1cb6dd
 
 # JSON output
 symdis disasm \
-    --debug-file ntdll.pdb \
-    --debug-id 1EB9FACB04EA273BB24BA52C8B8D336A1 \
-    --function NtCreateFile \
+    --debug-file xul.pdb \
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --code-file xul.dll --code-id 68d1a3cd87be000 \
+    --function ProcessIncomingMessages --fuzzy \
     --format json
 ```
 
@@ -78,27 +73,35 @@ symdis disasm \
 
 ### Text (default)
 
+Output is abbreviated — the tool prints all instructions in the function.
+
 ```
-; Module: xul.dll (xul.pdb / 44E4EC8C2F41492B9369D6B9A059577C2)
-; Function: mozilla::dom::Element::SetAttribute (RVA: 0x1a3e80, size: 0x120)
-; Source: dom/base/Element.cpp
-; Architecture: x86_64
+; Module: xul.dll (xul.pdb / EE20BD9ABD8D048B4C4C44205044422E1)
+; Function: IPC::Channel::ChannelImpl::ProcessIncomingMessages(...) (RVA: 0x144c490, size: 0xa57)
+; Source: hg:hg.mozilla.org/releases/mozilla-esr140:ipc/chromium/src/chrome/common/ipc_channel_win.cc:0b8c...
+; Architecture: x86
 ; Data sources: binary+sym
 ;
-    ; dom/base/Element.cpp:1234
-    0x001a3e80:  push    rbp
-    0x001a3e81:  mov     rbp, rsp
-    0x001a3e84:  sub     rsp, 0x40
-    ; dom/base/Element.cpp:1235
-    0x001a3e88:  mov     qword ptr [rbp - 0x8], rcx
-    ; [inline] mozilla::dom::Element::BeforeSetAttr (dom/base/Element.cpp:1180)
-    0x001a3e90:  lea     rcx, [rbp - 0x38]
-    0x001a3e94:  call    0x002b1200              ; nsAtom::ToString
-    ; [end inline] mozilla::dom::Element::BeforeSetAttr
-        ...
-==> 0x001a3f00:  call    0x001b2340              ; nsContentUtils::SetNodeTextContent
-        ...
-    0x001a3f9f:  ret
+    ; .../ipc_channel_win.cc:...:264
+    0x0144c490:  push    ebp
+    0x0144c491:  mov     ebp, esp
+    0x0144c493:  push    ebx
+    0x0144c494:  push    edi
+    0x0144c495:  push    esi
+    0x0144c496:  and     esp, 0xfffffff8
+    0x0144c499:  sub     esp, 0xf8
+    ; .../ipc_channel_win.cc:...:269
+    0x0144c4b8:  test    cl, cl
+    ...
+    ; [inline] mozilla::UniquePtr<...>::get() const (.../ipc_channel_win.cc:...:305)
+    ; .../mfbt/UniquePtr.h:...:399
+    0x0144c4d5:  mov     ebx, dword ptr [edi + 0x8c]
+    ; [end inline] mozilla::UniquePtr<...>::get() const
+    ...
+    0x0144c801:  call    0x1463290              ; IPC::Channel::ChannelImpl::AcceptHandles(IPC::Message&)
+    ...
+==> 0x0144c8cd:  call    dword ptr [0x173b5260]  ; [indirect]
+    0x0144c8d3:  add     esp, 4
 ```
 
 ### JSON
@@ -107,25 +110,36 @@ symdis disasm \
 {
   "module": {
     "debug_file": "xul.pdb",
-    "debug_id": "44E4EC8C2F41492B9369D6B9A059577C2",
+    "debug_id": "EE20BD9ABD8D048B4C4C44205044422E1",
     "code_file": "xul.dll",
-    "arch": "x86_64"
+    "arch": "x86"
   },
   "function": {
-    "name": "mozilla::dom::Element::SetAttribute",
-    "address": "0x1a3e80",
-    "size": "0x120",
-    "source_file": "dom/base/Element.cpp"
+    "name": "IPC::Channel::ChannelImpl::ProcessIncomingMessages(...)",
+    "address": "0x144c490",
+    "size": "0xa57",
+    "source_file": "hg:hg.mozilla.org/releases/mozilla-esr140:ipc/chromium/..."
   },
   "instructions": [
     {
-      "address": "0x1a3e80",
+      "address": "0x144c490",
       "bytes": "55",
       "mnemonic": "push",
-      "operands": "rbp",
-      "source_file": "dom/base/Element.cpp",
-      "source_line": 1234,
+      "operands": "ebp",
+      "source_file": "hg:hg.mozilla.org/releases/mozilla-esr140:ipc/chromium/...",
+      "source_line": 264,
       "highlighted": false,
+      "inline_frames": []
+    },
+    {
+      "address": "0x144c801",
+      "bytes": "e88a6a0000",
+      "mnemonic": "call",
+      "operands": "0x1463290",
+      "source_file": "hg:hg.mozilla.org/releases/mozilla-esr140:ipc/chromium/...",
+      "source_line": 356,
+      "highlighted": false,
+      "call_target": "IPC::Channel::ChannelImpl::AcceptHandles(IPC::Message&)",
       "inline_frames": []
     }
   ],
@@ -185,7 +199,7 @@ format = "text"         # "text" or "json"
 
 [network]
 timeout_seconds = 30
-user_agent = "symdis/0.1"
+user_agent = "symdis/0.1.0"
 offline = false
 ```
 
