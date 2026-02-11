@@ -46,6 +46,7 @@ struct OutputSection {
 #[derive(Deserialize, Default)]
 struct NetworkSection {
     timeout_seconds: Option<u64>,
+    archive_timeout_seconds: Option<u64>,
     user_agent: Option<String>,
     offline: Option<bool>,
 }
@@ -97,7 +98,7 @@ impl Default for Config {
                 "https://debuginfod.centos.org/".to_string(),
             ],
             timeout_seconds: 30,
-            archive_timeout_seconds: 300,
+            archive_timeout_seconds: 600,
             user_agent: format!("symdis/{}", env!("CARGO_PKG_VERSION")),
             syntax: Syntax::Intel,
             max_instructions: 2000,
@@ -184,6 +185,9 @@ fn apply_config_file(config: &mut Config, file: &ConfigFile) {
     if let Some(ref network) = file.network {
         if let Some(timeout) = network.timeout_seconds {
             config.timeout_seconds = timeout;
+        }
+        if let Some(timeout) = network.archive_timeout_seconds {
+            config.archive_timeout_seconds = timeout;
         }
         if let Some(ref ua) = network.user_agent {
             config.user_agent = ua.clone();
@@ -358,7 +362,7 @@ mod tests {
     fn test_config_default() {
         let config = Config::default();
         assert_eq!(config.timeout_seconds, 30);
-        assert_eq!(config.archive_timeout_seconds, 300);
+        assert_eq!(config.archive_timeout_seconds, 600);
         assert_eq!(config.miss_ttl_hours, 24);
         assert_eq!(config.syntax, Syntax::Intel);
         assert_eq!(config.max_instructions, 2000);
