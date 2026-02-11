@@ -14,6 +14,7 @@ const FTP_BASE: &str = "https://ftp.mozilla.org/pub/firefox";
 const DEVEDITION_FTP_BASE: &str = "https://ftp.mozilla.org/pub/devedition";
 const THUNDERBIRD_FTP_BASE: &str = "https://ftp.mozilla.org/pub/thunderbird";
 const FENIX_FTP_BASE: &str = "https://ftp.mozilla.org/pub/fenix";
+const FOCUS_FTP_BASE: &str = "https://ftp.mozilla.org/pub/focus";
 
 /// Parameters needed to locate a Mozilla product build archive on the FTP server.
 pub struct ArchiveLocator {
@@ -44,7 +45,7 @@ pub fn ftp_platform(os: &str, arch: &str) -> Option<&'static str> {
 }
 
 /// Map a Breakpad architecture to an Android ABI name.
-pub fn fenix_arch(breakpad_arch: &str) -> Option<&'static str> {
+pub fn android_arch(breakpad_arch: &str) -> Option<&'static str> {
     match breakpad_arch {
         "arm64" => Some("arm64-v8a"),
         "arm" => Some("armeabi-v7a"),
@@ -59,7 +60,9 @@ pub fn fenix_arch(breakpad_arch: &str) -> Option<&'static str> {
 /// Rules:
 /// - `--product fenix` -> always treated as Fenix regardless of OS
 ///   (Android builds have `MODULE Linux` in their sym files)
-/// - `--product firefox` + Android OS -> treated as fenix
+/// - `--product focus` -> always treated as Focus regardless of OS
+///   (same reason as Fenix — Android .sym files say "Linux")
+/// - `--product firefox` + Android OS -> treated as fenix (Fenix is the default for Android)
 /// - Other products + Android OS -> error
 /// - Normal products + non-Android OS -> use ftp_platform()
 pub fn resolve_product_platform(
@@ -70,20 +73,20 @@ pub fn resolve_product_platform(
     let is_android = os.eq_ignore_ascii_case("android");
 
     match product {
-        "fenix" => {
+        "fenix" | "focus" => {
             // Trust the user — Android builds have MODULE line saying "Linux",
             // so we can't rely on OS detection.
-            let abi = fenix_arch(arch)
-                .ok_or_else(|| anyhow::anyhow!("unsupported architecture for Fenix: {arch}"))?;
-            Ok(Some(("fenix".to_string(), format!("android-{abi}"))))
+            let abi = android_arch(arch)
+                .ok_or_else(|| anyhow::anyhow!("unsupported architecture for {product}: {arch}"))?;
+            Ok(Some((product.to_string(), format!("android-{abi}"))))
         }
         "firefox" if is_android => {
-            let abi = fenix_arch(arch)
+            let abi = android_arch(arch)
                 .ok_or_else(|| anyhow::anyhow!("unsupported architecture for Fenix: {arch}"))?;
             Ok(Some(("fenix".to_string(), format!("android-{abi}"))))
         }
         _ if is_android => {
-            bail!("product '{product}' is not available for Android")
+            bail!("product '{product}' is not available for Android (use --product fenix or --product focus)")
         }
         _ => {
             match ftp_platform(os, arch) {
@@ -107,16 +110,16 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
         );
     }
 
-    // Fenix has a completely different URL structure — handle it early
-    if locator.product == "fenix" {
-        return build_fenix_archive_url(locator);
+    // Android products have a completely different URL structure — handle them early
+    if locator.product == "fenix" || locator.product == "focus" {
+        return build_android_archive_url(locator);
     }
 
     // Determine FTP base URL and filename prefix based on product
     let (ftp_base, prefix, prefix_cap) = match locator.product.as_str() {
         "firefox" => (FTP_BASE, "firefox", "Firefox"),
         "thunderbird" => (THUNDERBIRD_FTP_BASE, "thunderbird", "Thunderbird"),
-        other => bail!("unknown product: {other} (expected: firefox, thunderbird, fenix)"),
+        other => bail!("unknown product: {other} (expected: firefox, thunderbird, fenix, focus)"),
     };
 
     match locator.channel.as_str() {
@@ -191,20 +194,32 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
     }
 }
 
-/// Construct the FTP archive URL for Fenix (Firefox for Android).
+/// Construct the FTP archive URL for an Android product (Fenix or Focus).
 ///
-/// Fenix URLs have a different structure from Firefox/Thunderbird:
-/// - Release/Beta: `{FENIX_FTP_BASE}/releases/{version}/android/fenix-{version}-android-{abi}/fenix-{version}.multi.android-{abi}.apk`
-/// - Nightly: `{FENIX_FTP_BASE}/nightly/{year}/{month}/{timestamp}-fenix-{version}-android-{abi}/fenix-{version}.multi.android-{abi}.apk`
-fn build_fenix_archive_url(locator: &ArchiveLocator) -> Result<String> {
+/// Both products share the same URL structure, just with different base URL and product name:
+/// - Release/Beta: `{base}/releases/{version}/android/{product}-{version}-android-{abi}/{product}-{version}.multi.android-{abi}.apk`
+/// - Nightly: `{base}/nightly/{year}/{month}/{timestamp}-{product}-{version}-android-{abi}/{product}-{version}.multi.android-{abi}.apk`
+fn build_android_archive_url(locator: &ArchiveLocator) -> Result<String> {
+    let product = &locator.product;
     let version = &locator.version;
     let abi = locator.platform.strip_prefix("android-")
-        .ok_or_else(|| anyhow::anyhow!("Fenix platform must be android-{{abi}}, got: {}", locator.platform))?;
+        .ok_or_else(|| anyhow::anyhow!("{product} platform must be android-{{abi}}, got: {}", locator.platform))?;
+
+    let ftp_base = match product.as_str() {
+        "fenix" => FENIX_FTP_BASE,
+        "focus" => FOCUS_FTP_BASE,
+        other => bail!("unknown Android product: {other}"),
+    };
+    let product_cap = match product.as_str() {
+        "fenix" => "Fenix",
+        "focus" => "Focus",
+        _ => product,
+    };
 
     match locator.channel.as_str() {
         "release" | "beta" => {
             Ok(format!(
-                "{FENIX_FTP_BASE}/releases/{version}/android/fenix-{version}-android-{abi}/fenix-{version}.multi.android-{abi}.apk"
+                "{ftp_base}/releases/{version}/android/{product}-{version}-android-{abi}/{product}-{version}.multi.android-{abi}.apk"
             ))
         }
         "nightly" => {
@@ -221,14 +236,14 @@ fn build_fenix_archive_url(locator: &ArchiveLocator) -> Result<String> {
             let sec = &build_id[12..14];
             let timestamp = format!("{year}-{month}-{day}-{hour}-{min}-{sec}");
             Ok(format!(
-                "{FENIX_FTP_BASE}/nightly/{year}/{month}/{timestamp}-fenix-{version}-android-{abi}/fenix-{version}.multi.android-{abi}.apk"
+                "{ftp_base}/nightly/{year}/{month}/{timestamp}-{product}-{version}-android-{abi}/{product}-{version}.multi.android-{abi}.apk"
             ))
         }
         "esr" => {
-            bail!("ESR channel is not available for Fenix")
+            bail!("ESR channel is not available for {product_cap}")
         }
         "aurora" => {
-            bail!("aurora channel is not available for Fenix")
+            bail!("aurora channel is not available for {product_cap}")
         }
         other => bail!("unknown channel: {other} (expected: release, beta, nightly)"),
     }
@@ -1486,12 +1501,12 @@ mod tests {
     }
 
     #[test]
-    fn test_fenix_arch() {
-        assert_eq!(fenix_arch("arm64"), Some("arm64-v8a"));
-        assert_eq!(fenix_arch("arm"), Some("armeabi-v7a"));
-        assert_eq!(fenix_arch("x86_64"), Some("x86_64"));
-        assert_eq!(fenix_arch("x86"), Some("x86"));
-        assert_eq!(fenix_arch("mips"), None);
+    fn test_android_arch() {
+        assert_eq!(android_arch("arm64"), Some("arm64-v8a"));
+        assert_eq!(android_arch("arm"), Some("armeabi-v7a"));
+        assert_eq!(android_arch("x86_64"), Some("x86_64"));
+        assert_eq!(android_arch("x86"), Some("x86"));
+        assert_eq!(android_arch("mips"), None);
     }
 
     #[test]
@@ -1569,6 +1584,51 @@ mod tests {
     }
 
     #[test]
+    fn test_build_archive_url_focus_release() {
+        let locator = ArchiveLocator {
+            product: "focus".to_string(),
+            version: "134.0.2".to_string(),
+            channel: "release".to_string(),
+            platform: "android-arm64-v8a".to_string(),
+            build_id: None,
+        };
+        let url = build_archive_url(&locator).unwrap();
+        assert_eq!(
+            url,
+            "https://ftp.mozilla.org/pub/focus/releases/134.0.2/android/focus-134.0.2-android-arm64-v8a/focus-134.0.2.multi.android-arm64-v8a.apk"
+        );
+    }
+
+    #[test]
+    fn test_build_archive_url_focus_nightly() {
+        let locator = ArchiveLocator {
+            product: "focus".to_string(),
+            version: "136.0a1".to_string(),
+            channel: "nightly".to_string(),
+            platform: "android-arm64-v8a".to_string(),
+            build_id: Some("20250601093042".to_string()),
+        };
+        let url = build_archive_url(&locator).unwrap();
+        assert_eq!(
+            url,
+            "https://ftp.mozilla.org/pub/focus/nightly/2025/06/2025-06-01-09-30-42-focus-136.0a1-android-arm64-v8a/focus-136.0a1.multi.android-arm64-v8a.apk"
+        );
+    }
+
+    #[test]
+    fn test_build_archive_url_focus_esr_rejected() {
+        let locator = ArchiveLocator {
+            product: "focus".to_string(),
+            version: "128.10.0".to_string(),
+            channel: "esr".to_string(),
+            platform: "android-arm64-v8a".to_string(),
+            build_id: None,
+        };
+        let err = build_archive_url(&locator).unwrap_err();
+        assert!(err.to_string().contains("not available for Focus"));
+    }
+
+    #[test]
     fn test_extract_from_apk() {
         use std::io::Write;
 
@@ -1626,6 +1686,20 @@ mod tests {
     fn test_resolve_product_platform_fenix_android() {
         let result = resolve_product_platform("fenix", "Android", "arm64").unwrap();
         assert_eq!(result, Some(("fenix".to_string(), "android-arm64-v8a".to_string())));
+    }
+
+    #[test]
+    fn test_resolve_product_platform_focus_linux() {
+        // Android builds have MODULE line saying "Linux", so --product focus
+        // should work regardless of OS.
+        let result = resolve_product_platform("focus", "Linux", "arm").unwrap();
+        assert_eq!(result, Some(("focus".to_string(), "android-armeabi-v7a".to_string())));
+    }
+
+    #[test]
+    fn test_resolve_product_platform_focus_android() {
+        let result = resolve_product_platform("focus", "Android", "arm64").unwrap();
+        assert_eq!(result, Some(("focus".to_string(), "android-arm64-v8a".to_string())));
     }
 
     #[test]

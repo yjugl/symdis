@@ -28,7 +28,7 @@ const DISASM_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   (from release info)    --channel           release|beta|esr|nightly|aurora
   (from release info)    --build-id          14-digit timestamp (nightly only)
   (snap source paths)    --snap              Snap package name (auto-detected)
-  (from product name)    --product           firefox|thunderbird|fenix (default: firefox)
+  (from product name)    --product           firefox|thunderbird|fenix|focus (default: firefox)
 
 BINARY FETCH CHAIN:
 
@@ -41,8 +41,8 @@ BINARY FETCH CHAIN:
     6. Mozilla FTP archive (--version + --channel required):
        - Linux: downloads .tar.xz from /pub/firefox/releases/
        - macOS: downloads .pkg from /pub/firefox/releases/
-       - Android: downloads .apk from /pub/fenix/releases/
-         (requires --product fenix; see FENIX section below)
+       - Android: downloads .apk from /pub/fenix/releases/ or /pub/focus/releases/
+         (requires --product fenix or --product focus; see sections below)
 
   Providing --code-file and --code-id significantly improves success for
   steps 2-3. Step 5 auto-detects the snap name from source file paths in
@@ -64,6 +64,27 @@ FENIX (FIREFOX FOR ANDROID):
 
   Required flags for Fenix binary fetch:
     --product fenix --version <VERSION> --channel <CHANNEL>
+
+  Supported channels: release, beta, nightly (no ESR or aurora).
+  For nightly, --build-id is also required.
+
+  The binary is extracted from the APK archive at lib/{abi}/libxul.so,
+  where the ABI (arm64-v8a, armeabi-v7a, x86_64, x86) is derived from
+  the architecture in the .sym file.
+
+FOCUS (FIREFOX FOCUS FOR ANDROID):
+
+  For Firefox Focus crashes, you MUST pass --product focus explicitly.
+  Like Fenix, auto-detection is not possible because Android .sym files
+  report their OS as "Linux", not "Android".
+
+  How to recognize a Focus crash report:
+    - The crash report Product field says "Focus"
+    - The crash report OS field says "Android"
+    - The build architecture is arm or arm64 (sometimes x86/x86_64)
+
+  Required flags for Focus binary fetch:
+    --product focus --version <VERSION> --channel <CHANNEL>
 
   Supported channels: release, beta, nightly (no ESR or aurora).
   For nightly, --build-id is also required.
@@ -132,6 +153,14 @@ EXAMPLES:
       --version 147.0.3 --channel release \
       --offset 0x03fc39d4 --highlight-offset 0x03fc39d4
 
+  # Focus (Firefox Focus for Android) -- MUST use --product focus:
+  symdis disasm \
+      --debug-file libxul.so \
+      --debug-id AABBCCDD11223344AABBCCDD11223344A \
+      --product focus \
+      --version 134.0.2 --channel release \
+      --offset 0x01234567
+
   # Search by function name (substring match):
   symdis disasm \
       --debug-file xul.pdb \
@@ -160,8 +189,9 @@ TIPS:
   - For Thunderbird crashes, add --product thunderbird to fetch
     binaries from the Thunderbird FTP archive instead of Firefox.
   - For Fenix (Firefox for Android) crashes, --product fenix is
-    REQUIRED. It cannot be auto-detected because Android .sym files
-    report OS as "Linux". See the FENIX section above for details."#;
+    REQUIRED. For Focus (Firefox Focus), use --product focus.
+    Neither can be auto-detected because Android .sym files report
+    OS as "Linux". See the FENIX and FOCUS sections above for details."#;
 
 const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 
@@ -202,7 +232,7 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   (from release info)    --channel       release|beta|esr|nightly|aurora
   (from release info)    --build-id      14-digit timestamp (nightly only)
   (snap source paths)    --snap          Snap package name (explicit only)
-  (from product name)    --product       firefox|thunderbird|fenix (default: firefox)
+  (from product name)    --product       firefox|thunderbird|fenix|focus (default: firefox)
 
   Pre-fetches the .sym file and native binary into the local cache so
   that subsequent disasm calls are instant cache hits. Useful when you
@@ -211,10 +241,10 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   Binary fetch chain: cache → Tecken → Microsoft (Windows) → debuginfod
   (Linux) → Snap Store (Linux, --snap) → FTP archive (--version + --channel).
 
-  For Android/Fenix crashes, --product fenix is REQUIRED (it cannot be
-  auto-detected because Android .sym files report OS as "Linux").
-  Fenix binary fetch downloads the APK from Mozilla's FTP server and
-  extracts the native library from lib/{abi}/ inside the APK.
+  For Android crashes, --product fenix or --product focus is REQUIRED
+  (it cannot be auto-detected because Android .sym files report OS as
+  "Linux"). Binary fetch downloads the APK from Mozilla's FTP server
+  and extracts the native library from lib/{abi}/ inside the APK.
 
   Note: snap auto-detection from sym file source paths is only available
   in the disasm command. For fetch, use --snap explicitly.
@@ -239,6 +269,13 @@ EXAMPLES:
       --debug-id 9E915B1A91D7345C4FF0753CF13E53280 \
       --product fenix \
       --version 147.0.3 --channel release
+
+  # Pre-fetch a Focus (Android) module:
+  symdis fetch \
+      --debug-file libxul.so \
+      --debug-id AABBCCDD11223344AABBCCDD11223344A \
+      --product focus \
+      --version 134.0.2 --channel release
 
   # Pre-fetch a snap library:
   symdis fetch \
@@ -399,8 +436,8 @@ pub struct DisasmArgs {
     #[arg(long)]
     pub snap: Option<String>,
 
-    /// Mozilla product: firefox (default), thunderbird, or fenix.
-    /// For Android/Fenix crashes, you MUST specify --product fenix.
+    /// Mozilla product: firefox (default), thunderbird, fenix, or focus.
+    /// For Android crashes, you MUST specify --product fenix or --product focus.
     /// It cannot be auto-detected (Android .sym files report OS as "Linux").
     #[arg(long, default_value = "firefox")]
     pub product: String,
