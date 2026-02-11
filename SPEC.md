@@ -21,6 +21,7 @@ When an AI agent analyzes a Mozilla crash report (from Socorro/Crash Stats), it 
 - **Stateless invocations**: Each command is self-contained. No persistent server process or session state.
 - **Graceful degradation**: Returns whatever information is available, even if incomplete (e.g., symbol info without disassembly when binaries are unavailable).
 - **Minimal configuration**: Works out of the box with sensible defaults; respects existing system symbol caches.
+- **Public data only**: All inputs (module identifiers, offsets, function names) and downloads (symbol files, binaries) are publicly available. symdis does not process minidumps, memory contents, crash annotations, or any other [protected data](https://crash-stats.mozilla.org/documentation/protected_data_access/).
 
 ---
 
@@ -40,6 +41,7 @@ When an AI agent analyzes a Mozilla crash report (from Socorro/Crash Stats), it 
 ### Non-Goals
 
 - Processing raw minidump files (use `minidump-stackwalk` for that).
+- Processing [protected crash report data](https://crash-stats.mozilla.org/documentation/protected_data_access/) (user comments, email addresses, URLs, memory contents).
 - Full decompilation to C/C++ (use Ghidra or IDA for that).
 - Stack unwinding or crash reprocessing.
 - Uploading symbols.
@@ -736,6 +738,8 @@ The following features are out of scope for v0.1 but may be added later:
 ### 13.1. Crash Stats Integration
 
 Direct integration with Mozilla's Crash Stats (Socorro) API to fetch processed crash reports by crash ID, eliminating the need for the user to manually download the JSON.
+
+> **Privacy note:** Processed crash reports from the Socorro API may contain [protected data](https://crash-stats.mozilla.org/documentation/protected_data_access/) (user comments, email addresses, URLs). If this feature is implemented, it must extract only publicly available fields (module identifiers, stack trace offsets, function names, release metadata) and must not store, log, or forward protected fields. See also Mozilla's [AI and Coding](https://firefox-source-docs.mozilla.org/contributing/ai-coding.html) policy regarding data sent to AI tools.
 
 ### 13.2. Decompilation
 

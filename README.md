@@ -1,6 +1,6 @@
 # symdis
 
-A CLI tool for disassembling functions from Mozilla crash reports. Given a module identifier and either a function name or an offset, `symdis` fetches the binary and symbol information from Mozilla's and Microsoft's symbol servers, disassembles the target function, and annotates it with source lines, call targets, and inline frames.
+A CLI tool for disassembling functions from Mozilla crash reports. Given a module identifier and either a function name or an offset, `symdis` fetches the binary and symbol information from public servers, disassembles the target function, and annotates it with source lines, call targets, and inline frames.
 
 Designed primarily for use by AI agents analyzing [Socorro/Crash Stats](https://crash-stats.mozilla.org/) crash reports, but also useful for manual crash triage and reverse engineering.
 
@@ -20,16 +20,12 @@ Designed primarily for use by AI agents analyzing [Socorro/Crash Stats](https://
 
 ## Installation
 
-```bash
-cargo install symdis
-```
-
-Or build from source:
+From source:
 
 ```bash
-git clone https://github.com/<owner>/symdis.git
+git clone https://github.com/yjugl/symdis.git
 cd symdis
-cargo build --release
+cargo install --path .
 ```
 
 ## Quick Start
@@ -214,6 +210,18 @@ Downloaded symbol files and binaries are cached locally. The cache directory is 
 5. Platform default (`%LOCALAPPDATA%\symdis\cache`, `~/.cache/symdis`, or `~/Library/Caches/symdis`)
 
 The cache uses WinDbg-compatible flat layout (`<file>/<id>/<file>`) so it can be shared with other symbol tools.
+
+## Data and Privacy
+
+symdis processes only **publicly available data**:
+
+- **Inputs**: Module identifiers (debug file, debug ID, code file, code ID), function names, and offsets — all from the public portions of crash reports on [Crash Stats](https://crash-stats.mozilla.org/).
+- **Downloads**: Symbol files and binaries from public symbol servers (Mozilla Tecken, Microsoft, debuginfod) and public archives (Mozilla FTP, Snap Store).
+- **Does NOT process**: Minidumps, memory contents, crash annotations, user comments, URLs, email addresses, or any other [protected data](https://crash-stats.mozilla.org/documentation/protected_data_access/).
+
+When using symdis — whether manually or through an AI agent — only provide data from **publicly accessible crash report fields** (stack traces, module lists, release information). Do not pass [protected crash report data](https://crash-stats.mozilla.org/documentation/protected_data_access/) (such as user comments, email addresses, or URLs from crash annotations) to symdis or to AI tools analyzing crash reports.
+
+For Mozilla's policies on using AI tools in development, see [AI and Coding](https://firefox-source-docs.mozilla.org/contributing/ai-coding.html). For contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Documentation
 
