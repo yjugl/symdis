@@ -25,7 +25,7 @@ const DISASM_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   module.filename        --code-file         Improves binary fetch (Windows)
   module.code_id         --code-id           Improves binary fetch (Windows)
   (from release info)    --version           E.g. "128.0.3". FTP fallback
-  (from release info)    --channel           release|beta|esr|nightly|aurora
+  (from release info)    --channel           release|beta|esr|nightly|aurora|default
   (from release info)    --build-id          14-digit timestamp (nightly only)
   (snap source paths)    --snap              Snap package name (auto-detected)
   (from product name)    --product           firefox|thunderbird|fenix|focus (default: firefox)
@@ -229,7 +229,7 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   module.filename        --code-file     Improves binary fetch (Windows)
   module.code_id         --code-id       Improves binary fetch (Windows)
   (from release info)    --version       E.g. "128.0.3". FTP fallback
-  (from release info)    --channel       release|beta|esr|nightly|aurora
+  (from release info)    --channel       release|beta|esr|nightly|aurora|default
   (from release info)    --build-id      14-digit timestamp (nightly only)
   (snap source paths)    --snap          Snap package name (explicit only)
   (from product name)    --product       firefox|thunderbird|fenix|focus (default: firefox)
@@ -424,7 +424,7 @@ pub struct DisasmArgs {
     #[arg(long)]
     pub version: Option<String>,
 
-    /// Release channel (release, beta, nightly, esr, aurora) for FTP archive fallback
+    /// Release channel (release, beta, nightly, esr, aurora, default) for FTP archive fallback
     #[arg(long)]
     pub channel: Option<String>,
 
@@ -496,7 +496,7 @@ pub struct InfoArgs {
     #[arg(long)]
     pub version: Option<String>,
 
-    /// Release channel (release, beta, nightly, esr, aurora) for FTP archive fallback
+    /// Release channel (release, beta, nightly, esr, aurora, default) for FTP archive fallback
     #[arg(long)]
     pub channel: Option<String>,
 
@@ -533,7 +533,7 @@ pub struct FetchArgs {
     #[arg(long)]
     pub version: Option<String>,
 
-    /// Release channel (release, beta, nightly, esr, aurora) for FTP archive fallback
+    /// Release channel (release, beta, nightly, esr, aurora, default) for FTP archive fallback
     #[arg(long)]
     pub channel: Option<String>,
 

@@ -76,8 +76,16 @@ pub fn resolve_product_platform(
         "fenix" | "focus" => {
             // Trust the user — Android builds have MODULE line saying "Linux",
             // so we can't rely on OS detection.
-            let abi = android_arch(arch)
-                .ok_or_else(|| anyhow::anyhow!("unsupported architecture for {product}: {arch}"))?;
+            let abi = android_arch(arch).ok_or_else(|| {
+                if arch.is_empty() {
+                    anyhow::anyhow!(
+                        "cannot determine architecture for {product} \
+                         (no sym file available for this module)"
+                    )
+                } else {
+                    anyhow::anyhow!("unsupported architecture for {product}: {arch}")
+                }
+            })?;
             Ok(Some((product.to_string(), format!("android-{abi}"))))
         }
         "firefox" if is_android => {
@@ -123,7 +131,10 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
     };
 
     match locator.channel.as_str() {
-        "release" | "beta" => {
+        "release" | "beta" | "default" => {
+            if locator.channel == "default" {
+                debug!("treating channel 'default' as 'release' for FTP archive lookup");
+            }
             if is_mac {
                 Ok(format!(
                     "{ftp_base}/releases/{version}/{platform}/en-US/{prefix_cap}%20{version}.pkg"
@@ -190,7 +201,7 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
                 ))
             }
         }
-        other => bail!("unknown channel: {other} (expected: release, beta, esr, nightly, aurora)"),
+        other => bail!("unknown channel: {other} (expected: release, beta, esr, nightly, aurora, default)"),
     }
 }
 
@@ -217,7 +228,10 @@ fn build_android_archive_url(locator: &ArchiveLocator) -> Result<String> {
     };
 
     match locator.channel.as_str() {
-        "release" | "beta" => {
+        "release" | "beta" | "default" => {
+            if locator.channel == "default" {
+                debug!("treating channel 'default' as 'release' for FTP archive lookup");
+            }
             Ok(format!(
                 "{ftp_base}/releases/{version}/android/{product}-{version}-android-{abi}/{product}-{version}.multi.android-{abi}.apk"
             ))
@@ -245,7 +259,7 @@ fn build_android_archive_url(locator: &ArchiveLocator) -> Result<String> {
         "aurora" => {
             bail!("aurora channel is not available for {product_cap}")
         }
-        other => bail!("unknown channel: {other} (expected: release, beta, nightly)"),
+        other => bail!("unknown channel: {other} (expected: release, beta, nightly, default)"),
     }
 }
 
@@ -674,7 +688,8 @@ pub fn verify_binary_id(data: &[u8], expected: &str) -> Result<()> {
         } else {
             bail!(
                 "build ID mismatch: expected {expected}, got {elf_id}\n\
-                 The archive may contain a different build than expected"
+                 This often happens with Linux distribution rebuilds (e.g. Ubuntu, Fedora) \
+                 which produce different build IDs from Mozilla's official builds."
             );
         }
     }
@@ -1810,6 +1825,80 @@ mod tests {
         let urls = candidate_archive_urls(&locator).unwrap();
         assert_eq!(urls.len(), 2); // only tar.xz + tar.bz2
         assert!(!urls[0].contains("esr"));
+    }
+
+    #[test]
+    fn test_build_archive_url_default_channel_linux() {
+        // "default" channel (from distro builds) should map to release URLs
+        let locator = ArchiveLocator {
+            product: "firefox".to_string(),
+            version: "128.0.3".to_string(),
+            channel: "default".to_string(),
+            platform: "linux-x86_64".to_string(),
+            build_id: None,
+        };
+        let url = build_archive_url(&locator).unwrap();
+        assert_eq!(
+            url,
+            "https://ftp.mozilla.org/pub/firefox/releases/128.0.3/linux-x86_64/en-US/firefox-128.0.3.tar.xz"
+        );
+    }
+
+    #[test]
+    fn test_build_archive_url_default_channel_fenix() {
+        // "default" channel should also work for Android products
+        let locator = ArchiveLocator {
+            product: "fenix".to_string(),
+            version: "134.0.2".to_string(),
+            channel: "default".to_string(),
+            platform: "android-arm64-v8a".to_string(),
+            build_id: None,
+        };
+        let url = build_archive_url(&locator).unwrap();
+        assert_eq!(
+            url,
+            "https://ftp.mozilla.org/pub/fenix/releases/134.0.2/android/fenix-134.0.2-android-arm64-v8a/fenix-134.0.2.multi.android-arm64-v8a.apk"
+        );
+    }
+
+    #[test]
+    fn test_resolve_product_platform_fenix_empty_arch() {
+        // Empty arch should give a clear error about missing sym file
+        let result = resolve_product_platform("fenix", "Linux", "");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("cannot determine architecture"));
+        assert!(msg.contains("no sym file"));
+    }
+
+    #[test]
+    fn test_resolve_product_platform_focus_empty_arch() {
+        let result = resolve_product_platform("focus", "Linux", "");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("cannot determine architecture"));
+        assert!(msg.contains("no sym file"));
+    }
+
+    #[test]
+    fn test_resolve_product_platform_fenix_unsupported_arch() {
+        // Non-empty but unsupported arch should mention the arch name
+        let result = resolve_product_platform("fenix", "Linux", "mips");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("unsupported architecture"));
+        assert!(msg.contains("mips"));
+    }
+
+    #[test]
+    fn test_verify_binary_id_elf_mismatch_distro_message() {
+        // ELF build ID mismatch should mention distribution rebuilds
+        let elf_data = build_elf_with_build_id(b"\xaa\xbb\xcc\xdd");
+        let result = verify_binary_id(&elf_data, "11223344");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("mismatch"));
+        assert!(msg.contains("distribution rebuilds"));
     }
 
     /// Helper: build a minimal 64-bit little-endian ELF with a .note.gnu.build-id section.
