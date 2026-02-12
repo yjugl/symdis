@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 license = "MPL-2.0"
 description = "Symbolic disassembler for Mozilla crash report analysis"
+repository = "https://github.com/yjugl/symdis"
+homepage = "https://github.com/yjugl/symdis"
+readme = "README.md"
+keywords = ["disassembler", "crash-analysis", "symbols", "mozilla", "debugging"]
+categories = ["command-line-utilities", "development-tools::debugging"]
+exclude = ["IMPLEMENTATION.md", "CLAUDE.md", ".github/"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -11,7 +17,7 @@ anyhow = "1.0"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-reqwest = { version = "0.12", features = ["gzip", "rustls-tls", "json"] }
+reqwest = { version = "0.12", default-features = false, features = ["gzip", "rustls-tls", "json"] }
 goblin = "0.9"
 capstone = "0.13"
 cab = "0.6"
@@ -30,3 +36,13 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 backhand = { version = "0.24", default-features = false, features = ["xz", "lzo"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/symdis-{ target }.tar.gz"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"

@@ -21,7 +21,19 @@ Designed primarily for use by AI agents analyzing [Socorro/Crash Stats](https://
 
 ## Installation
 
+Pre-built binaries (fastest):
+
+```bash
+cargo binstall symdis
+```
+
 From source:
+
+```bash
+cargo install symdis
+```
+
+Or clone and build:
 
 ```bash
 git clone https://github.com/yjugl/symdis.git
