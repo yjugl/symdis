@@ -36,14 +36,10 @@ pub fn run(args: CacheArgs, config: &Config) -> Result<()> {
                 return Ok(());
             }
             let removed = clear_cache(root, older_than)?;
-            if older_than.is_some() {
-                println!(
-                    "Removed {} files older than {} days.",
-                    removed,
-                    older_than.unwrap()
-                );
+            if let Some(days) = older_than {
+                println!("Removed {removed} files older than {days} days.");
             } else {
-                println!("Removed {} files.", removed);
+                println!("Removed {removed} files.");
             }
             Ok(())
         }
