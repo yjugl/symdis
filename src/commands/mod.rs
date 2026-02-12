@@ -13,7 +13,26 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::config::Config;
 
-const DISASM_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
+const DISASM_LONG_HELP: &str = r#"SYMBOL COVERAGE — NOT LIMITED TO MOZILLA MODULES:
+
+  Mozilla's crash infrastructure automatically downloads Microsoft PDBs for
+  ALL modules appearing in crash stacks and uploads .sym files generated from
+  them to the Tecken symbol server. This means symdis has symbol coverage for
+  many non-Mozilla modules, especially Microsoft-issued Windows system DLLs
+  such as ntdll.dll, kernel32.dll, kernelbase.dll, win32u.dll, and many
+  others. For these, full annotated disassembly is typically possible —
+  Tecken provides the .sym file (generated from the PDB), and the binary
+  is fetched from Microsoft's symbol server.
+
+  AI agents: you SHOULD try symdis on any module from a crash report, not
+  just Mozilla-issued DLLs. Third-party modules may also sometimes have
+  .sym files on Tecken (when their vendors publish PDBs), so it is still
+  worth trying.
+
+  Use 'symdis info' to quickly check if symbols are available for a module
+  before attempting full disassembly.
+
+CRASH REPORT FIELD MAPPING:
 
   Socorro JSON field     CLI flag            Notes
   ---------------------  ------------------  -------------------------------
@@ -22,8 +41,8 @@ const DISASM_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   frame.module_offset    --offset            Hex (with or without 0x prefix)
   frame.function         --function          Exact match; --fuzzy for substr
   frame.module_offset    --highlight-offset  Marks crash address with ==>
-  module.filename        --code-file         Improves binary fetch (Windows)
-  module.code_id         --code-id           Improves binary fetch (Windows)
+  module.filename        --code-file         Strongly recommended for binary fetch
+  module.code_id         --code-id           Strongly recommended for binary fetch
   (from release info)    --version           E.g. "128.0.3". FTP fallback
   (from release info)    --channel           release|beta|esr|nightly|aurora|default
   (from release info)    --build-id          14-digit timestamp (nightly only)
@@ -44,12 +63,17 @@ BINARY FETCH CHAIN:
        - Android: downloads .apk from /pub/fenix/releases/ or /pub/focus/releases/
          (requires --product fenix or --product focus; see sections below)
 
-  Providing --code-file and --code-id significantly improves success for
-  steps 2-3. Step 5 auto-detects the snap name from source file paths in
-  the .sym file (e.g. /build/gnome-42-2204-sdk/parts/...), or use --snap
-  to specify it explicitly. Providing --version and --channel enables
-  step 6 as a last resort. The .sym file is always fetched from Tecken
-  using --debug-file and --debug-id.
+  ALWAYS provide --code-file and --code-id when available in the crash
+  report (module.filename and module.code_id). Without them, binary fetch
+  is much less likely to succeed, and you will only get sym-only output
+  (function metadata without disassembly). With them, you get full
+  annotated disassembly (source lines, call targets, inline frames).
+
+  Step 5 auto-detects the snap name from source file paths in the .sym
+  file (e.g. /build/gnome-42-2204-sdk/parts/...), or use --snap to
+  specify it explicitly. Providing --version and --channel enables step 6
+  as a last resort. The .sym file is always fetched from Tecken using
+  --debug-file and --debug-id.
 
 FENIX (FIREFOX FOR ANDROID):
 
@@ -107,25 +131,27 @@ EXAMPLES:
   # Windows module -- disassemble by offset, highlight crash address:
   symdis disasm \
       --debug-file xul.pdb \
-      --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
-      --code-file xul.dll --code-id 5CF2591C6859000 \
-      --offset 0x1a3f00 --highlight-offset 0x1a3f00
+      --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+      --code-file xul.dll --code-id 68d1a3cd87be000 \
+      --offset 0x0144c8d2 --highlight-offset 0x0144c8d2
 
   # Linux module -- with FTP archive fallback:
   symdis disasm \
       --debug-file libxul.so \
-      --debug-id 0200CE7B29CF2F761BB067BC519155A00 \
-      --code-id 7bce0002cf29762f1bb067bc519155a0cb3f4a31 \
-      --version 128.0.3 --channel release \
-      --offset 0x3bb5231 --highlight-offset 0x3bb5231
+      --debug-id 669D6B010E4BF04FF9B3F43CCF735A340 \
+      --code-file libxul.so \
+      --code-id 016b9d664b0e4ff0f9b3f43ccf735a3482db0fd6 \
+      --version 147.0.3 --channel release \
+      --offset 0x4616fda --highlight-offset 0x4616fda
 
   # macOS module -- fat/universal binary from PKG archive:
   symdis disasm \
       --debug-file XUL \
-      --debug-id 697EB30464C83C329FF3A1B119BAC88D0 \
-      --code-id 697eb30464c83c329ff3a1b119bac88d \
-      --version 128.0.3 --channel release \
-      --offset 0x1c019fb
+      --debug-id EA25538ED7533E56A4263F6D7050F3D20 \
+      --code-file XUL \
+      --code-id ea25538ed7533e56a4263f6d7050f3d2 \
+      --version 140.6.0esr --channel esr \
+      --offset 0x1cb6dd --highlight-offset 0x1cb6dd
 
   # Ubuntu snap library (auto-detected from sym file source paths):
   symdis disasm \
@@ -138,9 +164,11 @@ EXAMPLES:
   # Thunderbird module -- specify --product for non-Firefox products:
   symdis disasm \
       --debug-file libxul.so \
-      --debug-id AABBCCDD11223344AABBCCDD11223344A \
+      --debug-id DD03241500B9FE6BA15151BF6FE7A5560 \
+      --code-file libxul.so \
+      --code-id 152403ddb9006bfea15151bf6fe7a556ee3affd5 \
       --product thunderbird \
-      --version 147.0.1 --channel release \
+      --version 140.7.1esr --channel esr \
       --offset 0x6cad38e
 
   # Fenix (Firefox for Android) -- MUST use --product fenix:
@@ -156,25 +184,40 @@ EXAMPLES:
   # Focus (Firefox Focus for Android) -- MUST use --product focus:
   symdis disasm \
       --debug-file libxul.so \
-      --debug-id AABBCCDD11223344AABBCCDD11223344A \
+      --debug-id 84F39FCE18219B82A8BE7B29D89A0A020 \
+      --code-file libxul.so \
+      --code-id ce9ff3842118829ba8be7b29d89a0a02224010d2 \
       --product focus \
-      --version 134.0.2 --channel release \
-      --offset 0x01234567
+      --version 147.0.3 --channel release \
+      --offset 0x04534a78
 
   # Search by function name (substring match):
   symdis disasm \
       --debug-file xul.pdb \
-      --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
-      --function SetAttribute --fuzzy
+      --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+      --code-file xul.dll --code-id 68d1a3cd87be000 \
+      --function ProcessIncomingMessages --fuzzy
+
+  # Non-Mozilla module (Windows system DLL) -- works because Mozilla's
+  # crash infrastructure generates .sym files from Microsoft PDBs:
+  symdis disasm \
+      --debug-file ntdll.pdb \
+      --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
+      --code-file ntdll.dll --code-id 5b6dddee267000 \
+      --function NtCreateFile
 
   # JSON output for structured parsing:
   symdis disasm \
-      --debug-file ntdll.pdb \
-      --debug-id 1EB9FACB04EA273BB24BA52C8B8D336A1 \
-      --function NtCreateFile --format json
+      --debug-file xul.pdb \
+      --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+      --code-file xul.dll --code-id 68d1a3cd87be000 \
+      --function ProcessIncomingMessages --fuzzy --format json
 
 TIPS:
 
+  - ALWAYS pass --code-file and --code-id from the crash report. Without
+    them you usually get sym-only output (no disassembly). With them you
+    get full annotated disassembly with source lines and call targets.
   - Use --format json for machine-parseable output.
   - Use --highlight-offset with the crash address (frame.module_offset)
     to mark the faulting instruction with ==> in text output or
@@ -191,7 +234,10 @@ TIPS:
   - For Fenix (Firefox for Android) crashes, --product fenix is
     REQUIRED. For Focus (Firefox Focus), use --product focus.
     Neither can be auto-detected because Android .sym files report
-    OS as "Linux". See the FENIX and FOCUS sections above for details."#;
+    OS as "Linux". See the FENIX and FOCUS sections above for details.
+  - Don't skip non-Mozilla modules! Crashes in ntdll.dll, kernel32.dll,
+    and other Microsoft system DLLs are common and symdis has symbols for
+    them. Other third-party modules are also worth trying."#;
 
 const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 
@@ -211,14 +257,14 @@ EXAMPLES:
   # Resolve an offset to a symbol name:
   symdis lookup \
       --debug-file xul.pdb \
-      --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
-      --offset 0x1a3f00
+      --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+      --offset 0x0144c8d2
 
   # Find a function's address by name (substring match):
   symdis lookup \
       --debug-file xul.pdb \
-      --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
-      --function SetAttribute --fuzzy"#;
+      --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+      --function ProcessIncomingMessages --fuzzy"#;
 
 const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 
@@ -226,8 +272,8 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   ---------------------  --------------  --------------------------------
   module.debug_file      --debug-file    Required. E.g. "xul.pdb"
   module.debug_id        --debug-id      Required. 33-char hex string
-  module.filename        --code-file     Improves binary fetch (Windows)
-  module.code_id         --code-id       Improves binary fetch (Windows)
+  module.filename        --code-file     Strongly recommended for binary fetch
+  module.code_id         --code-id       Strongly recommended for binary fetch
   (from release info)    --version       E.g. "128.0.3". FTP fallback
   (from release info)    --channel       release|beta|esr|nightly|aurora|default
   (from release info)    --build-id      14-digit timestamp (nightly only)
@@ -236,7 +282,8 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 
   Pre-fetches the .sym file and native binary into the local cache so
   that subsequent disasm calls are instant cache hits. Useful when you
-  plan to disassemble multiple functions from the same module.
+  plan to disassemble multiple functions from the same module. Always
+  provide --code-file and --code-id to maximize binary fetch success.
 
   Binary fetch chain: cache → Tecken → Microsoft (Windows) → debuginfod
   (Linux) → Snap Store (Linux, --snap) → FTP archive (--version + --channel).
@@ -254,33 +301,41 @@ EXAMPLES:
   # Pre-fetch a Windows module:
   symdis fetch \
       --debug-file xul.pdb \
-      --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
-      --code-file xul.dll --code-id 5CF2591C6859000
+      --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+      --code-file xul.dll --code-id 68d1a3cd87be000
 
   # Pre-fetch a Linux module with FTP archive fallback:
   symdis fetch \
       --debug-file libxul.so \
-      --debug-id 0200CE7B29CF2F761BB067BC519155A00 \
-      --version 128.0.3 --channel release
+      --debug-id 669D6B010E4BF04FF9B3F43CCF735A340 \
+      --code-file libxul.so \
+      --code-id 016b9d664b0e4ff0f9b3f43ccf735a3482db0fd6 \
+      --version 147.0.3 --channel release
 
   # Pre-fetch a Fenix (Android) module:
   symdis fetch \
       --debug-file libxul.so \
       --debug-id 9E915B1A91D7345C4FF0753CF13E53280 \
+      --code-file libxul.so \
+      --code-id 1a5b919ed7915c344ff0753cf13e532814635a84 \
       --product fenix \
       --version 147.0.3 --channel release
 
   # Pre-fetch a Focus (Android) module:
   symdis fetch \
       --debug-file libxul.so \
-      --debug-id AABBCCDD11223344AABBCCDD11223344A \
+      --debug-id 84F39FCE18219B82A8BE7B29D89A0A020 \
+      --code-file libxul.so \
+      --code-id ce9ff3842118829ba8be7b29d89a0a02224010d2 \
       --product focus \
-      --version 134.0.2 --channel release
+      --version 147.0.3 --channel release
 
   # Pre-fetch a snap library:
   symdis fetch \
       --debug-file libglib-2.0.so.0 \
       --debug-id 8EF7C24A1B02B5A64F56BEA31DCF2B1E0 \
+      --code-file libglib-2.0.so.0 \
+      --code-id 4ac2f78e021ba6b54f56bea31dcf2b1e19c7f3bc \
       --snap gnome-42-2204-sdk
 
 TIPS:
@@ -306,8 +361,8 @@ EXAMPLES:
   # Check module metadata and sym/binary availability:
   symdis info \
       --debug-file xul.pdb \
-      --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
-      --code-file xul.dll --code-id 5CF2591C6859000
+      --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+      --code-file xul.dll --code-id 68d1a3cd87be000
 
 TIPS:
 
@@ -325,6 +380,9 @@ TIPS:
         symdis fetches symbols and binaries from Mozilla/Microsoft symbol \
         servers and produces annotated disassembly with source lines, call \
         targets, and inline frames.\n\n\
+        Works with ANY module in a crash report, not just Mozilla DLLs. \
+        Mozilla's crash infrastructure uploads .sym files to Tecken for all \
+        Microsoft modules seen in crash stacks (ntdll, kernel32, etc.).\n\n\
         Subcommands:\n  \
         disasm   Disassemble a function (primary command)\n  \
         lookup   Resolve offset → symbol or symbol → address (sym file only)\n  \

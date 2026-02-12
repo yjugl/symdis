@@ -29,7 +29,7 @@ When an AI agent analyzes a Mozilla crash report (from Socorro/Crash Stats), it 
 
 ### Goals
 
-- Disassemble functions from any module present in a Firefox crash report, across all platforms Firefox runs on (Windows, Linux, macOS, Android).
+- Disassemble functions from any module present in a Firefox crash report, across all platforms Firefox runs on (Windows, Linux, macOS, Android). This includes non-Mozilla modules — Tecken has `.sym` files for Microsoft-issued system DLLs, and other third-party modules may also have symbols available.
 - Resolve symbols by function name or by RVA (relative virtual address) / module offset.
 - Fetch the actual binary modules and symbol files from Mozilla's Tecken symbol server, Microsoft's public symbol server, and Linux debuginfod servers.
 - Annotate disassembly output with source file/line information when available.
@@ -72,37 +72,37 @@ An AI agent analyzing a crash report follows this workflow:
 # Disassemble a function by name
 $ symdis disasm \
     --debug-file xul.pdb \
-    --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
-    --function "mozilla::dom::Element::SetAttribute"
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --function "IPC::Channel::ChannelImpl::ProcessIncomingMessages"
 
 # Disassemble the function containing a specific offset
 $ symdis disasm \
     --debug-file xul.pdb \
-    --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
-    --offset 0x1a3f00
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --offset 0x0144c8d2
 
 # Same, with JSON output
 $ symdis disasm \
     --debug-file xul.pdb \
-    --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
-    --offset 0x1a3f00 \
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --offset 0x0144c8d2 \
     --format json
 
 # Look up what symbol is at a given offset
 $ symdis lookup \
     --debug-file xul.pdb \
-    --debug-id 44E4EC8C2F41492B9369D6B9A059577C2 \
-    --offset 0x1a3f00
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --offset 0x0144c8d2
 
 # Show module metadata
 $ symdis info \
     --debug-file xul.pdb \
-    --debug-id 44E4EC8C2F41492B9369D6B9A059577C2
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1
 
 # Pre-fetch symbols and binary for a module
 $ symdis fetch \
     --debug-file xul.pdb \
-    --debug-id 44E4EC8C2F41492B9369D6B9A059577C2
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1
 ```
 
 ---
@@ -345,6 +345,8 @@ GET /<code_file>/<code_id>/<code_file>
 Example: `GET /xul.dll/5CF2591C6859000/xul.dll`
 
 Additionally, Tecken proxies requests to Microsoft's symbol server for modules it doesn't have.
+
+**Important:** Tecken's `.sym` coverage extends beyond Mozilla-issued modules. Mozilla's crash infrastructure automatically downloads Microsoft PDBs for all modules appearing in crash stacks and uploads `.sym` files generated from them to Tecken. This means Tecken has `.sym` files for many Microsoft-issued Windows system DLLs (ntdll.dll, kernel32.dll, kernelbase.dll, win32u.dll, etc.). Other third-party modules may also have `.sym` files on Tecken when their vendors publish PDBs, so it is worth trying `symdis` on any module from a crash report.
 
 ### 5.3. Microsoft Symbol Server
 
@@ -603,6 +605,8 @@ Command-line flags > Environment variables > Config file > Built-in defaults.
 | Android ARM/AArch64 | Mozilla Tecken (if uploaded) | Mozilla Tecken (`.sym`) | Depends on binary availability |
 
 **Note:** Windows has the best binary availability because both Microsoft and Mozilla make PE files accessible via their symbol servers. Linux has reasonable support via debuginfod for distribution packages. macOS and Android have the weakest binary availability — Mozilla may not upload raw binaries to Tecken for these platforms, limiting disassembly to cases where the binary can be obtained from other sources (e.g., local builds).
+
+**Important:** Tecken's `.sym` coverage is not limited to Mozilla modules. Mozilla's crash infrastructure automatically downloads Microsoft PDBs for all modules appearing in crash stacks and uploads `.sym` files generated from them. This means full annotated disassembly is typically possible for Microsoft-issued Windows system DLLs (ntdll, kernel32, kernelbase, etc.) — Tecken provides the `.sym` file and Microsoft's symbol server provides the PE binary. Other third-party modules may also have `.sym` files on Tecken when their vendors publish PDBs.
 
 ### Fallback Behavior
 

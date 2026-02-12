@@ -7,6 +7,7 @@ Designed primarily for use by AI agents analyzing [Socorro/Crash Stats](https://
 ## Features
 
 - **Fetch symbols and binaries** from Mozilla's [Tecken](https://symbols.mozilla.org/) symbol server, Microsoft's public symbol server, [debuginfod](https://sourceware.org/elfutils/Debuginfod.html) servers, the [Snap Store](https://snapcraft.io/) (Ubuntu snaps), and Mozilla's FTP archive — with automatic CAB decompression, `.tar.xz` extraction, `.pkg` (XAR/cpio) extraction, and `.apk` (ZIP) extraction
+- **Not limited to Mozilla modules**: Mozilla's crash infrastructure generates `.sym` files from Microsoft PDBs for all modules seen in crash stacks, so Windows system DLLs (ntdll, kernel32, kernelbase, etc.) are fully supported. Other third-party modules may also have symbols available
 - **Windows, Linux, macOS, and Android** module support: PE (via section table), ELF (via PT_LOAD segments), and Mach-O (including fat/universal binaries) binary formats; Android support for Fenix (Firefox for Android) and Focus (Firefox Focus) via APK extraction
 - **Find functions** by exact name, substring match (`--fuzzy`), or by RVA/offset
 - **Disassemble** x86, x86-64, ARM32, and AArch64 code via [Capstone](https://www.capstone-engine.org/)
@@ -42,20 +43,23 @@ symdis disasm \
 symdis disasm \
     --debug-file xul.pdb \
     --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --code-file xul.dll --code-id 68d1a3cd87be000 \
     --function ProcessIncomingMessages --fuzzy
 
 # Linux module with FTP archive fallback
 symdis disasm \
     --debug-file libxul.so \
-    --debug-id A3453044A5701E725A49D1F7B641B08B0 \
-    --code-id 443045a370a5721e5a49d1f7b641b08b63c76557 \
-    --version 147.0.2 --channel release \
-    --offset 0x71327c6 --highlight-offset 0x71327c6
+    --debug-id 669D6B010E4BF04FF9B3F43CCF735A340 \
+    --code-file libxul.so \
+    --code-id 016b9d664b0e4ff0f9b3f43ccf735a3482db0fd6 \
+    --version 147.0.3 --channel release \
+    --offset 0x4616fda --highlight-offset 0x4616fda
 
 # macOS module (fat/universal binary from PKG archive)
 symdis disasm \
     --debug-file XUL \
     --debug-id EA25538ED7533E56A4263F6D7050F3D20 \
+    --code-file XUL \
     --code-id ea25538ed7533e56a4263f6d7050f3d2 \
     --version 140.6.0esr --channel esr \
     --offset 0x1cb6dd --highlight-offset 0x1cb6dd
