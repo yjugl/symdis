@@ -29,6 +29,12 @@ pub struct SymbolCacheKey {
     pub filename: String,
 }
 
+/// Cache key for PDB files.
+pub struct PdbCacheKey {
+    pub debug_file: String,
+    pub debug_id: String,
+}
+
 /// Cache key for binary files.
 pub struct BinaryCacheKey {
     pub code_file: String,
@@ -66,12 +72,58 @@ impl Cache {
             .join(&key.filename)
     }
 
+    /// Get the path where a PDB file would be cached.
+    /// Layout matches WinDbg: <root>/<debug_file>/<debug_id>/<debug_file>
+    /// No collision with .sym files (e.g. xul.pdb/DEBUGID/xul.pdb vs xul.pdb/DEBUGID/xul.sym)
+    pub fn pdb_path(&self, key: &PdbCacheKey) -> PathBuf {
+        self.root
+            .join(&key.debug_file)
+            .join(&key.debug_id)
+            .join(&key.debug_file)
+    }
+
+    /// Look up a PDB file in the cache.
+    pub fn get_pdb(&self, key: &PdbCacheKey) -> CacheResult {
+        let path = self.pdb_path(key);
+        if path.exists() {
+            return CacheResult::Hit(path);
+        }
+        let miss = self.pdb_miss_path(&key.debug_file, &key.debug_id);
+        if miss.exists() && !self.is_miss_expired(&miss) {
+            return CacheResult::NegativeHit;
+        }
+        CacheResult::Miss
+    }
+
+    /// Store PDB data in the cache atomically.
+    pub fn store_pdb(&self, key: &PdbCacheKey, data: &[u8]) -> Result<PathBuf> {
+        let path = self.pdb_path(key);
+        self.atomic_write(&path, data)?;
+        Ok(path)
+    }
+
+    /// Store a negative cache marker for a PDB file.
+    /// Uses a distinct marker from .sym misses so they don't interfere.
+    pub fn store_pdb_miss(&self, key: &PdbCacheKey) -> Result<()> {
+        let miss = self.pdb_miss_path(&key.debug_file, &key.debug_id);
+        self.atomic_write(&miss, b"")?;
+        Ok(())
+    }
+
     /// Get the path for a negative cache marker.
     fn miss_path(&self, file: &str, id: &str) -> PathBuf {
         self.root
             .join("miss")
             .join(file)
             .join(format!("{}.miss", id))
+    }
+
+    /// Get the path for a PDB-specific negative cache marker.
+    fn pdb_miss_path(&self, file: &str, id: &str) -> PathBuf {
+        self.root
+            .join("miss")
+            .join(file)
+            .join(format!("{}-pdb.miss", id))
     }
 
     /// Look up a symbol file in the cache.
@@ -194,6 +246,82 @@ mod tests {
             }
             _ => panic!("expected cache hit"),
         }
+    }
+
+    #[test]
+    fn test_pdb_cache_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::new(dir.path(), 24);
+
+        let key = PdbCacheKey {
+            debug_file: "test.pdb".to_string(),
+            debug_id: "AABBCCDD".to_string(),
+        };
+
+        // Initially a miss
+        assert!(matches!(cache.get_pdb(&key), CacheResult::Miss));
+
+        // Store and retrieve
+        let data = b"Microsoft C/C++ MSF 7.00\r\n";
+        let path = cache.store_pdb(&key, data).unwrap();
+        assert!(path.exists());
+
+        match cache.get_pdb(&key) {
+            CacheResult::Hit(p) => {
+                assert_eq!(std::fs::read(&p).unwrap(), data);
+            }
+            _ => panic!("expected PDB cache hit"),
+        }
+    }
+
+    #[test]
+    fn test_pdb_negative_cache_distinct() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::new(dir.path(), 24);
+
+        let sym_key = SymbolCacheKey {
+            debug_file: "test.pdb".to_string(),
+            debug_id: "AABBCCDD".to_string(),
+            filename: "test.sym".to_string(),
+        };
+        let pdb_key = PdbCacheKey {
+            debug_file: "test.pdb".to_string(),
+            debug_id: "AABBCCDD".to_string(),
+        };
+
+        // Store sym miss — should NOT affect PDB lookup
+        cache.store_sym_miss(&sym_key).unwrap();
+        assert!(matches!(cache.get_sym(&sym_key), CacheResult::NegativeHit));
+        assert!(matches!(cache.get_pdb(&pdb_key), CacheResult::Miss));
+
+        // Store PDB miss — should NOT affect sym lookup
+        cache.store_pdb_miss(&pdb_key).unwrap();
+        assert!(matches!(cache.get_pdb(&pdb_key), CacheResult::NegativeHit));
+        assert!(matches!(cache.get_sym(&sym_key), CacheResult::NegativeHit));
+    }
+
+    #[test]
+    fn test_pdb_cache_path_no_collision() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = Cache::new(dir.path(), 24);
+
+        let sym_key = SymbolCacheKey {
+            debug_file: "xul.pdb".to_string(),
+            debug_id: "DEBUGID".to_string(),
+            filename: "xul.sym".to_string(),
+        };
+        let pdb_key = PdbCacheKey {
+            debug_file: "xul.pdb".to_string(),
+            debug_id: "DEBUGID".to_string(),
+        };
+
+        // Store both — paths should be different
+        let sym_path = cache.store_sym(&sym_key, b"sym data").unwrap();
+        let pdb_path = cache.store_pdb(&pdb_key, b"pdb data").unwrap();
+
+        assert_ne!(sym_path, pdb_path);
+        assert!(sym_path.to_str().unwrap().ends_with("xul.sym"));
+        assert!(pdb_path.to_str().unwrap().ends_with("xul.pdb"));
     }
 
     #[test]

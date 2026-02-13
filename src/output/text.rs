@@ -25,16 +25,20 @@ pub struct FunctionInfo {
 /// Data source indicator.
 pub enum DataSource {
     BinaryAndSym,
+    BinaryAndPdb,
     BinaryOnly,
     SymOnly,
+    PdbOnly,
 }
 
 impl std::fmt::Display for DataSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DataSource::BinaryAndSym => write!(f, "binary+sym"),
+            DataSource::BinaryAndPdb => write!(f, "binary+pdb"),
             DataSource::BinaryOnly => write!(f, "binary"),
             DataSource::SymOnly => write!(f, "sym"),
+            DataSource::PdbOnly => write!(f, "pdb"),
         }
     }
 }
@@ -73,7 +77,7 @@ pub fn format_text(
         writeln!(out, "; WARNING: {}", w).unwrap();
     }
 
-    if let DataSource::SymOnly = data_source {
+    if matches!(data_source, DataSource::SymOnly | DataSource::PdbOnly) {
         writeln!(out, ";").unwrap();
         writeln!(
             out,
@@ -183,6 +187,7 @@ pub fn format_sym_only(
     module: &ModuleInfo,
     function: &FunctionInfo,
     sym_data: Option<&SymOnlyData>,
+    data_source: &DataSource,
     warnings: &[String],
 ) -> String {
     let mut out = String::new();
@@ -205,7 +210,7 @@ pub fn format_sym_only(
         writeln!(out, "; Source: {}", source_file).unwrap();
     }
     writeln!(out, "; Architecture: {}", module.arch).unwrap();
-    writeln!(out, "; Data sources: {}", DataSource::SymOnly).unwrap();
+    writeln!(out, "; Data sources: {}", data_source).unwrap();
 
     for w in warnings {
         writeln!(out, "; WARNING: {}", w).unwrap();
@@ -291,10 +296,19 @@ mod tests {
     }
 
     #[test]
+    fn test_data_source_display() {
+        assert_eq!(DataSource::BinaryAndSym.to_string(), "binary+sym");
+        assert_eq!(DataSource::BinaryAndPdb.to_string(), "binary+pdb");
+        assert_eq!(DataSource::BinaryOnly.to_string(), "binary");
+        assert_eq!(DataSource::SymOnly.to_string(), "sym");
+        assert_eq!(DataSource::PdbOnly.to_string(), "pdb");
+    }
+
+    #[test]
     fn test_sym_only_none_minimal() {
         let module = make_module_info();
         let function = make_function_info();
-        let output = format_sym_only(&module, &function, None, &[]);
+        let output = format_sym_only(&module, &function, None, &DataSource::SymOnly, &[]);
 
         assert!(output.contains("; Data sources: sym"));
         assert!(output.contains("Function metadata only."));
@@ -337,7 +351,7 @@ mod tests {
             ],
         };
 
-        let output = format_sym_only(&module, &function, Some(&sym_data), &[]);
+        let output = format_sym_only(&module, &function, Some(&sym_data), &DataSource::SymOnly, &[]);
 
         assert!(output.contains("; Source line mapping:"));
         assert!(output.contains("0x001a3e80 - 0x001a3e90  src/main.cpp:10"));

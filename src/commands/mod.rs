@@ -75,6 +75,65 @@ BINARY FETCH CHAIN:
   as a last resort. The .sym file is always fetched from Tecken using
   --debug-file and --debug-id.
 
+PDB SUPPORT (--pdb):
+
+  For Windows modules (debug-file ends in .pdb), symdis can fetch and
+  parse the original PDB file from Microsoft's symbol server or Tecken.
+  PDB fetch chain: cache → Tecken (uncompressed or CAB) → Microsoft
+  Symbol Server (uncompressed or CAB). Extended timeout (10 min) is used
+  because PDB files can be very large (xul.pdb ~1-2 GB as CAB).
+
+  Behavior without --pdb (default):
+    1. Fetch .sym file from Tecken (fast, lightweight)
+    2. If .sym is unavailable, auto-fallback to PDB fetch+parse
+
+  Behavior with --pdb (explicit preference):
+    1. Fetch PDB directly (skip .sym)
+    2. If PDB is unavailable, fall back to .sym
+
+  The data source is reported as "binary+pdb" or "pdb" in output.
+
+  CURRENT LIMITATIONS — .sym vs PDB comparison:
+
+  For MOZILLA modules where a .sym file exists on Tecken, the .sym file
+  currently provides BETTER output than the PDB in most cases:
+
+    Feature                 .sym file             PDB (current)
+    ----------------------  --------------------  --------------------
+    Function names          Demangled C++ names   Short (no params)
+    Source file paths       VCS paths (hg:...)    Raw build paths
+    Source line coverage    Dense (many lines)    Sparse (some modules
+                                                  skipped due to pdb
+                                                  crate limitations)
+    Inline frame tracking   Yes (full)            Not yet implemented
+    Call target names       Demangled             MSVC-mangled (raw)
+    File size               Small (~1 MB)         Large (~100 MB-2 GB)
+    Parse speed             Fast                  Slow
+
+  This is because Mozilla's sym generator (dump_syms) performs extensive
+  processing of PDB data: demangling, VCS path mapping, inline expansion.
+  The .sym file is a pre-processed, optimized representation.
+
+  When to use --pdb (or let auto-fallback try PDB):
+    - NON-MOZILLA Windows modules where no .sym exists on Tecken.
+      This is the PRIMARY use case. Third-party DLLs, game engines,
+      driver components, and other vendor modules often have PDBs on
+      Microsoft's symbol server but no .sym on Tecken.
+    - Microsoft system DLLs: Tecken usually HAS .sym files for these
+      (ntdll, kernel32, etc.), so .sym is preferred by default. But --pdb
+      can be used if you want to cross-check or if a specific version's
+      .sym is missing.
+
+  When NOT to use --pdb:
+    - Mozilla modules (xul.pdb, mozglue.pdb, etc.) where Tecken has a
+      .sym file. The .sym output is richer (inline frames, demangled
+      names, VCS source paths, better line coverage).
+
+  Future improvements planned: MSVC name demangling, inline frame
+  parsing from PDB InlineSiteSymbol records, and better module coverage
+  (the pdb crate panics on some modules in large PDBs; these are
+  currently skipped silently).
+
 FENIX (FIREFOX FOR ANDROID):
 
   For Android/Fenix crashes, you MUST pass --product fenix explicitly.
@@ -206,6 +265,13 @@ EXAMPLES:
       --code-file ntdll.dll --code-id 5b6dddee267000 \
       --function NtCreateFile
 
+  # Use PDB for richer symbol data (Windows modules only):
+  symdis disasm \
+      --debug-file ntdll.pdb \
+      --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
+      --code-file ntdll.dll --code-id 5b6dddee267000 \
+      --function NtCreateFile --pdb
+
   # JSON output for structured parsing:
   symdis disasm \
       --debug-file xul.pdb \
@@ -237,7 +303,11 @@ TIPS:
     OS as "Linux". See the FENIX and FOCUS sections above for details.
   - Don't skip non-Mozilla modules! Crashes in ntdll.dll, kernel32.dll,
     and other Microsoft system DLLs are common and symdis has symbols for
-    them. Other third-party modules are also worth trying."#;
+    them. Other third-party modules are also worth trying.
+  - --pdb is mainly useful for non-Mozilla Windows modules with no .sym
+    on Tecken. For Mozilla modules, the default .sym path gives better
+    output (demangled names, inline frames, VCS source paths). PDB is
+    auto-tried when .sym is unavailable; --pdb forces PDB-first."#;
 
 const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 
@@ -288,6 +358,10 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   Binary fetch chain: cache → Tecken → Microsoft (Windows) → debuginfod
   (Linux) → Snap Store (Linux, --snap) → FTP archive (--version + --channel).
 
+  With --pdb, also fetches the PDB file from Tecken or Microsoft Symbol
+  Server (Windows modules only, debug-file must end in .pdb). The PDB
+  is cached separately from the .sym file.
+
   For Android crashes, --product fenix or --product focus is REQUIRED
   (it cannot be auto-detected because Android .sym files report OS as
   "Linux"). Binary fetch downloads the APK from Mozilla's FTP server
@@ -337,6 +411,13 @@ EXAMPLES:
       --code-file libglib-2.0.so.0 \
       --code-id 4ac2f78e021ba6b54f56bea31dcf2b1e19c7f3bc \
       --snap gnome-42-2204-sdk
+
+  # Pre-fetch including PDB file:
+  symdis fetch \
+      --debug-file ntdll.pdb \
+      --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
+      --code-file ntdll.dll --code-id 5b6dddee267000 \
+      --pdb
 
 TIPS:
 
@@ -499,6 +580,12 @@ pub struct DisasmArgs {
     /// It cannot be auto-detected (Android .sym files report OS as "Linux").
     #[arg(long, default_value = "firefox")]
     pub product: String,
+
+    /// Prefer PDB over .sym file for symbol data.
+    /// Only applicable to Windows modules (debug-file ends in .pdb).
+    /// Without this flag, PDB is tried automatically when .sym is unavailable.
+    #[arg(long)]
+    pub pdb: bool,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -607,6 +694,11 @@ pub struct FetchArgs {
     /// For Android/Fenix crashes, you MUST specify --product fenix.
     #[arg(long, default_value = "firefox")]
     pub product: String,
+
+    /// Also fetch PDB file from symbol servers.
+    /// Only applicable to Windows modules (debug-file ends in .pdb).
+    #[arg(long)]
+    pub pdb: bool,
 }
 
 #[derive(Parser)]

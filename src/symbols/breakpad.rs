@@ -198,6 +198,44 @@ impl SymFile {
         })
     }
 
+    /// Construct a SymFile from pre-built parts (used by PDB parser).
+    ///
+    /// Sorts functions/publics by address and builds the name index.
+    pub(crate) fn from_parts(
+        module: ModuleRecord,
+        files: Vec<String>,
+        mut functions: Vec<FuncRecord>,
+        mut publics: Vec<PublicRecord>,
+        inline_origins: Vec<String>,
+    ) -> Self {
+        // Sort functions and publics by address
+        functions.sort_by_key(|f| f.address);
+        publics.sort_by_key(|p| p.address);
+
+        // Sort line records within each function
+        for func in &mut functions {
+            func.lines.sort_by_key(|l| l.address);
+        }
+
+        // Build name index
+        let mut name_index: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, func) in functions.iter().enumerate() {
+            name_index
+                .entry(func.name.clone())
+                .or_default()
+                .push(i);
+        }
+
+        Self {
+            module,
+            files,
+            functions,
+            publics,
+            inline_origins,
+            name_index,
+        }
+    }
+
     /// Find a function by exact name.
     pub fn find_function_by_name(&self, name: &str) -> Option<&FuncRecord> {
         self.name_index

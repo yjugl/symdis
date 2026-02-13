@@ -16,7 +16,7 @@ use tracing::{warn, info, debug};
 
 use std::io::Read;
 
-use crate::cache::{Cache, CacheResult, SymbolCacheKey, BinaryCacheKey};
+use crate::cache::{Cache, CacheResult, SymbolCacheKey, BinaryCacheKey, PdbCacheKey};
 use crate::config::Config;
 
 /// Result of a fetch attempt.
@@ -109,6 +109,94 @@ pub async fn fetch_sym_file(
     bail!(
         "symbol file not found: {debug_file}/{debug_id}/{sym_name}\n\
          Tried: Mozilla Tecken"
+    )
+}
+
+/// Fetch a PDB file, checking cache first, then trying Tecken and Microsoft.
+/// Only applicable when debug_file ends in .pdb.
+///
+/// Uses an extended timeout (archive_timeout_seconds) because PDB files can
+/// be very large (e.g. xul.pdb ~2GB).
+pub async fn fetch_pdb_file(
+    _client: &Client,
+    cache: &Cache,
+    config: &Config,
+    debug_file: &str,
+    debug_id: &str,
+) -> Result<PathBuf> {
+    let key = PdbCacheKey {
+        debug_file: debug_file.to_string(),
+        debug_id: debug_id.to_string(),
+    };
+
+    // Check cache
+    match cache.get_pdb(&key) {
+        CacheResult::Hit(path) => {
+            info!("PDB cache hit: {debug_file}/{debug_id}");
+            return Ok(path);
+        }
+        CacheResult::NegativeHit => {
+            debug!("PDB negative cache hit: {debug_file}/{debug_id}");
+            bail!("PDB file not available (cached negative result)");
+        }
+        CacheResult::Miss => {
+            debug!("PDB cache miss: {debug_file}/{debug_id}");
+        }
+    }
+
+    if config.offline {
+        bail!("PDB file not in cache and --offline is set: {debug_file}/{debug_id}");
+    }
+
+    // PDB files can be very large (xul.pdb ~2GB), so use the extended timeout.
+    // The standard `client` has a 30s timeout which is insufficient.
+    let pdb_client = build_archive_http_client(config)?;
+
+    // Try Tecken first (has PDBs for Mozilla modules AND Microsoft modules it has processed)
+    let tecken_url = config.symbol_servers.first()
+        .map(|s| s.as_str())
+        .unwrap_or(tecken::DEFAULT_TECKEN_BASE);
+
+    match tecken::fetch_pdb(&pdb_client, tecken_url, debug_file, debug_id).await {
+        FetchResult::Ok(data) => {
+            if is_html_response(&data) {
+                warn!("Tecken returned HTML instead of PDB for {debug_file}/{debug_id}");
+            } else {
+                let path = cache.store_pdb(&key, &data)?;
+                return Ok(path);
+            }
+        }
+        FetchResult::NotFound => {}
+        FetchResult::Error(e) => {
+            warn!("Tecken PDB fetch error: {e}");
+        }
+    }
+
+    // Try Microsoft Symbol Server
+    let ms_url = config.symbol_servers.get(1)
+        .map(|s| s.as_str())
+        .unwrap_or(microsoft::DEFAULT_MS_SYMBOL_SERVER);
+
+    match microsoft::fetch_pdb(&pdb_client, ms_url, debug_file, debug_id).await {
+        FetchResult::Ok(data) => {
+            if is_html_response(&data) {
+                warn!("Microsoft returned HTML instead of PDB for {debug_file}/{debug_id}");
+            } else {
+                let path = cache.store_pdb(&key, &data)?;
+                return Ok(path);
+            }
+        }
+        FetchResult::NotFound => {}
+        FetchResult::Error(e) => {
+            warn!("Microsoft PDB fetch error: {e}");
+        }
+    }
+
+    // Store miss marker
+    cache.store_pdb_miss(&key)?;
+    bail!(
+        "PDB file not found: {debug_file}/{debug_id}\n\
+         Tried: Mozilla Tecken, Microsoft Symbol Server"
     )
 }
 

@@ -185,6 +185,7 @@ pub fn format_json_sym_only(
     module: &ModuleInfo,
     function: &FunctionInfo,
     sym_data: Option<&SymOnlyData>,
+    data_source: &DataSource,
     warnings: &[String],
 ) -> String {
     let (source_lines, inline_frames, source_files) = match sym_data {
@@ -221,7 +222,7 @@ pub fn format_json_sym_only(
         module: JsonModule::from_info(module),
         function: JsonFunction::from_info(function),
         instructions: Vec::new(),
-        source: DataSource::SymOnly.to_string(),
+        source: data_source.to_string(),
         source_lines,
         inline_frames,
         source_files,
@@ -426,7 +427,7 @@ mod tests {
         let module = make_module_info();
         let function = make_function_info();
 
-        let json_str = format_json_sym_only(&module, &function, None, &[]);
+        let json_str = format_json_sym_only(&module, &function, None, &DataSource::SymOnly, &[]);
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         assert_eq!(v["source"], "sym");
@@ -474,7 +475,7 @@ mod tests {
             ],
         };
 
-        let json_str = format_json_sym_only(&module, &function, Some(&sym_data), &[]);
+        let json_str = format_json_sym_only(&module, &function, Some(&sym_data), &DataSource::SymOnly, &[]);
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         assert_eq!(v["source"], "sym");

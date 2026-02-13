@@ -21,6 +21,7 @@ use crate::fetch;
 use crate::output::json;
 use crate::output::text::{self, DataSource, FunctionInfo, ModuleInfo, SymOnlyData, SymOnlyLine, SymOnlyInline};
 use crate::symbols::breakpad::SymFile;
+use crate::symbols::pdb as pdb_parser;
 
 /// Parse a hex offset string (with or without 0x prefix) to u64.
 fn parse_offset(s: &str) -> Result<u64> {
@@ -38,8 +39,27 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         .map(parse_offset)
         .transpose()?;
 
-    // Fetch .sym file and binary concurrently
-    let sym_fut = fetch::fetch_sym_file(&client, &cache, config, &args.debug_file, &args.debug_id);
+    let is_pdb_module = args.debug_file.to_ascii_lowercase().ends_with(".pdb");
+
+    // Fetch symbol data and binary concurrently.
+    // When --pdb is set and debug_file is a .pdb, prefer PDB over .sym.
+    let use_pdb_primary = args.pdb && is_pdb_module;
+
+    let sym_fut = async {
+        if use_pdb_primary {
+            // Skip .sym when --pdb is explicitly requested; we'll fetch PDB instead
+            Err(anyhow::anyhow!("skipped: --pdb flag set"))
+        } else {
+            fetch::fetch_sym_file(&client, &cache, config, &args.debug_file, &args.debug_id).await
+        }
+    };
+    let pdb_fut = async {
+        if use_pdb_primary {
+            fetch::fetch_pdb_file(&client, &cache, config, &args.debug_file, &args.debug_id).await
+        } else {
+            Err(anyhow::anyhow!("skipped: --pdb not set"))
+        }
+    };
     let bin_fut = async {
         if let (Some(code_file), Some(code_id)) = (&args.code_file, &args.code_id) {
             fetch::fetch_binary(&client, &cache, config, code_file, code_id).await
@@ -51,25 +71,69 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         }
     };
 
-    let (sym_result, bin_result) = tokio::join!(sym_fut, bin_fut);
+    let (sym_result, pdb_result, bin_result) = tokio::join!(sym_fut, pdb_fut, bin_fut);
 
-    // Parse .sym file if available
-    let sym_file = match &sym_result {
-        Ok(path) => {
-            let file = std::fs::File::open(path)
-                .with_context(|| format!("opening sym file: {}", path.display()))?;
-            let reader = BufReader::new(file);
-            match SymFile::parse(reader) {
-                Ok(sym) => Some(sym),
-                Err(e) => {
-                    warn!("failed to parse sym file: {e}");
-                    None
+    // Track whether symbol data came from PDB (affects DataSource display)
+    let mut from_pdb = false;
+
+    // Parse symbol data: .sym file or PDB
+    let sym_file = if use_pdb_primary {
+        // --pdb mode: try PDB first, fall back to .sym
+        match &pdb_result {
+            Ok(path) => {
+                match pdb_parser::parse_pdb(path, &args.debug_file, &args.debug_id) {
+                    Ok(sym) => {
+                        from_pdb = true;
+                        Some(sym)
+                    }
+                    Err(e) => {
+                        warn!("failed to parse PDB file: {e}");
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("PDB file not available: {e}");
+                // Fall back to .sym
+                match fetch::fetch_sym_file(&client, &cache, config, &args.debug_file, &args.debug_id).await {
+                    Ok(path) => parse_sym_file(&path),
+                    Err(e2) => {
+                        warn!("sym file also not available: {e2}");
+                        None
+                    }
                 }
             }
         }
-        Err(e) => {
-            warn!("sym file not available: {e}");
-            None
+    } else {
+        // Default mode: try .sym, auto-fallback to PDB if .sym unavailable
+        match &sym_result {
+            Ok(path) => parse_sym_file(path),
+            Err(e) => {
+                warn!("sym file not available: {e}");
+                // Auto-fallback: try PDB if this is a Windows module
+                if is_pdb_module {
+                    match fetch::fetch_pdb_file(&client, &cache, config, &args.debug_file, &args.debug_id).await {
+                        Ok(path) => {
+                            match pdb_parser::parse_pdb(&path, &args.debug_file, &args.debug_id) {
+                                Ok(sym) => {
+                                    from_pdb = true;
+                                    Some(sym)
+                                }
+                                Err(e2) => {
+                                    warn!("failed to parse PDB file: {e2}");
+                                    None
+                                }
+                            }
+                        }
+                        Err(e2) => {
+                            warn!("PDB fallback also not available: {e2}");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            }
         }
     };
 
@@ -302,7 +366,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         }
 
         let data_source = if sym_file.is_some() {
-            DataSource::BinaryAndSym
+            if from_pdb { DataSource::BinaryAndPdb } else { DataSource::BinaryAndSym }
         } else {
             DataSource::BinaryOnly
         };
@@ -320,13 +384,14 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     } else if let Some(ref sym) = sym_file {
         // Sym only - no binary available
         let sym_data = func_record.map(|func| build_sym_only_data(sym, func, demangle_enabled));
+        let data_source = if from_pdb { DataSource::PdbOnly } else { DataSource::SymOnly };
         match config.format {
             OutputFormat::Text => {
-                let output = text::format_sym_only(&module_info, &function_info, sym_data.as_ref(), &warnings);
+                let output = text::format_sym_only(&module_info, &function_info, sym_data.as_ref(), &data_source, &warnings);
                 print!("{output}");
             }
             OutputFormat::Json => {
-                let output = json::format_json_sym_only(&module_info, &function_info, sym_data.as_ref(), &warnings);
+                let output = json::format_json_sym_only(&module_info, &function_info, sym_data.as_ref(), &data_source, &warnings);
                 println!("{output}");
             }
         }
@@ -352,6 +417,21 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Parse a .sym file from a path, returning None on failure.
+fn parse_sym_file(path: &std::path::Path) -> Option<SymFile> {
+    let file = std::fs::File::open(path)
+        .map_err(|e| warn!("opening sym file: {e}"))
+        .ok()?;
+    let reader = BufReader::new(file);
+    match SymFile::parse(reader) {
+        Ok(sym) => Some(sym),
+        Err(e) => {
+            warn!("failed to parse sym file: {e}");
+            None
+        }
+    }
 }
 
 /// Infer OS and architecture from code_id format when sym file is unavailable.

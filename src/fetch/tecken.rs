@@ -24,6 +24,41 @@ pub async fn fetch_sym(
     fetch_url(client, &url).await
 }
 
+/// Fetch a PDB file from Mozilla Tecken.
+/// Tries uncompressed first, then the CAB-compressed variant.
+/// URL patterns:
+///   <base>/<debug_file>/<debug_id>/<debug_file>
+///   <base>/<debug_file>/<debug_id>/<debug_file_compressed>  (CAB)
+/// Tecken stores original PDBs — these contain MORE info than the derived .sym files.
+pub async fn fetch_pdb(
+    client: &Client,
+    base_url: &str,
+    debug_file: &str,
+    debug_id: &str,
+) -> FetchResult {
+    let base = base_url.trim_end_matches('/');
+    // Try uncompressed
+    let url = format!("{base}/{debug_file}/{debug_id}/{debug_file}");
+    debug!("Tecken PDB URL: {url}");
+    match fetch_url(client, &url).await {
+        FetchResult::Ok(data) => return FetchResult::Ok(data),
+        FetchResult::Error(e) => return FetchResult::Error(e),
+        FetchResult::NotFound => {}
+    }
+
+    // Try compressed variant (last extension char -> '_')
+    let compressed_name = compress_filename(debug_file);
+    let url = format!("{base}/{debug_file}/{debug_id}/{compressed_name}");
+    debug!("Tecken PDB compressed URL: {url}");
+    match fetch_url(client, &url).await {
+        FetchResult::Ok(data) => match decompress_cab(&data) {
+            Ok(decompressed) => FetchResult::Ok(decompressed),
+            Err(e) => FetchResult::Error(format!("CAB decompression failed: {e}")),
+        },
+        other => other,
+    }
+}
+
 /// Fetch a binary from Tecken using code-file/code-id.
 /// Tries uncompressed first, then the CAB-compressed variant.
 /// URL patterns:
@@ -92,6 +127,18 @@ mod tests {
         assert_eq!(
             url,
             "https://symbols.mozilla.org/xul.pdb/44E4EC8C2F41492B9369D6B9A059577C2/xul.sym"
+        );
+    }
+
+    #[test]
+    fn test_tecken_pdb_url() {
+        let base = DEFAULT_TECKEN_BASE;
+        let debug_file = "xul.pdb";
+        let debug_id = "44E4EC8C2F41492B9369D6B9A059577C2";
+        let url = format!("{base}/{debug_file}/{debug_id}/{debug_file}");
+        assert_eq!(
+            url,
+            "https://symbols.mozilla.org/xul.pdb/44E4EC8C2F41492B9369D6B9A059577C2/xul.pdb"
         );
     }
 

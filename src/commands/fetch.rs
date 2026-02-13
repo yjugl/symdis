@@ -189,6 +189,22 @@ pub async fn run(args: &FetchArgs, config: &Config) -> Result<()> {
         }
     };
 
+    // Optionally fetch PDB when --pdb is set
+    let pdb_status = if args.pdb && args.debug_file.to_ascii_lowercase().ends_with(".pdb") {
+        match fetch::fetch_pdb_file(&client, &cache, config, &args.debug_file, &args.debug_id).await {
+            Ok(path) => {
+                let size = std::fs::metadata(&path).map(|m| m.len()).ok();
+                FileStatus::Available { size }
+            }
+            Err(e) => {
+                warn!("PDB fetch failed: {e}");
+                FileStatus::NotFound
+            }
+        }
+    } else {
+        FileStatus::Skipped
+    };
+
     // Gather results
     let sym_status = match &sym_result {
         Ok(path) => {
@@ -211,6 +227,7 @@ pub async fn run(args: &FetchArgs, config: &Config) -> Result<()> {
         debug_id: args.debug_id.clone(),
         sym_status,
         bin_status,
+        pdb_status,
     };
 
     match config.format {
@@ -267,6 +284,7 @@ fn derive_code_file(debug_file: &str) -> String {
 enum FileStatus {
     Available { size: Option<u64> },
     NotFound,
+    Skipped,
 }
 
 struct FetchResult {
@@ -274,6 +292,7 @@ struct FetchResult {
     debug_id: String,
     sym_status: FileStatus,
     bin_status: FileStatus,
+    pdb_status: FileStatus,
 }
 
 // --- Text formatting ---
@@ -293,6 +312,7 @@ fn format_fetch_text(result: &FetchResult) -> String {
         FileStatus::NotFound => {
             writeln!(out, "Symbol file: not found").unwrap();
         }
+        FileStatus::Skipped => {}
     }
 
     match &result.bin_status {
@@ -305,6 +325,20 @@ fn format_fetch_text(result: &FetchResult) -> String {
         FileStatus::NotFound => {
             writeln!(out, "Binary file: not found").unwrap();
         }
+        FileStatus::Skipped => {}
+    }
+
+    match &result.pdb_status {
+        FileStatus::Available { size: Some(size) } => {
+            writeln!(out, "PDB file: ok ({})", format_size(*size)).unwrap();
+        }
+        FileStatus::Available { size: None } => {
+            writeln!(out, "PDB file: ok").unwrap();
+        }
+        FileStatus::NotFound => {
+            writeln!(out, "PDB file: not found").unwrap();
+        }
+        FileStatus::Skipped => {}
     }
 
     out
@@ -335,6 +369,8 @@ struct JsonFetchOutput {
     debug_id: String,
     symbol_file: JsonFileStatus,
     binary_file: JsonFileStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pdb_file: Option<JsonFileStatus>,
 }
 
 #[derive(Serialize)]
@@ -345,29 +381,30 @@ struct JsonFileStatus {
 }
 
 fn format_fetch_json(result: &FetchResult) -> String {
+    let file_status_to_json = |status: &FileStatus| -> JsonFileStatus {
+        match status {
+            FileStatus::Available { size } => JsonFileStatus {
+                available: true,
+                size: *size,
+            },
+            FileStatus::NotFound | FileStatus::Skipped => JsonFileStatus {
+                available: false,
+                size: None,
+            },
+        }
+    };
+
+    let pdb_file = match &result.pdb_status {
+        FileStatus::Skipped => None,
+        status => Some(file_status_to_json(status)),
+    };
+
     let output = JsonFetchOutput {
         debug_file: result.debug_file.clone(),
         debug_id: result.debug_id.clone(),
-        symbol_file: match &result.sym_status {
-            FileStatus::Available { size } => JsonFileStatus {
-                available: true,
-                size: *size,
-            },
-            FileStatus::NotFound => JsonFileStatus {
-                available: false,
-                size: None,
-            },
-        },
-        binary_file: match &result.bin_status {
-            FileStatus::Available { size } => JsonFileStatus {
-                available: true,
-                size: *size,
-            },
-            FileStatus::NotFound => JsonFileStatus {
-                available: false,
-                size: None,
-            },
-        },
+        symbol_file: file_status_to_json(&result.sym_status),
+        binary_file: file_status_to_json(&result.bin_status),
+        pdb_file,
     };
     serde_json::to_string_pretty(&output).expect("JSON serialization should not fail")
 }
@@ -394,6 +431,7 @@ mod tests {
             } else {
                 FileStatus::NotFound
             },
+            pdb_status: FileStatus::Skipped,
         }
     }
 

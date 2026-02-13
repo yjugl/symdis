@@ -9,6 +9,41 @@ use super::{FetchResult, compress_filename, decompress_cab};
 
 pub const DEFAULT_MS_SYMBOL_SERVER: &str = "https://msdl.microsoft.com/download/symbols";
 
+/// Fetch a PDB file from the Microsoft Symbol Server.
+/// Tries uncompressed first, then the CAB-compressed variant.
+/// URL pattern: <base>/<pdb_name>/<debug_id>/<pdb_name>
+pub async fn fetch_pdb(
+    client: &Client,
+    base_url: &str,
+    pdb_name: &str,
+    debug_id: &str,
+) -> FetchResult {
+    let base = base_url.trim_end_matches('/');
+    // Try uncompressed
+    let url = format!("{base}/{pdb_name}/{debug_id}/{pdb_name}");
+    debug!("Microsoft PDB URL: {url}");
+    match fetch_url(client, &url).await {
+        FetchResult::Ok(data) => return FetchResult::Ok(data),
+        FetchResult::Error(e) => return FetchResult::Error(e),
+        FetchResult::NotFound => {}
+    }
+
+    // Try compressed variant (last extension char -> '_')
+    let compressed_name = compress_filename(pdb_name);
+    let url = format!("{base}/{pdb_name}/{debug_id}/{compressed_name}");
+    debug!("Microsoft PDB compressed URL: {url}");
+    match fetch_url(client, &url).await {
+        FetchResult::Ok(data) => {
+            match decompress_cab(&data) {
+                Ok(decompressed) => FetchResult::Ok(decompressed),
+                Err(e) => FetchResult::Error(format!("CAB decompression failed: {e}")),
+            }
+        }
+        FetchResult::NotFound => FetchResult::NotFound,
+        FetchResult::Error(e) => FetchResult::Error(e),
+    }
+}
+
 /// Fetch a PE binary from the Microsoft Symbol Server.
 /// Tries uncompressed first, then the CAB-compressed variant.
 pub async fn fetch_pe(
@@ -73,6 +108,31 @@ mod tests {
         assert_eq!(compress_filename("ntdll.dll"), "ntdll.dl_");
         assert_eq!(compress_filename("ntdll.pdb"), "ntdll.pd_");
         assert_eq!(compress_filename("xul.dll"), "xul.dl_");
+    }
+
+    #[test]
+    fn test_microsoft_pdb_url() {
+        let base = DEFAULT_MS_SYMBOL_SERVER;
+        let pdb_name = "ntdll.pdb";
+        let debug_id = "08A413EE85E91D0377BA33DC3A2641941";
+        let url = format!("{base}/{pdb_name}/{debug_id}/{pdb_name}");
+        assert_eq!(
+            url,
+            "https://msdl.microsoft.com/download/symbols/ntdll.pdb/08A413EE85E91D0377BA33DC3A2641941/ntdll.pdb"
+        );
+    }
+
+    #[test]
+    fn test_microsoft_pdb_compressed_url() {
+        let base = DEFAULT_MS_SYMBOL_SERVER;
+        let pdb_name = "ntdll.pdb";
+        let debug_id = "08A413EE85E91D0377BA33DC3A2641941";
+        let compressed = compress_filename(pdb_name);
+        let url = format!("{base}/{pdb_name}/{debug_id}/{compressed}");
+        assert_eq!(
+            url,
+            "https://msdl.microsoft.com/download/symbols/ntdll.pdb/08A413EE85E91D0377BA33DC3A2641941/ntdll.pd_"
+        );
     }
 
     #[test]
