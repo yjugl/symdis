@@ -100,7 +100,10 @@ PDB SUPPORT (--pdb):
 
     Feature                 .sym file             PDB (current)
     ----------------------  --------------------  --------------------
-    Function names          Demangled C++ names   Short (no params)
+    Function names          Demangled C++ names   Demangled with params
+                                                  (when public symbol
+                                                  available; ~37% of
+                                                  funcs in large PDBs)
     Source file paths       VCS paths (hg:...)    VCS paths (from srcsrv
                                                   stream in Mozilla PDBs)
     Source line coverage    Dense (many lines)    Sparse (some modules
@@ -129,7 +132,7 @@ PDB SUPPORT (--pdb):
   When NOT to use --pdb:
     - Mozilla modules (xul.pdb, mozglue.pdb, etc.) where Tecken has a
       .sym file. The .sym output is richer (denser line coverage,
-      full-signature function names).
+      consistently demangled function names).
 
   Remaining limitation: the pdb crate panics on some modules in large
   PDBs (e.g. xul.pdb); these modules are caught and skipped silently,
@@ -307,7 +310,7 @@ TIPS:
     them. Other third-party modules are also worth trying.
   - --pdb is mainly useful for non-Mozilla Windows modules with no .sym
     on Tecken. For Mozilla modules, the default .sym path gives better
-    output (denser line coverage, full-signature function names).
+    output (denser line coverage, consistently demangled function names).
     PDB is auto-tried when .sym is unavailable; --pdb forces PDB-first."#;
 
 const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:

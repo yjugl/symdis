@@ -558,6 +558,41 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
         }
     }
 
+    // Enrich function names with mangled names from public symbols.
+    // Public symbols carry MSVC-mangled names (starting with '?') that encode
+    // parameter types. Replacing the short procedure name with the mangled form
+    // lets the demangler produce full signatures at display time.
+    {
+        let mangled_names: HashMap<u64, &str> = publics
+            .iter()
+            .filter(|p| p.name.starts_with('?'))
+            .map(|p| (p.address, p.name.as_str()))
+            .collect();
+        for func in &mut functions {
+            if let Some(&mangled) = mangled_names.get(&func.address) {
+                func.name = mangled.to_string();
+            }
+        }
+    }
+
+    // Resolve inline call sites from parent function's line records.
+    // For each inline, find the parent's source line at the inline's start
+    // address — that's where the inline call was made from.
+    for func in &mut functions {
+        for inline in &mut func.inlines {
+            if let Some(&(start_addr, _)) = inline.ranges.first() {
+                let line_idx = func.lines.partition_point(|l| l.address <= start_addr);
+                if line_idx > 0 {
+                    let line = &func.lines[line_idx - 1];
+                    if start_addr < line.address + line.size {
+                        inline.call_file_index = line.file_index;
+                        inline.call_line = line.line;
+                    }
+                }
+            }
+        }
+    }
+
     // Build the SymFile
     let module = ModuleRecord {
         os: "windows".to_string(),
