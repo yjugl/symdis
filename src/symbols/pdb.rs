@@ -110,6 +110,148 @@ fn extract_inline_ranges(
     ranges
 }
 
+/// Parse a srcsrv stream from a PDB file and build a mapping from raw build
+/// paths to VCS-style paths (e.g., `hg:hg.mozilla.org/...:path:changeset`).
+///
+/// The srcsrv stream is a text-based format embedded in Microsoft PDB files that
+/// maps source file build paths to version control retrieval commands. Mozilla
+/// PDB files contain srcsrv data mapping to Mercurial and GitHub repos.
+fn parse_srcsrv_stream(data: &[u8]) -> HashMap<String, String> {
+    let text = match std::str::from_utf8(data) {
+        Ok(t) => t,
+        Err(_) => return HashMap::new(),
+    };
+
+    let mut variables: HashMap<String, String> = HashMap::new();
+    let mut source_lines: Vec<&str> = Vec::new();
+
+    enum Section {
+        None,
+        Variables,
+        SourceFiles,
+    }
+    let mut section = Section::None;
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("SRCSRV: ini") {
+            section = Section::None;
+        } else if trimmed.starts_with("SRCSRV: variables") {
+            section = Section::Variables;
+        } else if trimmed.starts_with("SRCSRV: source files") {
+            section = Section::SourceFiles;
+        } else if trimmed.starts_with("SRCSRV: end") {
+            break;
+        } else {
+            match section {
+                Section::Variables => {
+                    if let Some((key, value)) = trimmed.split_once('=') {
+                        variables.insert(key.to_uppercase(), value.to_string());
+                    }
+                }
+                Section::SourceFiles => {
+                    if !trimmed.is_empty() {
+                        source_lines.push(trimmed);
+                    }
+                }
+                Section::None => {}
+            }
+        }
+    }
+
+    // Resolve target variable URL templates to determine VCS type + host.
+    let mut target_prefixes: HashMap<String, String> = HashMap::new();
+    for (key, value) in &variables {
+        if !key.ends_with("_TARGET") {
+            continue;
+        }
+        let resolved = resolve_srcsrv_vars(value, &variables);
+        if let Some(prefix) = extract_vcs_prefix(&resolved) {
+            target_prefixes.insert(key.clone(), prefix);
+        }
+    }
+
+    // Build build_path → VCS path map from source file entries.
+    let mut path_map = HashMap::new();
+    for line in source_lines {
+        let parts: Vec<&str> = line.split('*').collect();
+        if parts.len() >= 4 {
+            let build_path = parts[0].replace('\\', "/");
+            let target_var = parts[1].to_uppercase();
+            let repo_path = parts[2];
+            let changeset = parts[3];
+            if let Some(prefix) = target_prefixes.get(&target_var) {
+                path_map.insert(build_path, format!("{prefix}:{repo_path}:{changeset}"));
+            }
+        }
+    }
+
+    path_map
+}
+
+/// Resolve `%variable%` references in a srcsrv template string.
+fn resolve_srcsrv_vars(template: &str, variables: &HashMap<String, String>) -> String {
+    let mut result = String::with_capacity(template.len());
+    let mut chars = template.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch == '%' {
+            let mut var_name = String::new();
+            let mut found_end = false;
+            for ch in chars.by_ref() {
+                if ch == '%' {
+                    found_end = true;
+                    break;
+                }
+                var_name.push(ch);
+            }
+            if found_end {
+                if let Some(value) = variables.get(&var_name.to_uppercase()) {
+                    result.push_str(value);
+                } else {
+                    result.push('%');
+                    result.push_str(&var_name);
+                    result.push('%');
+                }
+            } else {
+                result.push('%');
+                result.push_str(&var_name);
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
+}
+
+/// Extract a VCS prefix from a resolved srcsrv URL template.
+///
+/// Returns e.g. `"hg:hg.mozilla.org/releases/mozilla-esr140"` for Mercurial
+/// or `"git:github.com/rust-lang/rust"` for GitHub.
+fn extract_vcs_prefix(url: &str) -> Option<String> {
+    let host_and_path = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+
+    // Mercurial: URL contains /raw-file/ (hg web interface pattern)
+    if host_and_path.contains("/raw-file/") {
+        let before = host_and_path.split("/raw-file/").next().unwrap();
+        return Some(format!("hg:{before}"));
+    }
+
+    // Git/GitHub: URL starts with github.com/org/repo/...
+    if host_and_path.starts_with("github.com/") {
+        let path_parts: Vec<&str> = host_and_path.splitn(4, '/').collect();
+        if path_parts.len() >= 3 {
+            return Some(format!("git:{}/{}", path_parts[0], path_parts[1..3].join("/")));
+        }
+    }
+
+    None
+}
+
 /// Parse a PDB file and convert it into a SymFile.
 ///
 /// This bridges the `pdb` crate's data model into symdis's SymFile struct,
@@ -185,7 +327,15 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
         Err(_) => HashMap::new(),
     };
 
-    // 6. Per-module iteration: procedures, inline sites, and line programs
+    // 6. Parse srcsrv stream for build path → VCS path mapping.
+    //    Mozilla PDB files contain an srcsrv stream mapping raw build paths
+    //    (e.g. /builds/worker/checkouts/gecko/...) to VCS paths (hg:..., git:...).
+    let srcsrv_map: HashMap<String, String> = match pdb.named_stream(b"srcsrv") {
+        Ok(stream) => parse_srcsrv_stream(stream.as_slice()),
+        Err(_) => HashMap::new(),
+    };
+
+    // 7. Per-module iteration: procedures, inline sites, and line programs
     let mut files: Vec<String> = Vec::new();
     let mut file_intern: HashMap<String, usize> = HashMap::new();
     let mut inline_origins: Vec<String> = Vec::new();
@@ -338,11 +488,15 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
                     let addr = u64::from(rva.0);
                     let line_num = line_info.line_start;
 
-                    // Resolve file name
+                    // Resolve file name, mapping build paths to VCS paths via srcsrv
                     let file_info = line_program.get_file_info(line_info.file_index)?;
-                    let file_name = string_table.get(file_info.name)?
+                    let raw_name = string_table.get(file_info.name)?
                         .to_string()
                         .into_owned();
+                    let file_name = srcsrv_map
+                        .get(&raw_name.replace('\\', "/"))
+                        .cloned()
+                        .unwrap_or(raw_name);
 
                     // Intern the file name
                     let file_idx = if let Some(&idx) = file_intern.get(&file_name) {
@@ -693,5 +847,160 @@ mod tests {
         let func2 = sym.find_function_by_name("Func2").unwrap();
         let inlines2 = sym.get_inline_at(0x2010, func2);
         assert_eq!(inlines2[0].name, "SharedHelper");
+    }
+
+    #[test]
+    fn test_parse_srcsrv_hg_target() {
+        let srcsrv = b"SRCSRV: ini ------------------------------------------------\r\n\
+            VERSION=2\r\n\
+            SRCSRV: variables ------------------------------------------\r\n\
+            HGSERVER=https://hg.mozilla.org/releases/mozilla-esr140\r\n\
+            HG_TARGET=%hgserver%/raw-file/%var4%/%var3%\r\n\
+            SRCSRV: source files ---------------------------------------\r\n\
+            /builds/worker/checkouts/gecko/dom/base/Element.cpp*HG_TARGET*dom/base/Element.cpp*abc123def456\r\n\
+            /builds/worker/checkouts/gecko/gfx/layers/Compositor.cpp*HG_TARGET*gfx/layers/Compositor.cpp*abc123def456\r\n\
+            SRCSRV: end ------------------------------------------------\r\n";
+
+        let map = parse_srcsrv_stream(srcsrv);
+        assert_eq!(
+            map.get("/builds/worker/checkouts/gecko/dom/base/Element.cpp").unwrap(),
+            "hg:hg.mozilla.org/releases/mozilla-esr140:dom/base/Element.cpp:abc123def456"
+        );
+        assert_eq!(
+            map.get("/builds/worker/checkouts/gecko/gfx/layers/Compositor.cpp").unwrap(),
+            "hg:hg.mozilla.org/releases/mozilla-esr140:gfx/layers/Compositor.cpp:abc123def456"
+        );
+    }
+
+    #[test]
+    fn test_parse_srcsrv_rust_github() {
+        let srcsrv = b"SRCSRV: ini ------------------------------------------------\r\n\
+            VERSION=2\r\n\
+            SRCSRV: variables ------------------------------------------\r\n\
+            RUST_GITHUB_TARGET=https://github.com/rust-lang/rust/raw/%var4%/%var3%\r\n\
+            SRCSRV: source files ---------------------------------------\r\n\
+            /rustc/abc123/library/core/src/fmt/mod.rs*RUST_GITHUB_TARGET*library/core/src/fmt/mod.rs*abc123\r\n\
+            SRCSRV: end ------------------------------------------------\r\n";
+
+        let map = parse_srcsrv_stream(srcsrv);
+        assert_eq!(
+            map.get("/rustc/abc123/library/core/src/fmt/mod.rs").unwrap(),
+            "git:github.com/rust-lang/rust:library/core/src/fmt/mod.rs:abc123"
+        );
+    }
+
+    #[test]
+    fn test_parse_srcsrv_s3_skipped() {
+        let srcsrv = b"SRCSRV: ini ------------------------------------------------\r\n\
+            VERSION=2\r\n\
+            SRCSRV: variables ------------------------------------------\r\n\
+            S3_BUCKET=gecko-generated-sources\r\n\
+            S3_TARGET=https://%s3_bucket%.s3.amazonaws.com/%var3%\r\n\
+            SRCSRV: source files ---------------------------------------\r\n\
+            /builds/worker/workspace/obj-build/some/generated.cpp*S3_TARGET*hash123/some/generated.cpp*\r\n\
+            SRCSRV: end ------------------------------------------------\r\n";
+
+        let map = parse_srcsrv_stream(srcsrv);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_parse_srcsrv_empty() {
+        assert!(parse_srcsrv_stream(b"").is_empty());
+        assert!(parse_srcsrv_stream(&[0xff, 0xfe]).is_empty());
+    }
+
+    #[test]
+    fn test_parse_srcsrv_mixed_targets() {
+        let srcsrv = b"SRCSRV: ini ------------------------------------------------\r\n\
+            VERSION=2\r\n\
+            SRCSRV: variables ------------------------------------------\r\n\
+            HGSERVER=https://hg.mozilla.org/releases/mozilla-esr140\r\n\
+            HG_TARGET=%hgserver%/raw-file/%var4%/%var3%\r\n\
+            RUST_GITHUB_TARGET=https://github.com/rust-lang/rust/raw/%var4%/%var3%\r\n\
+            S3_BUCKET=gecko-generated-sources\r\n\
+            S3_TARGET=https://%s3_bucket%.s3.amazonaws.com/%var3%\r\n\
+            SRCSRV: source files ---------------------------------------\r\n\
+            /builds/worker/checkouts/gecko/xpcom/base/nsDebugImpl.cpp*HG_TARGET*xpcom/base/nsDebugImpl.cpp*aaa111\r\n\
+            /rustc/bbb222/library/std/src/io/mod.rs*RUST_GITHUB_TARGET*library/std/src/io/mod.rs*bbb222\r\n\
+            /builds/worker/workspace/obj-build/gen/file.cpp*S3_TARGET*hash/gen/file.cpp*\r\n\
+            SRCSRV: end ------------------------------------------------\r\n";
+
+        let map = parse_srcsrv_stream(srcsrv);
+        // HG entry mapped
+        assert_eq!(
+            map.get("/builds/worker/checkouts/gecko/xpcom/base/nsDebugImpl.cpp").unwrap(),
+            "hg:hg.mozilla.org/releases/mozilla-esr140:xpcom/base/nsDebugImpl.cpp:aaa111"
+        );
+        // Rust entry mapped
+        assert_eq!(
+            map.get("/rustc/bbb222/library/std/src/io/mod.rs").unwrap(),
+            "git:github.com/rust-lang/rust:library/std/src/io/mod.rs:bbb222"
+        );
+        // S3 entry NOT mapped
+        assert!(!map.contains_key("/builds/worker/workspace/obj-build/gen/file.cpp"));
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn test_resolve_srcsrv_vars_basic() {
+        let mut vars = HashMap::new();
+        vars.insert("HGSERVER".to_string(), "https://hg.mozilla.org/releases/mozilla-esr140".to_string());
+
+        let result = resolve_srcsrv_vars("%hgserver%/raw-file/%var4%/%var3%", &vars);
+        assert_eq!(
+            result,
+            "https://hg.mozilla.org/releases/mozilla-esr140/raw-file/%var4%/%var3%"
+        );
+    }
+
+    #[test]
+    fn test_resolve_srcsrv_vars_no_vars() {
+        let vars = HashMap::new();
+        let result = resolve_srcsrv_vars("https://github.com/rust-lang/rust/raw/%var4%/%var3%", &vars);
+        assert_eq!(result, "https://github.com/rust-lang/rust/raw/%var4%/%var3%");
+    }
+
+    #[test]
+    fn test_extract_vcs_prefix_hg() {
+        let url = "https://hg.mozilla.org/releases/mozilla-esr140/raw-file/%var4%/%var3%";
+        assert_eq!(
+            extract_vcs_prefix(url).unwrap(),
+            "hg:hg.mozilla.org/releases/mozilla-esr140"
+        );
+    }
+
+    #[test]
+    fn test_extract_vcs_prefix_github() {
+        let url = "https://github.com/rust-lang/rust/raw/%var4%/%var3%";
+        assert_eq!(
+            extract_vcs_prefix(url).unwrap(),
+            "git:github.com/rust-lang/rust"
+        );
+    }
+
+    #[test]
+    fn test_extract_vcs_prefix_s3_none() {
+        let url = "https://gecko-generated-sources.s3.amazonaws.com/%var3%";
+        assert!(extract_vcs_prefix(url).is_none());
+    }
+
+    #[test]
+    fn test_parse_srcsrv_backslash_paths() {
+        let srcsrv = b"SRCSRV: ini ------------------------------------------------\r\n\
+            VERSION=2\r\n\
+            SRCSRV: variables ------------------------------------------\r\n\
+            HGSERVER=https://hg.mozilla.org/releases/mozilla-esr140\r\n\
+            HG_TARGET=%hgserver%/raw-file/%var4%/%var3%\r\n\
+            SRCSRV: source files ---------------------------------------\r\n\
+            D:\\builds\\worker\\gecko\\dom\\Element.cpp*HG_TARGET*dom/Element.cpp*abc123\r\n\
+            SRCSRV: end ------------------------------------------------\r\n";
+
+        let map = parse_srcsrv_stream(srcsrv);
+        // Backslashes in build path should be normalized to forward slashes
+        assert_eq!(
+            map.get("D:/builds/worker/gecko/dom/Element.cpp").unwrap(),
+            "hg:hg.mozilla.org/releases/mozilla-esr140:dom/Element.cpp:abc123"
+        );
     }
 }
