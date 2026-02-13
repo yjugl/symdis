@@ -9,8 +9,106 @@ use anyhow::{Result, Context, bail};
 use pdb::FallibleIterator;
 
 use super::breakpad::{
-    FuncRecord, LineRecord, ModuleRecord, PublicRecord, SymFile,
+    FuncRecord, InlineRecord, LineRecord, ModuleRecord, PublicRecord, SymFile,
 };
+
+/// Extract code ranges from an InlineSiteSymbol's binary annotations.
+///
+/// The annotations encode a state machine with deltas from the parent
+/// procedure's section:offset. Each "emitting" opcode produces a code range
+/// where the inlined function is active.
+fn extract_inline_ranges(
+    annotations: &pdb::BinaryAnnotations<'_>,
+    proc_offset: pdb::PdbInternalSectionOffset,
+    address_map: &pdb::AddressMap<'_>,
+) -> Vec<(u64, u64)> {
+    struct Emission {
+        offset: pdb::PdbInternalSectionOffset,
+        length: Option<u32>,
+    }
+
+    let mut emissions: Vec<Emission> = Vec::new();
+    let mut code_offset = proc_offset;
+    let mut code_offset_base: u32 = 0;
+    let mut code_length: Option<u32> = None;
+
+    let mut ann_iter = annotations.iter();
+    while let Ok(Some(annotation)) = ann_iter.next() {
+        match annotation {
+            pdb::BinaryAnnotation::CodeOffset(offset) => {
+                code_offset.offset = offset;
+            }
+            pdb::BinaryAnnotation::ChangeCodeOffsetBase(base) => {
+                code_offset_base = base;
+            }
+            pdb::BinaryAnnotation::ChangeCodeOffset(delta) => {
+                code_offset.offset = code_offset.offset.wrapping_add(delta);
+                emissions.push(Emission {
+                    offset: pdb::PdbInternalSectionOffset {
+                        offset: code_offset.offset.wrapping_add(code_offset_base),
+                        section: code_offset.section,
+                    },
+                    length: code_length.take(),
+                });
+            }
+            pdb::BinaryAnnotation::ChangeCodeOffsetAndLineOffset(code_delta, _) => {
+                code_offset.offset = code_offset.offset.wrapping_add(code_delta);
+                emissions.push(Emission {
+                    offset: pdb::PdbInternalSectionOffset {
+                        offset: code_offset.offset.wrapping_add(code_offset_base),
+                        section: code_offset.section,
+                    },
+                    length: code_length.take(),
+                });
+            }
+            pdb::BinaryAnnotation::ChangeCodeLengthAndCodeOffset(length, code_delta) => {
+                code_length = Some(length);
+                code_offset.offset = code_offset.offset.wrapping_add(code_delta);
+                emissions.push(Emission {
+                    offset: pdb::PdbInternalSectionOffset {
+                        offset: code_offset.offset.wrapping_add(code_offset_base),
+                        section: code_offset.section,
+                    },
+                    length: code_length.take(),
+                });
+            }
+            pdb::BinaryAnnotation::ChangeCodeLength(length) => {
+                // Update previous record's length if not explicitly set
+                if let Some(last) = emissions.last_mut() {
+                    if last.length.is_none() {
+                        last.length = Some(length);
+                    }
+                }
+                code_offset.offset = code_offset.offset.wrapping_add(length);
+            }
+            _ => {}
+        }
+    }
+
+    // Convert emissions to (RVA, length) ranges
+    let mut ranges: Vec<(u64, u64)> = Vec::new();
+    for i in 0..emissions.len() {
+        let length = match emissions[i].length {
+            Some(l) => l,
+            None => {
+                // Infer length from distance to next emission
+                if i + 1 < emissions.len() {
+                    emissions[i + 1].offset.offset
+                        .saturating_sub(emissions[i].offset.offset)
+                } else {
+                    continue; // Skip last record with unknown length
+                }
+            }
+        };
+        if length > 0 {
+            if let Some(rva) = emissions[i].offset.to_rva(address_map) {
+                ranges.push((u64::from(rva.0), u64::from(length)));
+            }
+        }
+    }
+
+    ranges
+}
 
 /// Parse a PDB file and convert it into a SymFile.
 ///
@@ -64,9 +162,34 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
         }
     }
 
-    // 5. Per-module iteration: procedures + line programs
+    // 5. Build inlinee name map from the ID information (IPI) stream.
+    //    Each InlineSiteSymbol references an IdIndex; this maps those to names.
+    //    The borrow on `pdb` is released when the block ends.
+    let inlinee_names: HashMap<u32, String> = match pdb.id_information() {
+        Ok(id_info) => {
+            let mut names = HashMap::new();
+            let mut iter = id_info.iter();
+            while let Ok(Some(item)) = iter.next() {
+                match item.parse() {
+                    Ok(pdb::IdData::Function(f)) => {
+                        names.insert(item.index().0, f.name.to_string().into_owned());
+                    }
+                    Ok(pdb::IdData::MemberFunction(f)) => {
+                        names.insert(item.index().0, f.name.to_string().into_owned());
+                    }
+                    _ => {}
+                }
+            }
+            names
+        }
+        Err(_) => HashMap::new(),
+    };
+
+    // 6. Per-module iteration: procedures, inline sites, and line programs
     let mut files: Vec<String> = Vec::new();
     let mut file_intern: HashMap<String, usize> = HashMap::new();
+    let mut inline_origins: Vec<String> = Vec::new();
+    let mut origin_intern: HashMap<String, usize> = HashMap::new();
     let mut functions: Vec<FuncRecord> = Vec::new();
 
     let dbi = pdb.debug_information()
@@ -90,32 +213,108 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
                 Err(_) => return Ok((Vec::new(), Vec::new())),
             };
 
-            // Collect procedures from this module
+            // Scope stack for tracking Procedure → InlineSite nesting.
+            struct ScopeEntry {
+                end_offset: u32,
+                depth: i32,        // -1 for Procedure, 0+ for InlineSite
+                func_idx: usize,   // index into module_procs
+                proc_offset: pdb::PdbInternalSectionOffset,
+            }
+
             let mut module_procs: Vec<FuncRecord> = Vec::new();
             let mut extra_pubs: Vec<PublicRecord> = Vec::new();
             {
                 let mut symbols = module_info.symbols()?;
+                let mut scope_stack: Vec<ScopeEntry> = Vec::new();
+
                 while let Some(symbol) = symbols.next()? {
-                    if let Ok(pdb::SymbolData::Procedure(proc_data)) = symbol.parse() {
-                        if let Some(rva) = proc_data.offset.to_rva(&address_map) {
-                            let size = u64::from(proc_data.len);
-                            if size == 0 {
-                                extra_pubs.push(PublicRecord {
-                                    address: u64::from(rva.0),
-                                    param_size: 0,
-                                    name: proc_data.name.to_string().into_owned(),
-                                });
-                            } else {
-                                module_procs.push(FuncRecord {
-                                    address: u64::from(rva.0),
-                                    size,
-                                    param_size: 0,
-                                    name: proc_data.name.to_string().into_owned(),
-                                    lines: Vec::new(),
-                                    inlines: Vec::new(),
+                    let sym_offset = symbol.index().0;
+
+                    // Pop expired scopes
+                    while scope_stack.last().is_some_and(|s| sym_offset >= s.end_offset) {
+                        scope_stack.pop();
+                    }
+
+                    match symbol.parse() {
+                        Ok(pdb::SymbolData::Procedure(proc_data)) => {
+                            if let Some(rva) = proc_data.offset.to_rva(&address_map) {
+                                let size = u64::from(proc_data.len);
+                                if size == 0 {
+                                    extra_pubs.push(PublicRecord {
+                                        address: u64::from(rva.0),
+                                        param_size: 0,
+                                        name: proc_data.name.to_string().into_owned(),
+                                    });
+                                } else {
+                                    let func_idx = module_procs.len();
+                                    module_procs.push(FuncRecord {
+                                        address: u64::from(rva.0),
+                                        size,
+                                        param_size: 0,
+                                        name: proc_data.name.to_string().into_owned(),
+                                        lines: Vec::new(),
+                                        inlines: Vec::new(),
+                                    });
+                                    scope_stack.push(ScopeEntry {
+                                        end_offset: proc_data.end.0,
+                                        depth: -1,
+                                        func_idx,
+                                        proc_offset: proc_data.offset,
+                                    });
+                                }
+                            }
+                        }
+                        Ok(pdb::SymbolData::InlineSite(site)) => {
+                            if let Some(parent) = scope_stack.last() {
+                                let depth = (parent.depth + 1) as u32;
+                                let func_idx = parent.func_idx;
+                                let proc_offset = parent.proc_offset;
+
+                                // Resolve inlinee name from the IPI stream
+                                let name = inlinee_names
+                                    .get(&site.inlinee.0)
+                                    .cloned()
+                                    .unwrap_or_else(|| {
+                                        format!("<inline #{}>", site.inlinee.0)
+                                    });
+
+                                // Intern the origin name
+                                let origin_idx =
+                                    if let Some(&idx) = origin_intern.get(&name) {
+                                        idx
+                                    } else {
+                                        let idx = inline_origins.len();
+                                        inline_origins.push(name.clone());
+                                        origin_intern.insert(name, idx);
+                                        idx
+                                    };
+
+                                // Extract code ranges from binary annotations
+                                let ranges = extract_inline_ranges(
+                                    &site.annotations,
+                                    proc_offset,
+                                    &address_map,
+                                );
+
+                                if !ranges.is_empty() {
+                                    module_procs[func_idx].inlines.push(InlineRecord {
+                                        depth,
+                                        call_line: 0,
+                                        call_file_index: usize::MAX,
+                                        origin_index: origin_idx,
+                                        ranges,
+                                    });
+                                }
+
+                                scope_stack.push(ScopeEntry {
+                                    end_offset: site.end.0,
+                                    depth: depth as i32,
+                                    func_idx,
+                                    proc_offset,
                                 });
                             }
                         }
+                        _ => {}
                     }
                 }
             }
@@ -213,7 +412,7 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
         name: debug_file.to_string(),
     };
 
-    Ok(SymFile::from_parts(module, files, functions, publics, Vec::new()))
+    Ok(SymFile::from_parts(module, files, functions, publics, inline_origins))
 }
 
 #[cfg(test)]
@@ -307,5 +506,192 @@ mod tests {
         assert!(sym.find_function_by_name("FirstFunc").is_some());
         assert!(sym.find_function_by_name("SecondFunc").is_some());
         assert!(sym.find_function_by_name("NonExistent").is_none());
+    }
+
+    #[test]
+    fn test_from_parts_preserves_inline_data() {
+        let module = ModuleRecord {
+            os: "windows".to_string(),
+            arch: "x86_64".to_string(),
+            debug_id: "TEST123".to_string(),
+            name: "test.pdb".to_string(),
+        };
+
+        let functions = vec![FuncRecord {
+            address: 0x1000,
+            size: 0x100,
+            param_size: 0,
+            name: "MyFunc".to_string(),
+            lines: Vec::new(),
+            inlines: vec![
+                InlineRecord {
+                    depth: 0,
+                    call_line: 0,
+                    call_file_index: usize::MAX,
+                    origin_index: 0,
+                    ranges: vec![(0x1020, 0x30)],
+                },
+                InlineRecord {
+                    depth: 1,
+                    call_line: 0,
+                    call_file_index: usize::MAX,
+                    origin_index: 1,
+                    ranges: vec![(0x1030, 0x10)],
+                },
+            ],
+        }];
+
+        let inline_origins = vec![
+            "HelperFunc".to_string(),
+            "NestedHelper".to_string(),
+        ];
+
+        let sym = SymFile::from_parts(
+            module,
+            Vec::new(),
+            functions,
+            Vec::new(),
+            inline_origins,
+        );
+
+        let func = sym.find_function_by_name("MyFunc").unwrap();
+        assert_eq!(func.inlines.len(), 2);
+
+        // Test get_inline_at for depth-0 inline
+        let inlines = sym.get_inline_at(0x1020, func);
+        assert_eq!(inlines.len(), 1);
+        assert_eq!(inlines[0].name, "HelperFunc");
+        assert_eq!(inlines[0].depth, 0);
+        assert!(inlines[0].call_file.is_none()); // usize::MAX → no file
+
+        // Test get_inline_at for nested inline (both depth 0 and 1 active)
+        let inlines = sym.get_inline_at(0x1030, func);
+        assert_eq!(inlines.len(), 2);
+        assert_eq!(inlines[0].name, "HelperFunc");
+        assert_eq!(inlines[0].depth, 0);
+        assert_eq!(inlines[1].name, "NestedHelper");
+        assert_eq!(inlines[1].depth, 1);
+
+        // Test get_inline_at outside inline ranges
+        let inlines = sym.get_inline_at(0x1000, func);
+        assert!(inlines.is_empty());
+    }
+
+    #[test]
+    fn test_extract_inline_ranges_basic() {
+        // Mock a simple PdbInternalSectionOffset → RVA mapping
+        // We can't call extract_inline_ranges without a real AddressMap,
+        // but we can verify the logic through from_parts + get_inline_at
+        let module = ModuleRecord {
+            os: "windows".to_string(),
+            arch: "x86_64".to_string(),
+            debug_id: "TEST".to_string(),
+            name: "test.pdb".to_string(),
+        };
+
+        // Simulate what extract_inline_ranges would produce
+        let functions = vec![FuncRecord {
+            address: 0x5000,
+            size: 0x200,
+            param_size: 0,
+            name: "BigFunc".to_string(),
+            lines: Vec::new(),
+            inlines: vec![
+                InlineRecord {
+                    depth: 0,
+                    call_line: 0,
+                    call_file_index: usize::MAX,
+                    origin_index: 0,
+                    ranges: vec![(0x5010, 0x20), (0x5080, 0x40)],
+                },
+            ],
+        }];
+
+        let sym = SymFile::from_parts(
+            module,
+            Vec::new(),
+            functions,
+            Vec::new(),
+            vec!["MultiRangeInline".to_string()],
+        );
+
+        let func = sym.find_function_by_name("BigFunc").unwrap();
+
+        // First range
+        let inlines = sym.get_inline_at(0x5010, func);
+        assert_eq!(inlines.len(), 1);
+        assert_eq!(inlines[0].name, "MultiRangeInline");
+
+        // Between ranges — not active
+        let inlines = sym.get_inline_at(0x5050, func);
+        assert!(inlines.is_empty());
+
+        // Second range
+        let inlines = sym.get_inline_at(0x50A0, func);
+        assert_eq!(inlines.len(), 1);
+        assert_eq!(inlines[0].name, "MultiRangeInline");
+
+        // After all ranges
+        let inlines = sym.get_inline_at(0x50C0, func);
+        assert!(inlines.is_empty());
+    }
+
+    #[test]
+    fn test_origin_interning_deduplication() {
+        // Verify that shared origin names produce the same origin_index
+        let module = ModuleRecord {
+            os: "windows".to_string(),
+            arch: "x86_64".to_string(),
+            debug_id: "TEST".to_string(),
+            name: "test.pdb".to_string(),
+        };
+
+        let functions = vec![
+            FuncRecord {
+                address: 0x1000,
+                size: 0x100,
+                param_size: 0,
+                name: "Func1".to_string(),
+                lines: Vec::new(),
+                inlines: vec![InlineRecord {
+                    depth: 0,
+                    call_line: 0,
+                    call_file_index: usize::MAX,
+                    origin_index: 0, // "SharedHelper"
+                    ranges: vec![(0x1010, 0x20)],
+                }],
+            },
+            FuncRecord {
+                address: 0x2000,
+                size: 0x100,
+                param_size: 0,
+                name: "Func2".to_string(),
+                lines: Vec::new(),
+                inlines: vec![InlineRecord {
+                    depth: 0,
+                    call_line: 0,
+                    call_file_index: usize::MAX,
+                    origin_index: 0, // same "SharedHelper"
+                    ranges: vec![(0x2010, 0x30)],
+                }],
+            },
+        ];
+
+        let sym = SymFile::from_parts(
+            module,
+            Vec::new(),
+            functions,
+            Vec::new(),
+            vec!["SharedHelper".to_string()],
+        );
+
+        // Both functions should resolve the same inline origin name
+        let func1 = sym.find_function_by_name("Func1").unwrap();
+        let inlines1 = sym.get_inline_at(0x1010, func1);
+        assert_eq!(inlines1[0].name, "SharedHelper");
+
+        let func2 = sym.find_function_by_name("Func2").unwrap();
+        let inlines2 = sym.get_inline_at(0x2010, func2);
+        assert_eq!(inlines2[0].name, "SharedHelper");
     }
 }

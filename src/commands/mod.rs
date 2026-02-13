@@ -105,8 +105,9 @@ PDB SUPPORT (--pdb):
     Source line coverage    Dense (many lines)    Sparse (some modules
                                                   skipped due to pdb
                                                   crate limitations)
-    Inline frame tracking   Yes (full)            Not yet implemented
-    Call target names       Demangled             MSVC-mangled (raw)
+    Inline frame tracking   Yes (full)            Yes (from InlineSite
+                                                  records + IPI stream)
+    Call target names       Demangled             Demangled (MSVC ABI)
     File size               Small (~1 MB)         Large (~100 MB-2 GB)
     Parse speed             Fast                  Slow
 
@@ -126,13 +127,12 @@ PDB SUPPORT (--pdb):
 
   When NOT to use --pdb:
     - Mozilla modules (xul.pdb, mozglue.pdb, etc.) where Tecken has a
-      .sym file. The .sym output is richer (inline frames, demangled
-      names, VCS source paths, better line coverage).
+      .sym file. The .sym output is richer (VCS source paths, denser
+      line coverage, full-signature function names).
 
-  Future improvements planned: MSVC name demangling, inline frame
-  parsing from PDB InlineSiteSymbol records, and better module coverage
-  (the pdb crate panics on some modules in large PDBs; these are
-  currently skipped silently).
+  Remaining limitation: the pdb crate panics on some modules in large
+  PDBs (e.g. xul.pdb); these modules are caught and skipped silently,
+  which may result in sparser line coverage compared to .sym files.
 
 FENIX (FIREFOX FOR ANDROID):
 
@@ -306,8 +306,9 @@ TIPS:
     them. Other third-party modules are also worth trying.
   - --pdb is mainly useful for non-Mozilla Windows modules with no .sym
     on Tecken. For Mozilla modules, the default .sym path gives better
-    output (demangled names, inline frames, VCS source paths). PDB is
-    auto-tried when .sym is unavailable; --pdb forces PDB-first."#;
+    output (VCS source paths, denser line coverage, full-signature
+    function names). PDB is auto-tried when .sym is unavailable;
+    --pdb forces PDB-first."#;
 
 const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 

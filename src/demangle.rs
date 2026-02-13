@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-/// Try to demangle a symbol name as C++ (Itanium ABI) or Rust.
+/// Try to demangle a symbol name as C++ (Itanium ABI), Rust, or MSVC.
 /// Returns the original name unchanged if it's not mangled.
 pub fn demangle(name: &str) -> String {
     // Try C++ (Itanium ABI) demangling first
@@ -15,6 +15,13 @@ pub fn demangle(name: &str) -> String {
     // Try Rust demangling
     if let Ok(demangled) = rustc_demangle::try_demangle(name) {
         return demangled.to_string();
+    }
+
+    // Try MSVC demangling (symbols start with '?')
+    if name.starts_with('?') {
+        if let Ok(demangled) = msvc_demangler::demangle(name, msvc_demangler::DemangleFlags::llvm()) {
+            return demangled;
+        }
     }
 
     name.to_string()
@@ -70,6 +77,31 @@ mod tests {
     fn test_demangle_plain_c_symbol() {
         let name = "malloc";
         assert_eq!(demangle(name), "malloc");
+    }
+
+    #[test]
+    fn test_demangle_msvc() {
+        // MSVC-mangled symbol: void mozilla::ipc::NodeChannel::OnMessageReceived(const IPC::Message &)
+        let mangled = "?OnMessageReceived@NodeChannel@ipc@mozilla@@UEAAXAEBVMessage@IPC@@@Z";
+        let result = demangle(mangled);
+        assert!(!result.starts_with('?'), "MSVC symbol should be demangled: {result}");
+        assert!(result.contains("OnMessageReceived"), "Should contain function name: {result}");
+        assert!(result.contains("mozilla"), "Should contain namespace: {result}");
+    }
+
+    #[test]
+    fn test_demangle_msvc_simple() {
+        let mangled = "?hello@@YAHXZ";
+        let result = demangle(mangled);
+        assert!(!result.starts_with('?'), "MSVC symbol should be demangled: {result}");
+        assert!(result.contains("hello"), "Should contain function name: {result}");
+    }
+
+    #[test]
+    fn test_demangle_msvc_not_triggered_for_non_msvc() {
+        // A '?' in the middle should not trigger MSVC demangling
+        let name = "some_func?weird";
+        assert_eq!(demangle(name), name);
     }
 
     #[test]
