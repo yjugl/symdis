@@ -281,9 +281,10 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
     let address_map = pdb.address_map()
         .context("reading PDB address map")?;
 
-    // 3. String table (needed for file name resolution in line programs)
-    let string_table = pdb.string_table()
-        .context("reading PDB string table")?;
+    // 3. String table (needed for file name resolution in line programs).
+    // Some PDBs (especially newer Windows kernel modules) lack a string table;
+    // we still extract functions/publics/inlines, just without source lines.
+    let string_table = pdb.string_table().ok();
 
     // 4. Public symbols
     let mut publics: Vec<PublicRecord> = Vec::new();
@@ -476,7 +477,12 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
             // Sort module procedures by address for binary search
             module_procs.sort_by_key(|f| f.address);
 
-            // Collect line information from this module's line program
+            // Collect line information from this module's line program.
+            // Requires string_table to resolve file names.
+            let string_table = match &string_table {
+                Some(st) => st,
+                None => return Ok((module_procs, extra_pubs)),
+            };
             let line_program = match module_info.line_program() {
                 Ok(program) => program,
                 Err(_) => return Ok((module_procs, extra_pubs)),

@@ -54,7 +54,7 @@ BINARY FETCH CHAIN:
   Sources tried in order for the native binary:
     1. Local cache (instant)
     2. Mozilla Tecken symbol server (code-file + code-id)
-    3. Microsoft symbol server (Windows PE only)
+    3. Microsoft symbol server (Windows .dll/.exe/.sys only)
     4. debuginfod servers (Linux ELF only, build ID from debug ID)
     5. Snap Store (Linux, when snap detected from sym file or --snap flag)
     6. Mozilla FTP archive (--version + --channel required):
@@ -269,6 +269,14 @@ EXAMPLES:
       --code-file ntdll.dll --code-id 5b6dddee267000 \
       --function NtCreateFile
 
+  # Windows kernel driver (.sys file) -- requires --code-file because
+  # the PDB-to-code-file heuristic defaults to .dll:
+  symdis disasm \
+      --debug-file ntfs.pdb \
+      --debug-id C1BFE428A2A23AAF9BF9D40544D2ADC61 \
+      --code-file ntfs.sys --code-id a7377819369000 \
+      --function NtfsAcquireExclusiveFcb
+
   # Use PDB for richer symbol data (Windows modules only):
   symdis disasm \
       --debug-file ntdll.pdb \
@@ -308,6 +316,9 @@ TIPS:
   - Don't skip non-Mozilla modules! Crashes in ntdll.dll, kernel32.dll,
     and other Microsoft system DLLs are common and symdis has symbols for
     them. Other third-party modules are also worth trying.
+  - Windows kernel drivers (.sys files like win32kfull.sys, tcpip.sys,
+    ntfs.sys) are supported. Always provide --code-file for .sys files
+    because derive-from-PDB defaults to .dll.
   - --pdb is mainly useful for non-Mozilla Windows modules with no .sym
     on Tecken. For Mozilla modules, the default .sym path gives better
     output (denser line coverage, consistently demangled function names).

@@ -564,7 +564,10 @@ pub async fn fetch_binary_snap(
 /// Used to skip the Microsoft Symbol Server for non-Windows modules.
 fn looks_like_windows_binary(code_file: &str) -> bool {
     let lower = code_file.to_ascii_lowercase();
-    lower.ends_with(".dll") || lower.ends_with(".exe") || lower.ends_with(".pdb")
+    lower.ends_with(".dll")
+        || lower.ends_with(".exe")
+        || lower.ends_with(".sys")
+        || lower.ends_with(".pdb")
 }
 
 /// Check if response data looks like an HTML error page rather than real data.
@@ -618,6 +621,17 @@ mod tests {
         assert_eq!(sym_filename("libxul.so"), "libxul.so.sym");
         assert_eq!(sym_filename("XUL"), "XUL.sym");
         assert_eq!(sym_filename("ntdll.pdb"), "ntdll.sym");
+    }
+
+    #[test]
+    fn test_looks_like_windows_binary() {
+        assert!(looks_like_windows_binary("ntdll.dll"));
+        assert!(looks_like_windows_binary("firefox.exe"));
+        assert!(looks_like_windows_binary("win32kfull.sys"));
+        assert!(looks_like_windows_binary("ntdll.pdb"));
+        assert!(looks_like_windows_binary("WIN32K.SYS"));
+        assert!(!looks_like_windows_binary("libxul.so"));
+        assert!(!looks_like_windows_binary("XUL"));
     }
 
     #[test]
