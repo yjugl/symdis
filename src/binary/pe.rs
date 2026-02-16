@@ -14,6 +14,7 @@ use super::{BinaryFile, CpuArch};
 pub struct PeFile {
     data: Vec<u8>,
     arch: CpuArch,
+    image_base: u64,
     exports_list: Vec<(u64, String)>,
     imports_map: HashMap<u64, (String, String)>,
     sections: Vec<SectionInfo>,
@@ -69,13 +70,14 @@ impl PeFile {
         }
         exports_list.sort_by_key(|(rva, _)| *rva);
 
-        // Parse imports
+        // Parse imports — use import.offset which is the IAT slot RVA
+        // (import.rva is the Hint/Name Table RVA, not the IAT entry)
         let mut imports_map = HashMap::new();
         for import in &pe.imports {
             let dll = import.dll.to_string();
             let name = import.name.to_string();
-            let rva = import.rva as u64;
-            imports_map.insert(rva, (dll, name));
+            let iat_rva = import.offset as u64;
+            imports_map.insert(iat_rva, (dll, name));
         }
 
         // Parse .pdata exception entries (x86_64 only in goblin 0.9)
@@ -89,9 +91,12 @@ impl PeFile {
             pdata_entries.sort_unstable_by_key(|&(begin, _)| begin);
         }
 
+        let image_base = pe.image_base as u64;
+
         Ok(Self {
             data,
             arch,
+            image_base,
             exports_list,
             imports_map,
             sections,
@@ -164,6 +169,24 @@ impl BinaryFile for PeFile {
     fn function_bounds(&self, rva: u64) -> Option<(u64, u64)> {
         self.find_pdata_bounds(rva)
     }
+
+    fn read_pointer_at_rva(&self, rva: u64) -> Option<u64> {
+        let offset = self.rva_to_offset(rva)? as usize;
+        let ptr_size = match self.arch {
+            CpuArch::X86 => 4,
+            _ => 8,
+        };
+        if offset + ptr_size > self.data.len() {
+            return None;
+        }
+        let value = if ptr_size == 4 {
+            u64::from(u32::from_le_bytes(self.data[offset..offset + 4].try_into().ok()?))
+        } else {
+            u64::from_le_bytes(self.data[offset..offset + 8].try_into().ok()?)
+        };
+        // Convert VA to RVA by subtracting image_base
+        value.checked_sub(self.image_base)
+    }
 }
 
 #[cfg(test)]
@@ -175,6 +198,7 @@ mod tests {
         let pe = PeFile {
             data: vec![0; 0x10000],
             arch: CpuArch::X86_64,
+            image_base: 0x180000000,
             exports_list: Vec::new(),
             imports_map: HashMap::new(),
             sections: vec![
@@ -210,6 +234,7 @@ mod tests {
         let pe = PeFile {
             data: vec![0; 0x10000],
             arch: CpuArch::X86_64,
+            image_base: 0x180000000,
             exports_list: Vec::new(),
             imports_map: HashMap::new(),
             sections: Vec::new(),
@@ -243,12 +268,74 @@ mod tests {
         let pe = PeFile {
             data: Vec::new(),
             arch: CpuArch::X86_64,
+            image_base: 0x180000000,
             exports_list: Vec::new(),
             imports_map: HashMap::new(),
             sections: Vec::new(),
             pdata_entries: Vec::new(),
         };
         assert_eq!(pe.find_pdata_bounds(0x1000), None);
+    }
+
+    #[test]
+    fn test_read_pointer_at_rva() {
+        // Build a PE with one section: VA 0x1000, raw at 0x200
+        let mut data = vec![0u8; 0x1000];
+        // Place an 8-byte pointer at raw offset 0x200 (= RVA 0x1000)
+        // The pointer value is image_base + 0x5000 (VA → RVA 0x5000)
+        let image_base: u64 = 0x180000000;
+        let target_rva: u64 = 0x5000;
+        let va_bytes = (image_base + target_rva).to_le_bytes();
+        data[0x200..0x208].copy_from_slice(&va_bytes);
+
+        let pe = PeFile {
+            data,
+            arch: CpuArch::X86_64,
+            image_base,
+            exports_list: Vec::new(),
+            imports_map: HashMap::new(),
+            sections: vec![SectionInfo {
+                virtual_address: 0x1000,
+                virtual_size: 0x800,
+                pointer_to_raw_data: 0x200,
+            }],
+            pdata_entries: Vec::new(),
+        };
+
+        // RVA 0x1000 → raw 0x200 → reads pointer → subtracts image_base → RVA 0x5000
+        assert_eq!(pe.read_pointer_at_rva(0x1000), Some(0x5000));
+
+        // RVA not in any section → None
+        assert_eq!(pe.read_pointer_at_rva(0x500), None);
+
+        // RVA near end of section data → out of bounds for 8-byte read → None
+        assert_eq!(pe.read_pointer_at_rva(0x17FC), None);
+    }
+
+    #[test]
+    fn test_read_pointer_at_rva_x86() {
+        // 32-bit PE: reads 4-byte pointer
+        let mut data = vec![0u8; 0x1000];
+        let image_base: u64 = 0x10000000;
+        let target_rva: u64 = 0x2000;
+        let va_bytes = ((image_base + target_rva) as u32).to_le_bytes();
+        data[0x200..0x204].copy_from_slice(&va_bytes);
+
+        let pe = PeFile {
+            data,
+            arch: CpuArch::X86,
+            image_base,
+            exports_list: Vec::new(),
+            imports_map: HashMap::new(),
+            sections: vec![SectionInfo {
+                virtual_address: 0x1000,
+                virtual_size: 0x800,
+                pointer_to_raw_data: 0x200,
+            }],
+            pdata_entries: Vec::new(),
+        };
+
+        assert_eq!(pe.read_pointer_at_rva(0x1000), Some(0x2000));
     }
 
     #[test]

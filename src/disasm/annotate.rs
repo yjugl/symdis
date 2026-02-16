@@ -98,13 +98,12 @@ fn annotate_call_targets(
     binary: Option<&dyn BinaryFile>,
 ) {
     for insn in insns.iter_mut() {
+        // Direct calls: resolve target address through sym file or imports
         if let Some(target) = insn.instruction.call_target {
-            // Try sym file first (FUNC, then PUBLIC)
             if let Some(info) = sym.resolve_address(target) {
                 insn.call_target_name = Some(info.name);
                 continue;
             }
-            // Try binary imports (IAT/PLT)
             if let Some(binary) = binary {
                 if let Some((dll, name)) = binary.resolve_import(target) {
                     insn.call_target_name = Some(format!("{dll}!{name}"));
@@ -112,9 +111,31 @@ fn annotate_call_targets(
                 }
             }
         }
-        // Mark indirect calls that weren't resolved
-        if insn.instruction.is_indirect_call && insn.call_target_name.is_none() {
-            insn.call_target_name = Some("[indirect]".to_string());
+
+        // Indirect calls with a known memory slot RVA (RIP-relative addressing)
+        if insn.instruction.is_indirect_call {
+            if let Some(slot_rva) = insn.instruction.indirect_mem_addr {
+                // 1. Try IAT import resolution
+                if let Some(binary) = binary {
+                    if let Some((dll, name)) = binary.resolve_import(slot_rva) {
+                        insn.call_target_name = Some(format!("{dll}!{name}"));
+                        continue;
+                    }
+                }
+                // 2. Try reading the on-disk pointer and resolving as an intra-module target
+                if let Some(binary) = binary {
+                    if let Some(target_rva) = binary.read_pointer_at_rva(slot_rva) {
+                        if let Some(info) = sym.resolve_address(target_rva) {
+                            insn.call_target_name = Some(info.name);
+                            continue;
+                        }
+                    }
+                }
+            }
+            // Fall through: mark as [indirect]
+            if insn.call_target_name.is_none() {
+                insn.call_target_name = Some("[indirect]".to_string());
+            }
         }
     }
 }
@@ -175,6 +196,7 @@ PUBLIC 3000 0 _PublicSymbol
                 operands: operands.to_string(),
                 call_target: None,
                 is_indirect_call: false,
+                indirect_mem_addr: None,
             })
             .collect()
     }
@@ -334,5 +356,92 @@ PUBLIC 3000 0 _PublicSymbol
 
         assert!(annotated[0].call_target_name.is_none());
         assert!(!annotated[0].instruction.is_indirect_call);
+    }
+
+    #[test]
+    fn test_indirect_call_resolved_via_import() {
+        use crate::binary::CpuArch;
+
+        /// Stub binary with a single IAT import.
+        struct StubBinaryWithImport;
+        impl BinaryFile for StubBinaryWithImport {
+            fn arch(&self) -> CpuArch { CpuArch::X86_64 }
+            fn extract_code(&self, _rva: u64, _size: u64) -> anyhow::Result<Vec<u8>> { Ok(Vec::new()) }
+            fn resolve_import(&self, rva: u64) -> Option<(String, String)> {
+                if rva == 0x8000 {
+                    Some(("kernel32.dll".to_string(), "CreateFileW".to_string()))
+                } else {
+                    None
+                }
+            }
+            fn exports(&self) -> &[(u64, String)] { &[] }
+        }
+
+        let sym = make_test_sym();
+        let func = sym.find_function_by_name("TestFunction").unwrap();
+
+        let mut instructions = make_instructions(&[(0x1050, "call", "qword ptr [rip + 0x1234]")]);
+        instructions[0].is_indirect_call = true;
+        instructions[0].indirect_mem_addr = Some(0x8000);
+
+        let binary = StubBinaryWithImport;
+        let annotated = annotate(instructions, Some(&sym), Some(func), Some(&binary), None);
+
+        assert_eq!(
+            annotated[0].call_target_name.as_deref(),
+            Some("kernel32.dll!CreateFileW")
+        );
+    }
+
+    #[test]
+    fn test_indirect_call_resolved_via_pointer() {
+        use crate::binary::CpuArch;
+
+        /// Stub binary whose on-disk pointer at RVA 0x9000 points to RVA 0x2000.
+        struct StubBinaryWithPointer;
+        impl BinaryFile for StubBinaryWithPointer {
+            fn arch(&self) -> CpuArch { CpuArch::X86_64 }
+            fn extract_code(&self, _rva: u64, _size: u64) -> anyhow::Result<Vec<u8>> { Ok(Vec::new()) }
+            fn resolve_import(&self, _rva: u64) -> Option<(String, String)> { None }
+            fn exports(&self) -> &[(u64, String)] { &[] }
+            fn read_pointer_at_rva(&self, rva: u64) -> Option<u64> {
+                if rva == 0x9000 { Some(0x2000) } else { None }
+            }
+        }
+
+        let sym = make_test_sym();
+        let func = sym.find_function_by_name("TestFunction").unwrap();
+
+        let mut instructions = make_instructions(&[(0x1050, "call", "qword ptr [rip + 0x1234]")]);
+        instructions[0].is_indirect_call = true;
+        instructions[0].indirect_mem_addr = Some(0x9000);
+
+        let binary = StubBinaryWithPointer;
+        let annotated = annotate(instructions, Some(&sym), Some(func), Some(&binary), None);
+
+        // RVA 0x2000 resolves to CalledFunction in our test sym
+        assert_eq!(
+            annotated[0].call_target_name.as_deref(),
+            Some("CalledFunction")
+        );
+    }
+
+    #[test]
+    fn test_indirect_call_unresolved_with_mem_addr() {
+        // indirect_mem_addr is set but doesn't match any import or pointer
+        let sym = make_test_sym();
+        let func = sym.find_function_by_name("TestFunction").unwrap();
+
+        let mut instructions = make_instructions(&[(0x1050, "call", "qword ptr [rip + 0x1234]")]);
+        instructions[0].is_indirect_call = true;
+        instructions[0].indirect_mem_addr = Some(0xFFFF);
+
+        let annotated = annotate(instructions, Some(&sym), Some(func), None, None);
+
+        // Falls through to [indirect]
+        assert_eq!(
+            annotated[0].call_target_name.as_deref(),
+            Some("[indirect]")
+        );
     }
 }

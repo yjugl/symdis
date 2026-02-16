@@ -4,6 +4,7 @@
 
 use anyhow::Result;
 use capstone::prelude::*;
+use capstone::arch::x86::{X86OperandType, X86Reg};
 use tracing::info;
 
 use crate::binary::CpuArch;
@@ -26,6 +27,9 @@ pub struct Instruction {
     pub call_target: Option<u64>,
     /// Whether this is an indirect call/jmp.
     pub is_indirect_call: bool,
+    /// For RIP-relative indirect call/jmp: the RVA of the memory slot referenced.
+    /// Computed as `insn_address + insn_size + displacement`.
+    pub indirect_mem_addr: Option<u64>,
 }
 
 /// Capstone-based disassembly engine.
@@ -143,7 +147,7 @@ impl Disassembler {
             let mnemonic = insn.mnemonic().unwrap_or("???").to_string();
             let operands = insn.op_str().unwrap_or("").to_string();
 
-            let (call_target, is_indirect_call) =
+            let (call_target, is_indirect_call, indirect_mem_addr) =
                 self.extract_call_target(insn, &mnemonic, &operands);
 
             result.push(Instruction {
@@ -154,6 +158,7 @@ impl Disassembler {
                 operands,
                 call_target,
                 is_indirect_call,
+                indirect_mem_addr,
             });
         }
 
@@ -161,12 +166,14 @@ impl Disassembler {
     }
 
     /// Extract call/jmp target from an instruction.
+    ///
+    /// Returns `(call_target, is_indirect, indirect_mem_addr)`.
     fn extract_call_target(
         &self,
-        _insn: &capstone::Insn,
+        insn: &capstone::Insn,
         mnemonic: &str,
         operands: &str,
-    ) -> (Option<u64>, bool) {
+    ) -> (Option<u64>, bool, Option<u64>) {
         // Only look at call/jmp instructions
         let is_call_or_jmp = mnemonic == "call"
             || mnemonic == "jmp"
@@ -177,26 +184,51 @@ impl Disassembler {
             || mnemonic.starts_with("jmpq");
 
         if !is_call_or_jmp {
-            return (None, false);
+            return (None, false, None);
         }
 
         // Check for indirect calls (contains brackets or register names without 0x prefix)
         if operands.contains('[') || operands.contains("ptr") {
-            return (None, true);
+            let indirect_mem = self.extract_rip_relative_addr(insn);
+            return (None, true, indirect_mem);
         }
 
         // For direct calls, try to parse the target address from the operand
-        let target_str = operands.trim().trim_start_matches("0x");
+        // ARM/ARM64 use '#' prefix for immediates (e.g. "bl #0x1234")
+        let target_str = operands.trim().trim_start_matches('#').trim_start_matches("0x");
         if let Ok(target) = u64::from_str_radix(target_str, 16) {
-            return (Some(target), false);
+            return (Some(target), false, None);
         }
 
         // If we can't determine, it might be an indirect call to a register
-        if !operands.is_empty() && !operands.starts_with("0x") && !operands.starts_with("0X") {
-            return (None, true);
+        let op_trimmed = operands.trim_start_matches('#');
+        if !operands.is_empty() && !op_trimmed.starts_with("0x") && !op_trimmed.starts_with("0X") {
+            return (None, true, None);
         }
 
-        (None, false)
+        (None, false, None)
+    }
+
+    /// Extract the memory address from a RIP-relative memory operand.
+    ///
+    /// For `call qword ptr [rip + 0x1234]` at address 0x1000 (6 bytes),
+    /// computes slot_rva = 0x1000 + 6 + 0x1234 = 0x223a.
+    fn extract_rip_relative_addr(&self, insn: &capstone::Insn) -> Option<u64> {
+        let detail = self.cs.insn_detail(insn).ok()?;
+        let arch_detail = detail.arch_detail();
+        let x86 = arch_detail.x86()?;
+
+        for op in x86.operands() {
+            if let X86OperandType::Mem(mem) = op.op_type {
+                // Check if base register is RIP
+                if mem.base().0 == X86Reg::X86_REG_RIP as u16 {
+                    // slot_rva = instruction_address + instruction_size + displacement
+                    let addr = insn.address() as i64 + insn.len() as i64 + mem.disp();
+                    return Some(addr as u64);
+                }
+            }
+        }
+        None
     }
 }
 
@@ -268,6 +300,40 @@ mod tests {
         assert_eq!(insns[0].mnemonic, "call");
         assert!(insns[0].call_target.is_none());
         assert!(insns[0].is_indirect_call);
+        // Register-indirect calls don't have a computable memory address
+        assert!(insns[0].indirect_mem_addr.is_none());
+    }
+
+    #[test]
+    fn test_rip_relative_call() {
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        // FF 15 xx xx xx xx = call qword ptr [rip + disp32]
+        // At address 0x1000, size 6, displacement 0x2000:
+        // slot_rva = 0x1000 + 6 + 0x2000 = 0x3006
+        let code = [0xff, 0x15, 0x00, 0x20, 0x00, 0x00];
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None).unwrap();
+
+        assert_eq!(insns.len(), 1);
+        assert_eq!(insns[0].mnemonic, "call");
+        assert!(insns[0].call_target.is_none());
+        assert!(insns[0].is_indirect_call);
+        assert_eq!(insns[0].indirect_mem_addr, Some(0x3006));
+    }
+
+    #[test]
+    fn test_rip_relative_jmp() {
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        // FF 25 xx xx xx xx = jmp qword ptr [rip + disp32]
+        // At address 0x2000, size 6, displacement 0x1000:
+        // slot_rva = 0x2000 + 6 + 0x1000 = 0x3006
+        let code = [0xff, 0x25, 0x00, 0x10, 0x00, 0x00];
+        let (insns, _) = disasm.disassemble(&code, 0x2000, 100, None).unwrap();
+
+        assert_eq!(insns.len(), 1);
+        assert_eq!(insns[0].mnemonic, "jmp");
+        assert!(insns[0].call_target.is_none());
+        assert!(insns[0].is_indirect_call);
+        assert_eq!(insns[0].indirect_mem_addr, Some(0x3006));
     }
 
     #[test]

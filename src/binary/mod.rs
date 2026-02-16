@@ -66,4 +66,12 @@ pub trait BinaryFile {
     fn function_bounds(&self, _rva: u64) -> Option<(u64, u64)> {
         None
     }
+
+    /// Read a pointer-sized value at the given RVA from the on-disk binary data,
+    /// and convert it from a VA to an RVA by subtracting the image base.
+    /// Used to resolve intra-module function pointer tables (e.g., dispatch tables
+    /// in `.rdata`). Returns `None` by default (only implemented for PE).
+    fn read_pointer_at_rva(&self, _rva: u64) -> Option<u64> {
+        None
+    }
 }
