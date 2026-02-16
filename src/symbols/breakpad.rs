@@ -16,6 +16,8 @@ pub struct SymFile {
     pub inline_origins: Vec<String>,
     /// Map from function name to index in `functions` for fast lookup.
     name_index: HashMap<String, Vec<usize>>,
+    /// Map from PUBLIC symbol name to index in `publics` for fast lookup.
+    public_name_index: HashMap<String, Vec<usize>>,
 }
 
 pub struct ModuleRecord {
@@ -188,6 +190,15 @@ impl SymFile {
                 .push(i);
         }
 
+        // Build public name index
+        let mut public_name_index: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, public) in publics.iter().enumerate() {
+            public_name_index
+                .entry(public.name.clone())
+                .or_default()
+                .push(i);
+        }
+
         Ok(Self {
             module,
             files,
@@ -195,6 +206,7 @@ impl SymFile {
             publics,
             inline_origins,
             name_index,
+            public_name_index,
         })
     }
 
@@ -226,6 +238,15 @@ impl SymFile {
                 .push(i);
         }
 
+        // Build public name index
+        let mut public_name_index: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, public) in publics.iter().enumerate() {
+            public_name_index
+                .entry(public.name.clone())
+                .or_default()
+                .push(i);
+        }
+
         Self {
             module,
             files,
@@ -233,6 +254,7 @@ impl SymFile {
             publics,
             inline_origins,
             name_index,
+            public_name_index,
         }
     }
 
@@ -242,6 +264,22 @@ impl SymFile {
             .get(name)
             .and_then(|indices| indices.first())
             .map(|&i| &self.functions[i])
+    }
+
+    /// Find a PUBLIC symbol by exact name.
+    pub fn find_public_by_name(&self, name: &str) -> Option<&PublicRecord> {
+        self.public_name_index
+            .get(name)
+            .and_then(|indices| indices.first())
+            .map(|&i| &self.publics[i])
+    }
+
+    /// Find PUBLIC symbols by substring match.
+    pub fn find_public_by_name_fuzzy(&self, pattern: &str) -> Vec<&PublicRecord> {
+        self.publics
+            .iter()
+            .filter(|p| p.name.contains(pattern))
+            .collect()
     }
 
     /// Find functions by substring match.
@@ -647,6 +685,29 @@ PUBLIC 4000 0 _AnotherPublic
         assert_eq!(func.inlines.len(), 1);
         assert_eq!(func.inlines[0].ranges.len(), 1);
         assert_eq!(func.inlines[0].ranges[0], (0x1020, 0x10));
+    }
+
+    #[test]
+    fn test_find_public_by_name() {
+        let sym = SymFile::parse(Cursor::new(make_test_sym())).unwrap();
+        let public = sym.find_public_by_name("_PublicSymbol").unwrap();
+        assert_eq!(public.address, 0x3000);
+        assert!(sym.find_public_by_name("NonExistent").is_none());
+    }
+
+    #[test]
+    fn test_find_public_by_name_fuzzy() {
+        let sym = SymFile::parse(Cursor::new(make_test_sym())).unwrap();
+        let results = sym.find_public_by_name_fuzzy("Public");
+        assert_eq!(results.len(), 2);
+        // Should match both _PublicSymbol and _AnotherPublic
+        let names: Vec<&str> = results.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"_PublicSymbol"));
+        assert!(names.contains(&"_AnotherPublic"));
+
+        // No matches
+        let results = sym.find_public_by_name_fuzzy("zzz_no_match");
+        assert!(results.is_empty());
     }
 
     #[test]

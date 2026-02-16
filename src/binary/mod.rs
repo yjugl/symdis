@@ -60,4 +60,10 @@ pub trait BinaryFile {
     fn build_id(&self) -> Option<String> {
         None
     }
+
+    /// Return the exact function bounds (begin_rva, end_rva) for an RVA.
+    /// Uses PE .pdata entries when available. Returns `None` by default.
+    fn function_bounds(&self, _rva: u64) -> Option<(u64, u64)> {
+        None
+    }
 }

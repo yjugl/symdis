@@ -529,6 +529,7 @@ fn find_by_name(
     binary: Option<&dyn BinaryFile>,
 ) -> Result<(String, u64, u64)> {
     if let Some(sym) = sym_file {
+        // 1. Try FUNC records
         if fuzzy {
             let matches = sym.find_function_by_name_fuzzy(name);
             match matches.len() {
@@ -556,23 +557,32 @@ fn find_by_name(
             }
         }
 
-        // Exact match
+        // Exact FUNC match
         if let Some(func) = sym.find_function_by_name(name) {
             return Ok((func.name.clone(), func.address, func.size));
         }
 
+        // 2. Try PUBLIC symbols (exact, then fuzzy with demangling)
+        if let Some(result) = find_public_by_name(name, fuzzy, sym, binary)? {
+            return Ok(result);
+        }
+
         // If not exact match and not fuzzy, try fuzzy for a helpful error
-        let suggestions = sym.find_function_by_name_fuzzy(name);
-        if !suggestions.is_empty() {
+        let func_suggestions = sym.find_function_by_name_fuzzy(name);
+        let public_suggestions = sym.find_public_by_name_fuzzy(name);
+        if !func_suggestions.is_empty() || !public_suggestions.is_empty() {
             let mut msg = format!("function '{name}' not found. Similar names:\n");
-            for f in suggestions.iter().take(10) {
-                msg.push_str(&format!("  - {} (0x{:x})\n", f.name, f.address));
+            for f in func_suggestions.iter().take(5) {
+                msg.push_str(&format!("  - {} (FUNC, 0x{:x})\n", f.name, f.address));
+            }
+            for p in public_suggestions.iter().take(5) {
+                msg.push_str(&format!("  - {} (PUBLIC, 0x{:x})\n", p.name, p.address));
             }
             bail!("{msg}");
         }
     }
 
-    // Try binary exports — match against both mangled and demangled names
+    // 3. Try binary exports — match against both mangled and demangled names
     if let Some(bin) = binary {
         let mut export_matches: Vec<(u64, &str)> = Vec::new();
         for &(rva, ref exp_name) in bin.exports() {
@@ -619,7 +629,69 @@ fn find_by_name(
         }
     }
 
-    bail!("function '{name}' not found in symbol file or binary exports")
+    bail!("function '{name}' not found in symbol file, PUBLIC symbols, or binary exports")
+}
+
+/// Search PUBLIC symbols by name. Tries exact match first, then demangled match,
+/// then fuzzy (substring) match if `fuzzy` is true.
+fn find_public_by_name(
+    name: &str,
+    fuzzy: bool,
+    sym: &SymFile,
+    binary: Option<&dyn BinaryFile>,
+) -> Result<Option<(String, u64, u64)>> {
+    // Exact match on raw name
+    if let Some(public) = sym.find_public_by_name(name) {
+        let size = resolve_public_size(&sym.publics, public.address, binary);
+        return Ok(Some((public.name.clone(), public.address, size)));
+    }
+
+    // Exact match on demangled name
+    for public in &sym.publics {
+        let demangled = crate::demangle::demangle(&public.name);
+        if demangled == name {
+            let size = resolve_public_size(&sym.publics, public.address, binary);
+            return Ok(Some((public.name.clone(), public.address, size)));
+        }
+    }
+
+    if fuzzy {
+        // Fuzzy match on raw and demangled names
+        let mut matches: Vec<&crate::symbols::breakpad::PublicRecord> = Vec::new();
+        for public in &sym.publics {
+            let demangled = crate::demangle::demangle(&public.name);
+            if public.name.contains(name) || demangled.contains(name) {
+                matches.push(public);
+            }
+        }
+        match matches.len() {
+            0 => {}
+            1 => {
+                let public = matches[0];
+                let size = resolve_public_size(&sym.publics, public.address, binary);
+                return Ok(Some((public.name.clone(), public.address, size)));
+            }
+            _ => {
+                let mut msg = format!("ambiguous PUBLIC symbol name '{name}'. Matches:\n");
+                for (i, p) in matches.iter().enumerate().take(20) {
+                    let size = resolve_public_size(&sym.publics, p.address, binary);
+                    msg.push_str(&format!(
+                        "  {}. {} (RVA: 0x{:x}, size: 0x{:x})\n",
+                        i + 1,
+                        crate::demangle::demangle(&p.name),
+                        p.address,
+                        size
+                    ));
+                }
+                if matches.len() > 20 {
+                    msg.push_str(&format!("  ... and {} more\n", matches.len() - 20));
+                }
+                bail!("{msg}");
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 fn find_by_offset(
@@ -634,8 +706,7 @@ fn find_by_offset(
         }
         // Try PUBLIC symbols
         if let Some(public) = sym.find_public_at_address(offset) {
-            // For PUBLIC symbols, estimate size from next symbol
-            let size = estimate_public_size(&sym.publics, public.address);
+            let size = resolve_public_size(&sym.publics, public.address, binary);
             return Ok((public.name.clone(), public.address, size));
         }
     }
@@ -677,6 +748,23 @@ fn estimate_public_size(publics: &[crate::symbols::breakpad::PublicRecord], addr
     } else {
         MAX_ESTIMATED_SIZE
     }
+}
+
+/// Resolve the size of a PUBLIC symbol, preferring exact .pdata bounds from the
+/// binary when available, falling back to distance-to-next-symbol estimation.
+fn resolve_public_size(
+    publics: &[crate::symbols::breakpad::PublicRecord],
+    addr: u64,
+    binary: Option<&dyn BinaryFile>,
+) -> u64 {
+    // Prefer exact bounds from PE .pdata section
+    if let Some(bin) = binary {
+        if let Some((begin, end)) = bin.function_bounds(addr) {
+            return end - begin;
+        }
+    }
+    // Fall back to estimation from next PUBLIC symbol
+    estimate_public_size(publics, addr)
 }
 
 /// Build enriched sym-only data from a parsed .sym file and function record.
@@ -779,4 +867,85 @@ fn check_binary_identity(
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::symbols::breakpad::PublicRecord;
+
+    /// Stub binary that implements function_bounds() with preset pdata entries.
+    struct StubBinary {
+        pdata: Vec<(u64, u64)>,
+    }
+
+    impl BinaryFile for StubBinary {
+        fn arch(&self) -> CpuArch { CpuArch::X86_64 }
+        fn extract_code(&self, _rva: u64, _size: u64) -> Result<Vec<u8>> { Ok(Vec::new()) }
+        fn resolve_import(&self, _rva: u64) -> Option<(String, String)> { None }
+        fn exports(&self) -> &[(u64, String)] { &[] }
+        fn function_bounds(&self, rva: u64) -> Option<(u64, u64)> {
+            let idx = self.pdata.partition_point(|&(begin, _)| begin <= rva);
+            if idx == 0 { return None; }
+            let (begin, end) = self.pdata[idx - 1];
+            if rva < end { Some((begin, end)) } else { None }
+        }
+    }
+
+    fn make_publics() -> Vec<PublicRecord> {
+        vec![
+            PublicRecord { address: 0x1000, param_size: 0, name: "FuncA".to_string() },
+            PublicRecord { address: 0x1200, param_size: 0, name: "FuncB".to_string() },
+            PublicRecord { address: 0x1500, param_size: 0, name: "FuncC".to_string() },
+        ]
+    }
+
+    #[test]
+    fn test_resolve_public_size_with_pdata() {
+        let publics = make_publics();
+        let binary = StubBinary {
+            pdata: vec![(0x1000, 0x1180), (0x1200, 0x1400), (0x1500, 0x1600)],
+        };
+        // .pdata gives exact size
+        assert_eq!(resolve_public_size(&publics, 0x1000, Some(&binary)), 0x180);
+        assert_eq!(resolve_public_size(&publics, 0x1200, Some(&binary)), 0x200);
+        assert_eq!(resolve_public_size(&publics, 0x1500, Some(&binary)), 0x100);
+    }
+
+    #[test]
+    fn test_resolve_public_size_without_binary() {
+        let publics = make_publics();
+        // No binary — falls back to estimate from next PUBLIC
+        assert_eq!(resolve_public_size(&publics, 0x1000, None), 0x200); // 0x1200 - 0x1000
+        assert_eq!(resolve_public_size(&publics, 0x1200, None), 0x300); // 0x1500 - 0x1200
+        assert_eq!(resolve_public_size(&publics, 0x1500, None), 0x10000); // last, capped
+    }
+
+    #[test]
+    fn test_resolve_public_size_no_pdata_match() {
+        let publics = make_publics();
+        // Binary has no .pdata for this address — falls back to estimate
+        let binary = StubBinary { pdata: vec![(0x5000, 0x5100)] };
+        assert_eq!(resolve_public_size(&publics, 0x1000, Some(&binary)), 0x200);
+    }
+
+    #[test]
+    fn test_estimate_public_size() {
+        let publics = make_publics();
+        assert_eq!(estimate_public_size(&publics, 0x1000), 0x200);
+        assert_eq!(estimate_public_size(&publics, 0x1200), 0x300);
+        assert_eq!(estimate_public_size(&publics, 0x1500), 0x10000);
+    }
+
+    #[test]
+    fn test_estimate_export_size() {
+        let exports = vec![
+            (0x1000u64, "A".to_string()),
+            (0x1100, "B".to_string()),
+            (0x1300, "C".to_string()),
+        ];
+        assert_eq!(estimate_export_size(&exports, 0x1000), 0x100);
+        assert_eq!(estimate_export_size(&exports, 0x1100), 0x200);
+        assert_eq!(estimate_export_size(&exports, 0x1300), 0x10000);
+    }
 }

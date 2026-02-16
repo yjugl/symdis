@@ -17,6 +17,9 @@ pub struct PeFile {
     exports_list: Vec<(u64, String)>,
     imports_map: HashMap<u64, (String, String)>,
     sections: Vec<SectionInfo>,
+    /// .pdata entries: (begin_rva, end_rva) pairs, sorted by begin_rva.
+    /// Populated from PE exception data (x86_64 only in goblin 0.9).
+    pdata_entries: Vec<(u32, u32)>,
 }
 
 struct SectionInfo {
@@ -75,13 +78,41 @@ impl PeFile {
             imports_map.insert(rva, (dll, name));
         }
 
+        // Parse .pdata exception entries (x86_64 only in goblin 0.9)
+        let mut pdata_entries = Vec::new();
+        if let Some(ref exception_data) = pe.exception_data {
+            for rf in exception_data.functions().flatten() {
+                if rf.begin_address < rf.end_address {
+                    pdata_entries.push((rf.begin_address, rf.end_address));
+                }
+            }
+            pdata_entries.sort_unstable_by_key(|&(begin, _)| begin);
+        }
+
         Ok(Self {
             data,
             arch,
             exports_list,
             imports_map,
             sections,
+            pdata_entries,
         })
+    }
+
+    /// Find the .pdata function bounds containing the given RVA.
+    /// Returns (begin_rva, end_rva) if found.
+    pub fn find_pdata_bounds(&self, rva: u64) -> Option<(u64, u64)> {
+        let rva32 = u32::try_from(rva).ok()?;
+        let idx = self.pdata_entries.partition_point(|&(begin, _)| begin <= rva32);
+        if idx == 0 {
+            return None;
+        }
+        let (begin, end) = self.pdata_entries[idx - 1];
+        if rva32 < end {
+            Some((u64::from(begin), u64::from(end)))
+        } else {
+            None
+        }
     }
 
     /// Convert an RVA to a file offset.
@@ -129,6 +160,10 @@ impl BinaryFile for PeFile {
     fn exports(&self) -> &[(u64, String)] {
         &self.exports_list
     }
+
+    fn function_bounds(&self, rva: u64) -> Option<(u64, u64)> {
+        self.find_pdata_bounds(rva)
+    }
 }
 
 #[cfg(test)]
@@ -154,6 +189,7 @@ mod tests {
                     pointer_to_raw_data: 0x5400,
                 },
             ],
+            pdata_entries: Vec::new(),
         };
 
         // RVA in first section
@@ -167,6 +203,52 @@ mod tests {
         // RVA not in any section
         assert_eq!(pe.rva_to_offset(0x500), None);
         assert_eq!(pe.rva_to_offset(0x6500), None);
+    }
+
+    #[test]
+    fn test_find_pdata_bounds() {
+        let pe = PeFile {
+            data: vec![0; 0x10000],
+            arch: CpuArch::X86_64,
+            exports_list: Vec::new(),
+            imports_map: HashMap::new(),
+            sections: Vec::new(),
+            pdata_entries: vec![
+                (0x1000, 0x1100),
+                (0x2000, 0x2200),
+                (0x3000, 0x3050),
+            ],
+        };
+
+        // Exact start of function
+        assert_eq!(pe.find_pdata_bounds(0x1000), Some((0x1000, 0x1100)));
+        // Mid-function
+        assert_eq!(pe.find_pdata_bounds(0x1080), Some((0x1000, 0x1100)));
+        // Last byte of function
+        assert_eq!(pe.find_pdata_bounds(0x10FF), Some((0x1000, 0x1100)));
+        // Just past end
+        assert_eq!(pe.find_pdata_bounds(0x1100), None);
+        // Second function
+        assert_eq!(pe.find_pdata_bounds(0x2100), Some((0x2000, 0x2200)));
+        // Third function
+        assert_eq!(pe.find_pdata_bounds(0x3000), Some((0x3000, 0x3050)));
+        // Gap between functions
+        assert_eq!(pe.find_pdata_bounds(0x1500), None);
+        // Before any function
+        assert_eq!(pe.find_pdata_bounds(0x500), None);
+    }
+
+    #[test]
+    fn test_find_pdata_bounds_empty() {
+        let pe = PeFile {
+            data: Vec::new(),
+            arch: CpuArch::X86_64,
+            exports_list: Vec::new(),
+            imports_map: HashMap::new(),
+            sections: Vec::new(),
+            pdata_entries: Vec::new(),
+        };
+        assert_eq!(pe.find_pdata_bounds(0x1000), None);
     }
 
     #[test]

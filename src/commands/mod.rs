@@ -93,10 +93,11 @@ PDB SUPPORT (--pdb):
 
   The data source is reported as "binary+pdb" or "pdb" in output.
 
-  CURRENT LIMITATIONS — .sym vs PDB comparison:
+  .sym vs PDB — WHEN IT MATTERS:
 
-  For MOZILLA modules where a .sym file exists on Tecken, the .sym file
-  currently provides BETTER output than the PDB in most cases:
+  For kernel drivers and other modules without .sym on Tecken, there is
+  no choice: --pdb is the only path to symbols. The comparison below
+  only applies to MOZILLA modules where BOTH .sym and PDB exist:
 
     Feature                 .sym file             PDB (current)
     ----------------------  --------------------  --------------------
@@ -119,11 +120,19 @@ PDB SUPPORT (--pdb):
   processing of PDB data: demangling, VCS path mapping, inline expansion.
   The .sym file is a pre-processed, optimized representation.
 
-  When to use --pdb (or let auto-fallback try PDB):
+  Auto-fallback handles most cases — you do NOT need --pdb for:
+    - WINDOWS KERNEL DRIVERS (.sys files like win32kfull.sys, ntfs.sys,
+      tcpip.sys). These never have .sym files on Tecken, so auto-fallback
+      kicks in and fetches the PDB automatically. Most kernel functions
+      appear as PUBLIC symbols (address only, no size); symdis resolves
+      exact function bounds from the PE .pdata section automatically.
     - NON-MOZILLA Windows modules where no .sym exists on Tecken.
-      This is the PRIMARY use case. Third-party DLLs, game engines,
-      driver components, and other vendor modules often have PDBs on
-      Microsoft's symbol server but no .sym on Tecken.
+      Third-party DLLs, game engines, driver components, and other
+      vendor modules — auto-fallback fetches the PDB when .sym is missing.
+
+  When --pdb IS useful (skip the .sym attempt, go straight to PDB):
+    - When you KNOW there is no .sym on Tecken and want to skip the
+      failed .sym lookup (saves one round-trip).
     - Microsoft system DLLs: Tecken usually HAS .sym files for these
       (ntdll, kernel32, etc.), so .sym is preferred by default. But --pdb
       can be used if you want to cross-check or if a specific version's
@@ -134,9 +143,14 @@ PDB SUPPORT (--pdb):
       .sym file. The .sym output is richer (denser line coverage,
       consistently demangled function names).
 
-  Remaining limitation: the pdb crate panics on some modules in large
-  PDBs (e.g. xul.pdb); these modules are caught and skipped silently,
-  which may result in sparser line coverage compared to .sym files.
+  Remaining limitations:
+    - The pdb crate panics on some modules in large PDBs (e.g. xul.pdb);
+      these modules are caught and skipped silently, which may result in
+      sparser line coverage compared to .sym files.
+    - For kernel drivers and other PUBLIC-only modules, there are no
+      source line annotations or inline frames (PUBLIC symbols carry
+      only an address and name). Call targets within the same module
+      ARE resolved from other PUBLIC symbol names.
 
 FENIX (FIREFOX FOR ANDROID):
 
@@ -270,12 +284,15 @@ EXAMPLES:
       --function NtCreateFile
 
   # Windows kernel driver (.sys file) -- requires --code-file because
-  # the PDB-to-code-file heuristic defaults to .dll:
+  # the PDB-to-code-file heuristic defaults to .dll. PDB is fetched
+  # automatically (no .sym exists for kernel drivers on Tecken).
+  # Functions like xxxResolveDesktop are PUBLIC symbols in the PDB;
+  # exact function size comes from the PE .pdata section:
   symdis disasm \
-      --debug-file ntfs.pdb \
-      --debug-id C1BFE428A2A23AAF9BF9D40544D2ADC61 \
-      --code-file ntfs.sys --code-id a7377819369000 \
-      --function NtfsAcquireExclusiveFcb
+      --debug-file win32kfull.pdb \
+      --debug-id 874E89B5C0960A8CE25E012F602168591 \
+      --code-file win32kfull.sys --code-id 73E41EF8412000 \
+      --function xxxResolveDesktop
 
   # Use PDB for richer symbol data (Windows modules only):
   symdis disasm \
@@ -318,11 +335,20 @@ TIPS:
     them. Other third-party modules are also worth trying.
   - Windows kernel drivers (.sys files like win32kfull.sys, tcpip.sys,
     ntfs.sys) are supported. Always provide --code-file for .sys files
-    because derive-from-PDB defaults to .dll.
-  - --pdb is mainly useful for non-Mozilla Windows modules with no .sym
-    on Tecken. For Mozilla modules, the default .sym path gives better
-    output (denser line coverage, consistently demangled function names).
-    PDB is auto-tried when .sym is unavailable; --pdb forces PDB-first."#;
+    because derive-from-PDB defaults to .dll. PDB is fetched
+    automatically (no .sym exists for kernel drivers on Tecken).
+  - --pdb skips the .sym lookup and goes straight to PDB. This saves
+    one round-trip when you know .sym is unavailable. For Mozilla
+    modules, the default .sym path gives better output (denser line
+    coverage, consistently demangled function names). For kernel
+    drivers and other non-Mozilla modules, auto-fallback already
+    fetches PDB when .sym is missing, so --pdb is optional.
+  - PUBLIC symbols are searched when --function doesn't match a FUNC
+    record. This is common for Windows kernel drivers where PDB data
+    only has PUBLIC symbols (address, no size) for many functions.
+    When the binary is available, exact function bounds come from
+    the PE .pdata section; otherwise size is estimated from the
+    distance to the next symbol."#;
 
 const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 
