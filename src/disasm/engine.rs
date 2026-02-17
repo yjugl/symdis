@@ -27,14 +27,16 @@ pub struct Instruction {
     pub call_target: Option<u64>,
     /// Whether this is an indirect call/jmp.
     pub is_indirect_call: bool,
-    /// For RIP-relative indirect call/jmp: the RVA of the memory slot referenced.
-    /// Computed as `insn_address + insn_size + displacement`.
+    /// For indirect call/jmp with a resolvable memory operand: the RVA of the memory slot.
+    /// x86-64 RIP-relative: `insn_address + insn_size + displacement`.
+    /// x86 32-bit absolute: `displacement - image_base`.
     pub indirect_mem_addr: Option<u64>,
 }
 
 /// Capstone-based disassembly engine.
 pub struct Disassembler {
     cs: Capstone,
+    arch: CpuArch,
 }
 
 impl Disassembler {
@@ -87,7 +89,7 @@ impl Disassembler {
             }
         };
 
-        Ok(Self { cs })
+        Ok(Self { cs, arch })
     }
 
     /// Disassemble code bytes starting at base_addr.
@@ -95,6 +97,10 @@ impl Disassembler {
     /// If `must_include_addr` is set and the instruction at that address would
     /// be beyond `max_instructions`, the limit is automatically extended to
     /// include it plus 200 instructions of trailing context.
+    ///
+    /// `image_base` is the PE image base address, used to convert absolute VAs
+    /// to RVAs for x86 32-bit indirect call resolution. Pass 0 for non-PE
+    /// binaries or when the binary is unavailable.
     ///
     /// Returns `(instructions, total_instruction_count)` where
     /// `total_instruction_count` is the number of instructions in the full
@@ -105,6 +111,7 @@ impl Disassembler {
         base_addr: u64,
         max_instructions: usize,
         must_include_addr: Option<u64>,
+        image_base: u64,
     ) -> Result<(Vec<Instruction>, usize)> {
         if code.is_empty() {
             return Ok((Vec::new(), 0));
@@ -148,7 +155,7 @@ impl Disassembler {
             let operands = insn.op_str().unwrap_or("").to_string();
 
             let (call_target, is_indirect_call, indirect_mem_addr) =
-                self.extract_call_target(insn, &mnemonic, &operands);
+                self.extract_call_target(insn, &mnemonic, &operands, image_base);
 
             result.push(Instruction {
                 address: insn.address(),
@@ -173,6 +180,7 @@ impl Disassembler {
         insn: &capstone::Insn,
         mnemonic: &str,
         operands: &str,
+        image_base: u64,
     ) -> (Option<u64>, bool, Option<u64>) {
         // Only look at call/jmp instructions
         let is_call_or_jmp = mnemonic == "call"
@@ -189,7 +197,7 @@ impl Disassembler {
 
         // Check for indirect calls (contains brackets or register names without 0x prefix)
         if operands.contains('[') || operands.contains("ptr") {
-            let indirect_mem = self.extract_rip_relative_addr(insn);
+            let indirect_mem = self.extract_indirect_mem_addr(insn, image_base);
             return (None, true, indirect_mem);
         }
 
@@ -209,22 +217,41 @@ impl Disassembler {
         (None, false, None)
     }
 
-    /// Extract the memory address from a RIP-relative memory operand.
+    /// Extract the memory slot RVA from an indirect call/jmp operand.
     ///
-    /// For `call qword ptr [rip + 0x1234]` at address 0x1000 (6 bytes),
-    /// computes slot_rva = 0x1000 + 6 + 0x1234 = 0x223a.
-    fn extract_rip_relative_addr(&self, insn: &capstone::Insn) -> Option<u64> {
+    /// Handles two addressing modes:
+    ///
+    /// **x86-64 RIP-relative**: `call qword ptr [rip + 0x1234]` at address 0x1000 (6 bytes)
+    /// → slot_rva = 0x1000 + 6 + 0x1234 = 0x223a.
+    ///
+    /// **x86 32-bit absolute**: `call dword ptr [0x10001234]` with image_base 0x10000000
+    /// → slot_rva = 0x10001234 - 0x10000000 = 0x1234.
+    /// This is the standard calling convention for IAT imports on Windows x86.
+    fn extract_indirect_mem_addr(&self, insn: &capstone::Insn, image_base: u64) -> Option<u64> {
         let detail = self.cs.insn_detail(insn).ok()?;
         let arch_detail = detail.arch_detail();
         let x86 = arch_detail.x86()?;
 
         for op in x86.operands() {
             if let X86OperandType::Mem(mem) = op.op_type {
-                // Check if base register is RIP
+                // x86-64: RIP-relative addressing
                 if mem.base().0 == X86Reg::X86_REG_RIP as u16 {
-                    // slot_rva = instruction_address + instruction_size + displacement
                     let addr = insn.address() as i64 + insn.len() as i64 + mem.disp();
                     return Some(addr as u64);
+                }
+
+                // x86 32-bit: absolute addressing (no base register, no index register)
+                // The displacement is the absolute VA; subtract image_base to get RVA.
+                if self.arch == CpuArch::X86
+                    && mem.base().0 == 0
+                    && mem.index().0 == 0
+                    && image_base > 0
+                {
+                    // Truncate to 32 bits — Capstone sign-extends the 32-bit displacement
+                    // to i64, so VAs >= 0x80000000 appear negative. Cast through u32 to
+                    // recover the unsigned 32-bit value.
+                    let va = (mem.disp() as u32) as u64;
+                    return va.checked_sub(image_base);
                 }
             }
         }
@@ -241,7 +268,7 @@ mod tests {
         let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
         // push rbp; mov rbp, rsp; sub rsp, 0x10
         let code = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x10];
-        let (insns, total) = disasm.disassemble(&code, 0x1000, 100, None).unwrap();
+        let (insns, total) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
 
         assert_eq!(insns.len(), 3);
         assert_eq!(total, 3);
@@ -255,7 +282,7 @@ mod tests {
     fn test_x86_64_att_syntax() {
         let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Att).unwrap();
         let code = [0x55]; // push rbp
-        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None).unwrap();
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
 
         assert_eq!(insns.len(), 1);
         assert_eq!(insns[0].mnemonic, "pushq");
@@ -267,7 +294,7 @@ mod tests {
         let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel).unwrap();
         // push ebp; mov ebp, esp
         let code = [0x55, 0x89, 0xe5];
-        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None).unwrap();
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
 
         assert_eq!(insns.len(), 2);
         assert_eq!(insns[0].mnemonic, "push");
@@ -280,7 +307,7 @@ mod tests {
         let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
         // call +0x100 (E8 relative call, target = 0x1005 + 0x100 = 0x1105)
         let code = [0xe8, 0x00, 0x01, 0x00, 0x00];
-        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None).unwrap();
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
 
         assert_eq!(insns.len(), 1);
         assert_eq!(insns[0].mnemonic, "call");
@@ -294,7 +321,7 @@ mod tests {
         let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
         // call rax (FF D0)
         let code = [0xff, 0xd0];
-        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None).unwrap();
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
 
         assert_eq!(insns.len(), 1);
         assert_eq!(insns[0].mnemonic, "call");
@@ -311,7 +338,7 @@ mod tests {
         // At address 0x1000, size 6, displacement 0x2000:
         // slot_rva = 0x1000 + 6 + 0x2000 = 0x3006
         let code = [0xff, 0x15, 0x00, 0x20, 0x00, 0x00];
-        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None).unwrap();
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
 
         assert_eq!(insns.len(), 1);
         assert_eq!(insns[0].mnemonic, "call");
@@ -327,7 +354,7 @@ mod tests {
         // At address 0x2000, size 6, displacement 0x1000:
         // slot_rva = 0x2000 + 6 + 0x1000 = 0x3006
         let code = [0xff, 0x25, 0x00, 0x10, 0x00, 0x00];
-        let (insns, _) = disasm.disassemble(&code, 0x2000, 100, None).unwrap();
+        let (insns, _) = disasm.disassemble(&code, 0x2000, 100, None, 0).unwrap();
 
         assert_eq!(insns.len(), 1);
         assert_eq!(insns[0].mnemonic, "jmp");
@@ -337,11 +364,66 @@ mod tests {
     }
 
     #[test]
+    fn test_x86_32_absolute_indirect_call() {
+        let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel).unwrap();
+        // FF 15 xx xx xx xx = call dword ptr [disp32]
+        // call dword ptr [0x10005000] with image_base 0x10000000:
+        // slot_rva = 0x10005000 - 0x10000000 = 0x5000
+        let code = [0xff, 0x15, 0x00, 0x50, 0x00, 0x10];
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0x10000000).unwrap();
+
+        assert_eq!(insns.len(), 1);
+        assert_eq!(insns[0].mnemonic, "call");
+        assert!(insns[0].call_target.is_none());
+        assert!(insns[0].is_indirect_call);
+        assert_eq!(insns[0].indirect_mem_addr, Some(0x5000));
+    }
+
+    #[test]
+    fn test_x86_32_absolute_indirect_call_high_va() {
+        // Test with VA >= 0x80000000 (sign-extended by Capstone)
+        let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel).unwrap();
+        // call dword ptr [0x80001234] with image_base 0x10000000:
+        // slot_rva = 0x80001234 - 0x10000000 = 0x70001234
+        let code = [0xff, 0x15, 0x34, 0x12, 0x00, 0x80];
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0x10000000).unwrap();
+
+        assert_eq!(insns.len(), 1);
+        assert!(insns[0].is_indirect_call);
+        assert_eq!(insns[0].indirect_mem_addr, Some(0x70001234));
+    }
+
+    #[test]
+    fn test_x86_32_register_indirect_no_resolve() {
+        // call dword ptr [eax] should NOT produce an indirect_mem_addr
+        let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel).unwrap();
+        // FF 10 = call dword ptr [eax]
+        let code = [0xff, 0x10];
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0x10000000).unwrap();
+
+        assert_eq!(insns.len(), 1);
+        assert!(insns[0].is_indirect_call);
+        assert!(insns[0].indirect_mem_addr.is_none());
+    }
+
+    #[test]
+    fn test_x86_32_no_image_base_no_resolve() {
+        // Without image_base (0), absolute addressing should not be resolved
+        let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel).unwrap();
+        let code = [0xff, 0x15, 0x00, 0x50, 0x00, 0x10];
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
+
+        assert_eq!(insns.len(), 1);
+        assert!(insns[0].is_indirect_call);
+        assert!(insns[0].indirect_mem_addr.is_none());
+    }
+
+    #[test]
     fn test_max_instructions_limit() {
         let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
         // nop sled
         let code = vec![0x90; 100];
-        let (insns, total) = disasm.disassemble(&code, 0x1000, 5, None).unwrap();
+        let (insns, total) = disasm.disassemble(&code, 0x1000, 5, None, 0).unwrap();
 
         assert_eq!(insns.len(), 5);
         assert_eq!(total, 100);
@@ -350,7 +432,7 @@ mod tests {
     #[test]
     fn test_empty_code() {
         let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
-        let (insns, total) = disasm.disassemble(&[], 0x1000, 100, None).unwrap();
+        let (insns, total) = disasm.disassemble(&[], 0x1000, 100, None, 0).unwrap();
         assert!(insns.is_empty());
         assert_eq!(total, 0);
     }
@@ -362,7 +444,7 @@ mod tests {
         let code = vec![0x90; 100];
         // Highlight at instruction #50 (address 0x1032), with max_instructions = 10
         let (insns, total) = disasm
-            .disassemble(&code, 0x1000, 10, Some(0x1032))
+            .disassemble(&code, 0x1000, 10, Some(0x1032), 0)
             .unwrap();
 
         assert_eq!(total, 100);
@@ -378,7 +460,7 @@ mod tests {
         let code = vec![0x90; 100];
         // Highlight at instruction #3 (address 0x1003), within max_instructions = 10
         let (insns, total) = disasm
-            .disassemble(&code, 0x1000, 10, Some(0x1003))
+            .disassemble(&code, 0x1000, 10, Some(0x1003), 0)
             .unwrap();
 
         assert_eq!(total, 100);
@@ -390,7 +472,7 @@ mod tests {
     fn test_disassemble_total_count() {
         let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
         let code = vec![0x90; 500];
-        let (insns, total) = disasm.disassemble(&code, 0x1000, 100, None).unwrap();
+        let (insns, total) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
 
         assert_eq!(total, 500);
         assert_eq!(insns.len(), 100);
@@ -400,7 +482,7 @@ mod tests {
     fn test_disassemble_no_highlight_backward_compat() {
         let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
         let code = vec![0x90; 50];
-        let (insns, total) = disasm.disassemble(&code, 0x1000, 20, None).unwrap();
+        let (insns, total) = disasm.disassemble(&code, 0x1000, 20, None, 0).unwrap();
 
         assert_eq!(total, 50);
         assert_eq!(insns.len(), 20);

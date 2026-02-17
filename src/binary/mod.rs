@@ -74,4 +74,10 @@ pub trait BinaryFile {
     fn read_pointer_at_rva(&self, _rva: u64) -> Option<u64> {
         None
     }
+
+    /// Return the PE image base address (used to convert absolute VAs to RVAs
+    /// for x86 32-bit indirect call resolution). Returns 0 by default.
+    fn image_base(&self) -> u64 {
+        0
+    }
 }

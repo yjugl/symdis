@@ -170,6 +170,10 @@ impl BinaryFile for PeFile {
         self.find_pdata_bounds(rva)
     }
 
+    fn image_base(&self) -> u64 {
+        self.image_base
+    }
+
     fn read_pointer_at_rva(&self, rva: u64) -> Option<u64> {
         let offset = self.rva_to_offset(rva)? as usize;
         let ptr_size = match self.arch {

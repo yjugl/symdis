@@ -349,12 +349,13 @@ TIPS:
     When the binary is available, exact function bounds come from
     the PE .pdata section; otherwise size is estimated from the
     distance to the next symbol.
-  - Indirect calls through the Import Address Table (call [rip+disp])
-    are automatically resolved to their target import names (e.g.,
-    "kernel32.dll!CreateFileW"). This is the primary calling convention
-    for imported functions on Windows x86-64. If the memory slot does
-    not point to an import, symdis also tries reading the on-disk
-    pointer value to resolve intra-module function pointer tables."#;
+  - Indirect calls through the Import Address Table are automatically
+    resolved to their target import names (e.g., "kernel32.dll!CreateFileW").
+    On x86-64, these are call [rip+disp]; on x86 32-bit, these are
+    call [absolute_va] (the standard IAT calling convention on both
+    architectures). If the memory slot does not point to an import,
+    symdis also tries reading the on-disk pointer value to resolve
+    intra-module function pointer tables."#;
 
 const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 

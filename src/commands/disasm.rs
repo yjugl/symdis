@@ -330,8 +330,9 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
             .context("extracting code from binary")?;
 
         let disassembler = Disassembler::new(arch, config.syntax)?;
+        let image_base = bin.image_base();
         let (instructions, total_count) = disassembler.disassemble(
-            &code, func_addr, config.max_instructions, highlight_offset,
+            &code, func_addr, config.max_instructions, highlight_offset, image_base,
         )?;
 
         if instructions.len() < total_count {

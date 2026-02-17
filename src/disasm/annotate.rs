@@ -112,7 +112,7 @@ fn annotate_call_targets(
             }
         }
 
-        // Indirect calls with a known memory slot RVA (RIP-relative addressing)
+        // Indirect calls with a known memory slot RVA (RIP-relative or absolute addressing)
         if insn.instruction.is_indirect_call {
             if let Some(slot_rva) = insn.instruction.indirect_mem_addr {
                 // 1. Try IAT import resolution
