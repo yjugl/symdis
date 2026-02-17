@@ -358,7 +358,14 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
             for insn in &mut annotated {
                 if let Some(ref name) = insn.call_target_name {
                     if !name.starts_with('[') {
-                        insn.call_target_name = Some(maybe_demangle(name, true));
+                        // Handle "dll!symbol" format (PE/Mach-O imports):
+                        // split on '!', demangle the symbol part, reconstruct.
+                        if let Some((dll, sym)) = name.split_once('!') {
+                            let demangled = maybe_demangle(sym, true);
+                            insn.call_target_name = Some(format!("{dll}!{demangled}"));
+                        } else {
+                            insn.call_target_name = Some(maybe_demangle(name, true));
+                        }
                     }
                 }
                 for frame in &mut insn.inline_frames {

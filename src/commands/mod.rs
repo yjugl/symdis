@@ -370,6 +370,11 @@ TIPS:
     are resolved to their import names (e.g., "memcpy", "recvmsg").
     This covers the standard calling convention for imported functions
     on Linux ARM and AArch64.
+  - On macOS Mach-O binaries, direct calls to __stubs entries (e.g.,
+    call <__stubs+0x42> on x86-64, bl <__stubs+0x30> on AArch64) are
+    resolved to their import names (e.g., "libSystem.B.dylib!_malloc").
+    This covers the standard calling convention for imported functions
+    on macOS.
   - ARM32 Thumb-2 mode is auto-detected from ELF symbol metadata
     (mapping symbols $t/$a and function symbol Thumb bit). Most
     ARM32 binaries (including Fenix armeabi-v7a) use Thumb-2

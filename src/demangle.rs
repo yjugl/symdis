@@ -117,4 +117,15 @@ mod tests {
         let result = maybe_demangle(mangled, false);
         assert_eq!(result, mangled);
     }
+
+    #[test]
+    fn test_demangle_macho_leading_underscore() {
+        // Mach-O symbols have a leading _ prefix: __Z... instead of _Z...
+        // cpp_demangle handles this natively
+        let macho_mangled = "__ZN7mozilla9TimeStamp3NowEb";
+        let result = demangle(macho_mangled);
+        assert!(result.contains("mozilla"));
+        assert!(result.contains("TimeStamp"));
+        assert!(!result.starts_with("__Z"));
+    }
 }
