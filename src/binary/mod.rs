@@ -80,4 +80,10 @@ pub trait BinaryFile {
     fn image_base(&self) -> u64 {
         0
     }
+
+    /// Check whether the given RVA is in Thumb mode (ARM32 only).
+    /// Returns `false` for non-ARM architectures or when no indicators are available.
+    fn is_thumb(&self, _rva: u64) -> bool {
+        false
+    }
 }

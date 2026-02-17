@@ -329,7 +329,8 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         let code = bin.extract_code(func_addr, func_size)
             .context("extracting code from binary")?;
 
-        let disassembler = Disassembler::new(arch, config.syntax)?;
+        let thumb = bin.is_thumb(func_addr);
+        let disassembler = Disassembler::new(arch, config.syntax, thumb)?;
         let image_base = bin.image_base();
         let (instructions, total_count) = disassembler.disassemble(
             &code, func_addr, config.max_instructions, highlight_offset, image_base,

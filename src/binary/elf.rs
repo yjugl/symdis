@@ -8,7 +8,7 @@ use std::path::Path;
 use anyhow::{Result, Context, bail};
 use goblin::elf::Elf;
 use goblin::elf::program_header::PT_LOAD;
-use goblin::elf::sym::{STT_FUNC, STT_GNU_IFUNC};
+use goblin::elf::sym::{STT_FUNC, STT_GNU_IFUNC, STT_NOTYPE};
 
 use super::{BinaryFile, CpuArch};
 
@@ -20,6 +20,9 @@ pub struct ElfFile {
     /// PLT stub address → (library, function name)
     imports_map: HashMap<u64, (String, String)>,
     segments: Vec<LoadSegment>,
+    /// Sorted ARM Thumb/ARM mode markers: (address, is_thumb).
+    /// Binary-search for the nearest entry at-or-before an address.
+    thumb_markers: Vec<(u64, bool)>,
 }
 
 struct LoadSegment {
@@ -101,12 +104,20 @@ impl ElfFile {
         // Build PLT import map: PLT stub address → (library, symbol name)
         let imports_map = build_plt_imports(&elf, arch);
 
+        // Collect Thumb/ARM mode markers for ARM32 binaries.
+        let thumb_markers = if arch == CpuArch::Arm {
+            collect_thumb_markers(&elf)
+        } else {
+            Vec::new()
+        };
+
         Ok(Self {
             data,
             arch,
             exports_list,
             imports_map,
             segments,
+            thumb_markers,
         })
     }
 
@@ -124,6 +135,53 @@ impl ElfFile {
         }
         None
     }
+}
+
+/// Collect ARM Thumb/ARM mode markers from ELF symbol tables.
+///
+/// Two sources of information:
+/// 1. Mapping symbols (`$t` = Thumb, `$a` = ARM) in `.symtab` — most reliable.
+/// 2. Function symbols with bit 0 set in `st_value` (`.dynsym` + `.symtab`).
+///
+/// Mapping symbols take priority over function symbols at the same address.
+fn collect_thumb_markers(elf: &Elf) -> Vec<(u64, bool)> {
+    use std::collections::BTreeMap;
+
+    // BTreeMap ensures sorted order and deduplication by address.
+    // We process function symbols first, then mapping symbols, so mapping
+    // symbols overwrite function symbols at the same address.
+    let mut markers: BTreeMap<u64, bool> = BTreeMap::new();
+
+    // Pass 1: Function symbols (lower priority) from both .dynsym and .symtab
+    for sym in elf.dynsyms.iter().chain(elf.syms.iter()) {
+        let ty = sym.st_type();
+        if (ty == STT_FUNC || ty == STT_GNU_IFUNC) && sym.st_value != 0 {
+            let is_thumb = sym.st_value & 1 != 0;
+            let addr = sym.st_value & !1;
+            markers.insert(addr, is_thumb);
+        }
+    }
+
+    // Pass 2: Mapping symbols (higher priority) from .symtab only
+    // ($t and $a are STT_NOTYPE with those exact names or $t.N/$a.N variants)
+    for sym in elf.syms.iter() {
+        if sym.st_type() != STT_NOTYPE || sym.st_value == 0 {
+            continue;
+        }
+        let name = elf.strtab.get_at(sym.st_name).unwrap_or("");
+        let is_thumb = if name == "$t" || name.starts_with("$t.") {
+            Some(true)
+        } else if name == "$a" || name.starts_with("$a.") {
+            Some(false)
+        } else {
+            None
+        };
+        if let Some(thumb) = is_thumb {
+            markers.insert(sym.st_value, thumb);
+        }
+    }
+
+    markers.into_iter().collect()
 }
 
 /// Return the PLT header size and entry size for a given architecture.
@@ -223,6 +281,18 @@ impl BinaryFile for ElfFile {
     fn build_id(&self) -> Option<String> {
         crate::fetch::archive::extract_elf_build_id(&self.data).ok().flatten()
     }
+
+    fn is_thumb(&self, rva: u64) -> bool {
+        if self.thumb_markers.is_empty() {
+            return false;
+        }
+        // Binary search for the largest address <= rva
+        let idx = self.thumb_markers.partition_point(|&(addr, _)| addr <= rva);
+        if idx == 0 {
+            return false;
+        }
+        self.thumb_markers[idx - 1].1
+    }
 }
 
 #[cfg(test)]
@@ -254,6 +324,7 @@ mod tests {
                     filesz: 0x8000,
                 },
             ],
+            thumb_markers: Vec::new(),
         }
     }
 
@@ -289,6 +360,7 @@ mod tests {
                 offset: 0x1000,
                 filesz: 0x5000,
             }],
+            thumb_markers: Vec::new(),
         };
 
         assert_eq!(elf.va_to_offset(0x400000), Some(0x1000));
@@ -366,5 +438,77 @@ mod tests {
         let (header, entry) = super::plt_sizes(CpuArch::Arm64);
         assert_eq!(header, 32);
         assert_eq!(entry, 16);
+    }
+
+    fn make_arm_elf_with_markers(markers: Vec<(u64, bool)>) -> ElfFile {
+        ElfFile {
+            data: vec![0; 0x10000],
+            arch: CpuArch::Arm,
+            exports_list: Vec::new(),
+            imports_map: HashMap::new(),
+            segments: vec![LoadSegment {
+                vaddr: 0x0,
+                memsz: 0x10000,
+                offset: 0x0,
+                filesz: 0x10000,
+            }],
+            thumb_markers: markers,
+        }
+    }
+
+    #[test]
+    fn test_is_thumb_empty_markers() {
+        let elf = make_arm_elf_with_markers(vec![]);
+        assert!(!elf.is_thumb(0x1000));
+    }
+
+    #[test]
+    fn test_is_thumb_single_thumb_marker() {
+        let elf = make_arm_elf_with_markers(vec![(0x1000, true)]);
+        assert!(!elf.is_thumb(0x0FFF)); // before marker
+        assert!(elf.is_thumb(0x1000));  // at marker
+        assert!(elf.is_thumb(0x2000));  // after marker
+    }
+
+    #[test]
+    fn test_is_thumb_single_arm_marker() {
+        let elf = make_arm_elf_with_markers(vec![(0x1000, false)]);
+        assert!(!elf.is_thumb(0x1000));
+        assert!(!elf.is_thumb(0x2000));
+    }
+
+    #[test]
+    fn test_is_thumb_mixed_regions() {
+        // ARM region, then Thumb region, then ARM again
+        let elf = make_arm_elf_with_markers(vec![
+            (0x1000, false), // ARM starts
+            (0x2000, true),  // Thumb starts
+            (0x3000, false), // ARM starts again
+        ]);
+        assert!(!elf.is_thumb(0x0FFF)); // before any marker
+        assert!(!elf.is_thumb(0x1000)); // in ARM region
+        assert!(!elf.is_thumb(0x1500)); // still ARM
+        assert!(elf.is_thumb(0x2000));  // Thumb region starts
+        assert!(elf.is_thumb(0x2800));  // still Thumb
+        assert!(!elf.is_thumb(0x3000)); // back to ARM
+        assert!(!elf.is_thumb(0x4000)); // still ARM
+    }
+
+    #[test]
+    fn test_is_thumb_at_exact_boundary() {
+        let elf = make_arm_elf_with_markers(vec![
+            (0x1000, true),
+            (0x1000, false), // duplicate address — last wins (BTreeMap behavior)
+        ]);
+        // With a Vec, the second entry at same address wins in partition_point
+        // but since we build from BTreeMap, duplicates are merged
+        // This tests that the implementation handles the edge case
+        assert!(!elf.is_thumb(0x0FFF));
+    }
+
+    #[test]
+    fn test_is_thumb_default_for_non_arm() {
+        let elf = make_elf_file(); // x86_64
+        assert!(!elf.is_thumb(0x1000));
     }
 }

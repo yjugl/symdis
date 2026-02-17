@@ -41,7 +41,10 @@ pub struct Disassembler {
 
 impl Disassembler {
     /// Create a new disassembler for the given architecture and syntax.
-    pub fn new(arch: CpuArch, syntax: Syntax) -> Result<Self> {
+    ///
+    /// When `thumb` is true and arch is `CpuArch::Arm`, Capstone is configured
+    /// in Thumb mode for ARM32 Thumb-2 instruction decoding.
+    pub fn new(arch: CpuArch, syntax: Syntax, thumb: bool) -> Result<Self> {
         let cs = match arch {
             CpuArch::X86 => {
                 let mut cs = Capstone::new()
@@ -72,9 +75,14 @@ impl Disassembler {
                 cs
             }
             CpuArch::Arm => {
+                let mode = if thumb {
+                    arch::arm::ArchMode::Thumb
+                } else {
+                    arch::arm::ArchMode::Arm
+                };
                 Capstone::new()
                     .arm()
-                    .mode(arch::arm::ArchMode::Arm)
+                    .mode(mode)
                     .detail(true)
                     .build()
                     .map_err(|e| anyhow::anyhow!("capstone init: {e}"))?
@@ -265,7 +273,7 @@ mod tests {
 
     #[test]
     fn test_x86_64_disasm() {
-        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel, false).unwrap();
         // push rbp; mov rbp, rsp; sub rsp, 0x10
         let code = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x10];
         let (insns, total) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
@@ -280,7 +288,7 @@ mod tests {
 
     #[test]
     fn test_x86_64_att_syntax() {
-        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Att).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Att, false).unwrap();
         let code = [0x55]; // push rbp
         let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
 
@@ -291,7 +299,7 @@ mod tests {
 
     #[test]
     fn test_x86_32_disasm() {
-        let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel, false).unwrap();
         // push ebp; mov ebp, esp
         let code = [0x55, 0x89, 0xe5];
         let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
@@ -304,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_call_target_extraction() {
-        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel, false).unwrap();
         // call +0x100 (E8 relative call, target = 0x1005 + 0x100 = 0x1105)
         let code = [0xe8, 0x00, 0x01, 0x00, 0x00];
         let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
@@ -318,7 +326,7 @@ mod tests {
 
     #[test]
     fn test_indirect_call() {
-        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel, false).unwrap();
         // call rax (FF D0)
         let code = [0xff, 0xd0];
         let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
@@ -333,7 +341,7 @@ mod tests {
 
     #[test]
     fn test_rip_relative_call() {
-        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel, false).unwrap();
         // FF 15 xx xx xx xx = call qword ptr [rip + disp32]
         // At address 0x1000, size 6, displacement 0x2000:
         // slot_rva = 0x1000 + 6 + 0x2000 = 0x3006
@@ -349,7 +357,7 @@ mod tests {
 
     #[test]
     fn test_rip_relative_jmp() {
-        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel, false).unwrap();
         // FF 25 xx xx xx xx = jmp qword ptr [rip + disp32]
         // At address 0x2000, size 6, displacement 0x1000:
         // slot_rva = 0x2000 + 6 + 0x1000 = 0x3006
@@ -365,7 +373,7 @@ mod tests {
 
     #[test]
     fn test_x86_32_absolute_indirect_call() {
-        let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel, false).unwrap();
         // FF 15 xx xx xx xx = call dword ptr [disp32]
         // call dword ptr [0x10005000] with image_base 0x10000000:
         // slot_rva = 0x10005000 - 0x10000000 = 0x5000
@@ -382,7 +390,7 @@ mod tests {
     #[test]
     fn test_x86_32_absolute_indirect_call_high_va() {
         // Test with VA >= 0x80000000 (sign-extended by Capstone)
-        let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel, false).unwrap();
         // call dword ptr [0x80001234] with image_base 0x10000000:
         // slot_rva = 0x80001234 - 0x10000000 = 0x70001234
         let code = [0xff, 0x15, 0x34, 0x12, 0x00, 0x80];
@@ -396,7 +404,7 @@ mod tests {
     #[test]
     fn test_x86_32_register_indirect_no_resolve() {
         // call dword ptr [eax] should NOT produce an indirect_mem_addr
-        let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel, false).unwrap();
         // FF 10 = call dword ptr [eax]
         let code = [0xff, 0x10];
         let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0x10000000).unwrap();
@@ -409,7 +417,7 @@ mod tests {
     #[test]
     fn test_x86_32_no_image_base_no_resolve() {
         // Without image_base (0), absolute addressing should not be resolved
-        let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel, false).unwrap();
         let code = [0xff, 0x15, 0x00, 0x50, 0x00, 0x10];
         let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
 
@@ -420,7 +428,7 @@ mod tests {
 
     #[test]
     fn test_max_instructions_limit() {
-        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel, false).unwrap();
         // nop sled
         let code = vec![0x90; 100];
         let (insns, total) = disasm.disassemble(&code, 0x1000, 5, None, 0).unwrap();
@@ -431,7 +439,7 @@ mod tests {
 
     #[test]
     fn test_empty_code() {
-        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel, false).unwrap();
         let (insns, total) = disasm.disassemble(&[], 0x1000, 100, None, 0).unwrap();
         assert!(insns.is_empty());
         assert_eq!(total, 0);
@@ -439,7 +447,7 @@ mod tests {
 
     #[test]
     fn test_disassemble_auto_extend_for_highlight() {
-        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel, false).unwrap();
         // 100 nops — each is 1 byte at address 0x1000 + i
         let code = vec![0x90; 100];
         // Highlight at instruction #50 (address 0x1032), with max_instructions = 10
@@ -456,7 +464,7 @@ mod tests {
 
     #[test]
     fn test_disassemble_no_extend_within_limit() {
-        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel, false).unwrap();
         let code = vec![0x90; 100];
         // Highlight at instruction #3 (address 0x1003), within max_instructions = 10
         let (insns, total) = disasm
@@ -470,7 +478,7 @@ mod tests {
 
     #[test]
     fn test_disassemble_total_count() {
-        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel, false).unwrap();
         let code = vec![0x90; 500];
         let (insns, total) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
 
@@ -480,11 +488,36 @@ mod tests {
 
     #[test]
     fn test_disassemble_no_highlight_backward_compat() {
-        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel).unwrap();
+        let disasm = Disassembler::new(CpuArch::X86_64, Syntax::Intel, false).unwrap();
         let code = vec![0x90; 50];
         let (insns, total) = disasm.disassemble(&code, 0x1000, 20, None, 0).unwrap();
 
         assert_eq!(total, 50);
         assert_eq!(insns.len(), 20);
+    }
+
+    #[test]
+    fn test_arm_thumb_disasm() {
+        let disasm = Disassembler::new(CpuArch::Arm, Syntax::Intel, true).unwrap();
+        // Thumb-2: push {r4, r5, r6, r7, lr} = 2d e9 f0 40
+        // Followed by: mov r7, r0 = 07 46 (16-bit Thumb)
+        let code = [0x2d, 0xe9, 0xf0, 0x40, 0x07, 0x46];
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
+
+        assert!(insns.len() >= 2);
+        assert_eq!(insns[0].mnemonic, "push.w");
+        assert_eq!(insns[1].mnemonic, "mov");
+    }
+
+    #[test]
+    fn test_arm_mode_disasm() {
+        let disasm = Disassembler::new(CpuArch::Arm, Syntax::Intel, false).unwrap();
+        // ARM: push {r4, r5, r6, r7, r8, r9, r10, r11, lr} = f0 47 2d e9
+        let code = [0xf0, 0x47, 0x2d, 0xe9];
+        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0).unwrap();
+
+        assert_eq!(insns.len(), 1);
+        // Should decode as ARM push, not garbage
+        assert!(insns[0].mnemonic == "push" || insns[0].mnemonic == "stmdb");
     }
 }

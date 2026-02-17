@@ -369,7 +369,12 @@ TIPS:
   - On ARM/AArch64 ELF binaries, direct calls to PLT stubs (bl <addr>)
     are resolved to their import names (e.g., "memcpy", "recvmsg").
     This covers the standard calling convention for imported functions
-    on Linux ARM and AArch64."#;
+    on Linux ARM and AArch64.
+  - ARM32 Thumb-2 mode is auto-detected from ELF symbol metadata
+    (mapping symbols $t/$a and function symbol Thumb bit). Most
+    ARM32 binaries (including Fenix armeabi-v7a) use Thumb-2
+    instructions. Without proper detection, disassembly would show
+    garbage mnemonics; with detection, you get correct push/mov/bl/ldr."#;
 
 const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 
