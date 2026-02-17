@@ -126,34 +126,55 @@ impl ElfFile {
     }
 }
 
+/// Return the PLT header size and entry size for a given architecture.
+///
+/// The PLT header (PLT[0]) is the resolver stub and can differ in size
+/// from the regular PLT entries that follow it.
+fn plt_sizes(arch: CpuArch) -> (u64, u64) {
+    match arch {
+        // AArch64: 32-byte header, 16-byte entries
+        CpuArch::Arm64 => (32, 16),
+        // ARM: 20-byte header, 12-byte entries
+        CpuArch::Arm => (20, 12),
+        // x86 and x86_64: 16-byte header, 16-byte entries
+        _ => (16, 16),
+    }
+}
+
 /// Build a map from PLT stub virtual addresses to imported symbol names.
 ///
 /// Each pltreloc entry corresponds to a GOT slot for an imported function.
-/// The PLT stubs are laid out sequentially in the .plt section: PLT[0] is
-/// the resolver, PLT[1..] correspond to pltrelocs[0..] in order.
+/// The PLT stubs are laid out sequentially: PLT[0] is the resolver (header),
+/// PLT[1..] correspond to pltrelocs[0..] in order. The header size can
+/// differ from the entry size on ARM/AArch64.
+///
+/// Also checks `.plt.got` and `.iplt` sections for additional PLT entries
+/// (used by some linkers, especially with `-z now` eager binding).
 fn build_plt_imports(elf: &Elf, arch: CpuArch) -> HashMap<u64, (String, String)> {
     let mut map = HashMap::new();
 
-    // Find the .plt section
-    let plt_section = elf.section_headers.iter().find(|sh| {
-        elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("") == ".plt"
-    });
+    let (plt_header_size, plt_entry_size) = plt_sizes(arch);
 
-    let plt_addr = match plt_section {
-        Some(sh) => sh.sh_addr,
-        None => return map,
-    };
+    // Collect all PLT-like sections: .plt, .plt.got, .iplt
+    let plt_sections: Vec<u64> = elf.section_headers.iter().filter_map(|sh| {
+        let name = elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("");
+        match name {
+            ".plt" | ".plt.got" | ".iplt" => Some(sh.sh_addr),
+            _ => None,
+        }
+    }).collect();
 
-    // PLT entry size depends on architecture
-    let plt_entry_size: u64 = match arch {
-        CpuArch::Arm => 12,
-        _ => 16,
-    };
+    if plt_sections.is_empty() {
+        return map;
+    }
+
+    // Use the first .plt section as the primary PLT base for address computation
+    let plt_addr = plt_sections[0];
 
     // Map each pltreloc to a PLT stub address
-    // PLT[0] is the resolver stub, so the first import is at PLT[1]
+    // PLT[0] is the resolver stub (header), first import starts after it
     for (i, reloc) in elf.pltrelocs.iter().enumerate() {
-        let stub_addr = plt_addr + (i as u64 + 1) * plt_entry_size;
+        let stub_addr = plt_addr + plt_header_size + i as u64 * plt_entry_size;
         if let Some(sym) = elf.dynsyms.get(reloc.r_sym) {
             if let Some(name) = elf.dynstrtab.get_at(sym.st_name) {
                 if !name.is_empty() {
@@ -317,5 +338,33 @@ mod tests {
     fn test_arch() {
         let elf = make_elf_file();
         assert_eq!(elf.arch(), CpuArch::X86_64);
+    }
+
+    #[test]
+    fn test_plt_sizes_x86() {
+        let (header, entry) = super::plt_sizes(CpuArch::X86);
+        assert_eq!(header, 16);
+        assert_eq!(entry, 16);
+    }
+
+    #[test]
+    fn test_plt_sizes_x86_64() {
+        let (header, entry) = super::plt_sizes(CpuArch::X86_64);
+        assert_eq!(header, 16);
+        assert_eq!(entry, 16);
+    }
+
+    #[test]
+    fn test_plt_sizes_arm() {
+        let (header, entry) = super::plt_sizes(CpuArch::Arm);
+        assert_eq!(header, 20);
+        assert_eq!(entry, 12);
+    }
+
+    #[test]
+    fn test_plt_sizes_arm64() {
+        let (header, entry) = super::plt_sizes(CpuArch::Arm64);
+        assert_eq!(header, 32);
+        assert_eq!(entry, 16);
     }
 }

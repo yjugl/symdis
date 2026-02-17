@@ -268,6 +268,16 @@ EXAMPLES:
       --version 147.0.3 --channel release \
       --offset 0x04534a78
 
+  # ARM64 Focus -- PLT calls resolved to import names (memcpy, recvmsg, etc.):
+  symdis disasm \
+      --debug-file libxul.so \
+      --debug-id 84F39FCE18219B82A8BE7B29D89A0A020 \
+      --code-file libxul.so \
+      --code-id ce9ff3842118829ba8be7b29d89a0a02224010d2 \
+      --product focus \
+      --version 147.0.3 --channel release \
+      --function ProcessIncomingMessages --fuzzy
+
   # Search by function name (substring match):
   symdis disasm \
       --debug-file xul.pdb \
@@ -355,7 +365,11 @@ TIPS:
     call [absolute_va] (the standard IAT calling convention on both
     architectures). If the memory slot does not point to an import,
     symdis also tries reading the on-disk pointer value to resolve
-    intra-module function pointer tables."#;
+    intra-module function pointer tables.
+  - On ARM/AArch64 ELF binaries, direct calls to PLT stubs (bl <addr>)
+    are resolved to their import names (e.g., "memcpy", "recvmsg").
+    This covers the standard calling convention for imported functions
+    on Linux ARM and AArch64."#;
 
 const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 

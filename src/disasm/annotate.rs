@@ -91,6 +91,16 @@ fn annotate_source_lines(
     }
 }
 
+/// Format an import as "dll!name" or just "name" if the DLL is empty.
+/// ELF PLT imports have no DLL name, so we skip the prefix for cleaner output.
+fn format_import(dll: &str, name: &str) -> String {
+    if dll.is_empty() {
+        name.to_string()
+    } else {
+        format!("{dll}!{name}")
+    }
+}
+
 /// Annotate call/jmp instructions with resolved target names.
 fn annotate_call_targets(
     insns: &mut [AnnotatedInstruction],
@@ -98,17 +108,20 @@ fn annotate_call_targets(
     binary: Option<&dyn BinaryFile>,
 ) {
     for insn in insns.iter_mut() {
-        // Direct calls: resolve target address through sym file or imports
+        // Direct calls: resolve target address through imports or sym file.
+        // Import resolution is checked first because it gives specific names
+        // (e.g., "memcpy") whereas sym resolution of PLT stub addresses yields
+        // generic section names (e.g., "<.plt ELF section in libxul.so>").
         if let Some(target) = insn.instruction.call_target {
+            if let Some(binary) = binary {
+                if let Some((dll, name)) = binary.resolve_import(target) {
+                    insn.call_target_name = Some(format_import(&dll, &name));
+                    continue;
+                }
+            }
             if let Some(info) = sym.resolve_address(target) {
                 insn.call_target_name = Some(info.name);
                 continue;
-            }
-            if let Some(binary) = binary {
-                if let Some((dll, name)) = binary.resolve_import(target) {
-                    insn.call_target_name = Some(format!("{dll}!{name}"));
-                    continue;
-                }
             }
         }
 
@@ -118,7 +131,7 @@ fn annotate_call_targets(
                 // 1. Try IAT import resolution
                 if let Some(binary) = binary {
                     if let Some((dll, name)) = binary.resolve_import(slot_rva) {
-                        insn.call_target_name = Some(format!("{dll}!{name}"));
+                        insn.call_target_name = Some(format_import(&dll, &name));
                         continue;
                     }
                 }
@@ -250,6 +263,43 @@ PUBLIC 3000 0 _PublicSymbol
         assert_eq!(
             annotated[0].call_target_name.as_deref(),
             Some("_PublicSymbol")
+        );
+    }
+
+    #[test]
+    fn test_direct_call_import_takes_precedence_over_sym() {
+        use crate::binary::CpuArch;
+
+        /// Stub binary that resolves address 0x2000 as an import.
+        struct StubBinaryWithPltImport;
+        impl BinaryFile for StubBinaryWithPltImport {
+            fn arch(&self) -> CpuArch { CpuArch::Arm64 }
+            fn extract_code(&self, _rva: u64, _size: u64) -> anyhow::Result<Vec<u8>> { Ok(Vec::new()) }
+            fn resolve_import(&self, rva: u64) -> Option<(String, String)> {
+                if rva == 0x2000 {
+                    Some(("".to_string(), "memcpy".to_string()))
+                } else {
+                    None
+                }
+            }
+            fn exports(&self) -> &[(u64, String)] { &[] }
+        }
+
+        let sym = make_test_sym();
+        let func = sym.find_function_by_name("TestFunction").unwrap();
+
+        // Address 0x2000 matches both "CalledFunction" in sym and "memcpy" as import.
+        // Import should win because it's more specific (PLT stub → actual import name).
+        let mut instructions = make_instructions(&[(0x1050, "bl", "0x2000")]);
+        instructions[0].call_target = Some(0x2000);
+
+        let binary = StubBinaryWithPltImport;
+        let annotated = annotate(instructions, Some(&sym), Some(func), Some(&binary), None);
+
+        // ELF imports use empty DLL name, so just the function name is shown
+        assert_eq!(
+            annotated[0].call_target_name.as_deref(),
+            Some("memcpy")
         );
     }
 
