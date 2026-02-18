@@ -392,6 +392,25 @@ impl BinaryFile for MachOFile {
         &self.exports_list
     }
 
+    fn read_pointer_at_rva(&self, rva: u64) -> Option<u64> {
+        let offset = self.va_to_offset(rva)? as usize;
+        let ptr_size = match self.arch {
+            CpuArch::X86 | CpuArch::Arm => 4,
+            _ => 8,
+        };
+        if offset + ptr_size > self.data.len() {
+            return None;
+        }
+        let value = if ptr_size == 4 {
+            u64::from(u32::from_le_bytes(self.data[offset..offset + 4].try_into().ok()?))
+        } else {
+            u64::from_le_bytes(self.data[offset..offset + 8].try_into().ok()?)
+        };
+        // Mach-O pointers are absolute VAs — no base subtraction needed.
+        // Filter out zero (unresolved lazy pointers).
+        if value == 0 { None } else { Some(value) }
+    }
+
     fn build_id(&self) -> Option<String> {
         // MachOFile stores the architecture slice data, so extract_macho_uuids
         // returns exactly one UUID for this slice.
@@ -663,5 +682,28 @@ mod tests {
         let data = make_synthetic_macho_with_stubs();
         let macho_file = MachOFile::from_bytes(data, None).unwrap();
         assert_eq!(macho_file.arch(), CpuArch::X86_64);
+    }
+
+    #[test]
+    fn test_read_pointer_at_rva() {
+        let mut macho = make_macho_file();
+        // VA 0x2000 maps to file offset 0x1000 (vmaddr=0x1000, fileoff=0x0)
+        let target_va: u64 = 0x5000;
+        macho.data[0x1000..0x1008].copy_from_slice(&target_va.to_le_bytes());
+
+        assert_eq!(macho.read_pointer_at_rva(0x2000), Some(0x5000));
+    }
+
+    #[test]
+    fn test_read_pointer_at_rva_zero() {
+        let macho = make_macho_file();
+        // Zero pointer returns None
+        assert_eq!(macho.read_pointer_at_rva(0x2000), None);
+    }
+
+    #[test]
+    fn test_read_pointer_at_rva_unmapped() {
+        let macho = make_macho_file();
+        assert_eq!(macho.read_pointer_at_rva(0x20000), None);
     }
 }

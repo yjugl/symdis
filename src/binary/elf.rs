@@ -8,6 +8,7 @@ use std::path::Path;
 use anyhow::{Result, Context, bail};
 use goblin::elf::Elf;
 use goblin::elf::program_header::PT_LOAD;
+use goblin::elf::reloc;
 use goblin::elf::sym::{STT_FUNC, STT_GNU_IFUNC, STT_NOTYPE};
 
 use super::{BinaryFile, CpuArch};
@@ -102,7 +103,12 @@ impl ElfFile {
         exports_list.sort_by_key(|(addr, _)| *addr);
 
         // Build PLT import map: PLT stub address → (library, symbol name)
-        let imports_map = build_plt_imports(&elf, arch);
+        let mut imports_map = build_plt_imports(&elf, arch);
+
+        // Add GOT slot → import name entries from dynamic relocations.
+        // This enables resolution of indirect calls through the GOT
+        // (e.g., x86-64 `call [rip+disp]` in -fno-plt builds, AArch64 ADRP+LDR+BLR).
+        build_got_imports(&elf, arch, &mut imports_map);
 
         // Collect Thumb/ARM mode markers for ARM32 binaries.
         let thumb_markers = if arch == CpuArch::Arm {
@@ -245,6 +251,54 @@ fn build_plt_imports(elf: &Elf, arch: CpuArch) -> HashMap<u64, (String, String)>
     map
 }
 
+/// Return the GLOB_DAT and JUMP_SLOT relocation type constants for a given architecture.
+fn got_reloc_types(arch: CpuArch) -> &'static [u32] {
+    match arch {
+        CpuArch::X86_64 => &[reloc::R_X86_64_GLOB_DAT, reloc::R_X86_64_JUMP_SLOT],
+        CpuArch::X86 => &[reloc::R_386_GLOB_DAT, reloc::R_386_JMP_SLOT],
+        CpuArch::Arm64 => &[reloc::R_AARCH64_GLOB_DAT, reloc::R_AARCH64_JUMP_SLOT],
+        CpuArch::Arm => &[reloc::R_ARM_GLOB_DAT, reloc::R_ARM_JUMP_SLOT],
+    }
+}
+
+/// Build a map from GOT slot virtual addresses to imported symbol names.
+///
+/// Dynamic relocations (`dynrelas`/`dynrels`) and PLT relocations (`pltrelocs`)
+/// contain entries whose `r_offset` is the GOT slot VA and `r_sym` identifies
+/// the imported symbol. This maps those GOT slots so that indirect calls/jumps
+/// through the GOT (e.g., x86-64 `call [rip+disp]`, AArch64 ADRP+LDR+BLR)
+/// can be resolved to their target import names.
+fn build_got_imports(
+    elf: &Elf,
+    arch: CpuArch,
+    imports_map: &mut HashMap<u64, (String, String)>,
+) {
+    let types = got_reloc_types(arch);
+
+    let all_relocs = elf.dynrelas.iter()
+        .chain(elf.dynrels.iter())
+        .chain(elf.pltrelocs.iter());
+
+    for reloc in all_relocs {
+        if !types.contains(&reloc.r_type) {
+            continue;
+        }
+        let got_va = reloc.r_offset;
+        // Skip if this VA is already mapped (PLT stub map takes precedence for stub addresses,
+        // but GOT slots are at different addresses so collisions are unlikely)
+        if imports_map.contains_key(&got_va) {
+            continue;
+        }
+        if let Some(sym) = elf.dynsyms.get(reloc.r_sym) {
+            if let Some(name) = elf.dynstrtab.get_at(sym.st_name) {
+                if !name.is_empty() {
+                    imports_map.insert(got_va, (String::new(), name.to_string()));
+                }
+            }
+        }
+    }
+}
+
 impl BinaryFile for ElfFile {
     fn arch(&self) -> CpuArch {
         self.arch
@@ -280,6 +334,25 @@ impl BinaryFile for ElfFile {
 
     fn build_id(&self) -> Option<String> {
         crate::fetch::archive::extract_elf_build_id(&self.data).ok().flatten()
+    }
+
+    fn read_pointer_at_rva(&self, rva: u64) -> Option<u64> {
+        let offset = self.va_to_offset(rva)? as usize;
+        let ptr_size = match self.arch {
+            CpuArch::X86 | CpuArch::Arm => 4,
+            _ => 8,
+        };
+        if offset + ptr_size > self.data.len() {
+            return None;
+        }
+        let value = if ptr_size == 4 {
+            u64::from(u32::from_le_bytes(self.data[offset..offset + 4].try_into().ok()?))
+        } else {
+            u64::from_le_bytes(self.data[offset..offset + 8].try_into().ok()?)
+        };
+        // ELF pointers are absolute VAs (same address space as our RVAs),
+        // so no base subtraction needed. Filter out zero (unresolved relocations).
+        if value == 0 { None } else { Some(value) }
     }
 
     fn is_thumb(&self, rva: u64) -> bool {
@@ -510,5 +583,108 @@ mod tests {
     fn test_is_thumb_default_for_non_arm() {
         let elf = make_elf_file(); // x86_64
         assert!(!elf.is_thumb(0x1000));
+    }
+
+    #[test]
+    fn test_got_reloc_types() {
+        let types = got_reloc_types(CpuArch::X86_64);
+        assert!(types.contains(&reloc::R_X86_64_GLOB_DAT));
+        assert!(types.contains(&reloc::R_X86_64_JUMP_SLOT));
+
+        let types = got_reloc_types(CpuArch::X86);
+        assert!(types.contains(&reloc::R_386_GLOB_DAT));
+        assert!(types.contains(&reloc::R_386_JMP_SLOT));
+
+        let types = got_reloc_types(CpuArch::Arm64);
+        assert!(types.contains(&reloc::R_AARCH64_GLOB_DAT));
+        assert!(types.contains(&reloc::R_AARCH64_JUMP_SLOT));
+
+        let types = got_reloc_types(CpuArch::Arm);
+        assert!(types.contains(&reloc::R_ARM_GLOB_DAT));
+        assert!(types.contains(&reloc::R_ARM_JUMP_SLOT));
+    }
+
+    #[test]
+    fn test_resolve_got_import() {
+        // Simulate an ELF with a GOT entry at VA 0x5000 → "printf"
+        let elf = ElfFile {
+            data: vec![0; 0x20000],
+            arch: CpuArch::X86_64,
+            exports_list: Vec::new(),
+            imports_map: HashMap::from([
+                // PLT stub entry
+                (0x3000, ("".to_string(), "malloc".to_string())),
+                // GOT slot entry (added by build_got_imports)
+                (0x5000, ("".to_string(), "printf".to_string())),
+            ]),
+            segments: vec![LoadSegment {
+                vaddr: 0x0,
+                memsz: 0x20000,
+                offset: 0x0,
+                filesz: 0x20000,
+            }],
+            thumb_markers: Vec::new(),
+        };
+
+        // GOT slot VA resolves to import name
+        assert_eq!(
+            elf.resolve_import(0x5000),
+            Some(("".to_string(), "printf".to_string()))
+        );
+        // PLT stub still works
+        assert_eq!(
+            elf.resolve_import(0x3000),
+            Some(("".to_string(), "malloc".to_string()))
+        );
+        // Unknown VA returns None
+        assert_eq!(elf.resolve_import(0x9000), None);
+    }
+
+    #[test]
+    fn test_read_pointer_at_rva_x86_64() {
+        let mut elf = make_elf_file();
+        // Write an 8-byte pointer at VA 0x8000 (file offset 0x8000 since vaddr=0)
+        let target_va: u64 = 0x2000;
+        elf.data[0x8000..0x8008].copy_from_slice(&target_va.to_le_bytes());
+
+        assert_eq!(elf.read_pointer_at_rva(0x8000), Some(0x2000));
+    }
+
+    #[test]
+    fn test_read_pointer_at_rva_zero_value() {
+        let elf = make_elf_file();
+        // Zero pointer (unresolved relocation) returns None
+        assert_eq!(elf.read_pointer_at_rva(0x8000), None);
+    }
+
+    #[test]
+    fn test_read_pointer_at_rva_arm32() {
+        let mut data = vec![0u8; 0x10000];
+        // Write a 4-byte pointer at offset 0x4000
+        let target_va: u32 = 0x1234;
+        data[0x4000..0x4004].copy_from_slice(&target_va.to_le_bytes());
+
+        let elf = ElfFile {
+            data,
+            arch: CpuArch::Arm,
+            exports_list: Vec::new(),
+            imports_map: HashMap::new(),
+            segments: vec![LoadSegment {
+                vaddr: 0x0,
+                memsz: 0x10000,
+                offset: 0x0,
+                filesz: 0x10000,
+            }],
+            thumb_markers: Vec::new(),
+        };
+
+        assert_eq!(elf.read_pointer_at_rva(0x4000), Some(0x1234));
+    }
+
+    #[test]
+    fn test_read_pointer_at_rva_unmapped() {
+        let elf = make_elf_file();
+        // VA not in any segment
+        assert_eq!(elf.read_pointer_at_rva(0x30000), None);
     }
 }
