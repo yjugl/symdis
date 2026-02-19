@@ -99,7 +99,3 @@ All commands are fully implemented and the project is ready for real-life testin
 - **msvc-demangler 0.10** for MSVC-decorated symbol demangling (`?Name@...`)
 - **edition = "2021"** (not 2024)
 
-## Reference
-
-- [SPEC.md](SPEC.md) — Full specification (commands, output formats, symbol resolution pipeline, error handling)
-- [IMPLEMENTATION.md](IMPLEMENTATION.md) — 16-phase build plan with acceptance criteria per phase

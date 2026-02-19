@@ -89,7 +89,7 @@ mod tests {
         assert_eq!(swap_hex_bytes("AB").unwrap(), "AB");
     }
 
-    // Test vector from SPEC.md Appendix B — Linux
+    // Test vector — Linux
     #[test]
     fn test_build_id_to_debug_id_linux() {
         let build_id = "b7dc60e91588d8a54c4c44205044422e";

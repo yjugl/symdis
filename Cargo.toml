@@ -9,7 +9,7 @@ homepage = "https://github.com/yjugl/symdis"
 readme = "README.md"
 keywords = ["disassembler", "crash-analysis", "symbols", "mozilla", "debugging"]
 categories = ["command-line-utilities", "development-tools::debugging"]
-exclude = ["IMPLEMENTATION.md", "CLAUDE.md", ".github/"]
+exclude = ["CLAUDE.md", ".github/"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }

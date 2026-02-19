@@ -253,11 +253,6 @@ When using symdis — whether manually or through an AI agent — only provide d
 
 For Mozilla's policies on using AI tools in development, see [AI and Coding](https://firefox-source-docs.mozilla.org/contributing/ai-coding.html). For contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Documentation
-
-- [SPEC.md](SPEC.md) -- Full specification
-- [IMPLEMENTATION.md](IMPLEMENTATION.md) -- Phased implementation plan
-
 ## License
 
 This project is licensed under the [Mozilla Public License 2.0](LICENSE).
