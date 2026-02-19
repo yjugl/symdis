@@ -2,29 +2,62 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+/// Linker-generated thunk prefixes (LLD/LLVM) that wrap a target symbol name.
+/// ARM32: long-range branch thunks placed in islands every ~16MB.
+/// AArch64: rare (128MB branch range), but exist for very large binaries.
+const THUNK_PREFIXES: &[&str] = &[
+    "__ThumbV7PILongThunk_",
+    "__ARMv7PILongThunk_",
+    "__ThumbV7ABSLongThunk_",
+    "__ARMv7ABSLongThunk_",
+    "__AArch64AbsLongThunk_",
+    "__AArch64ADRPThunk_",
+];
+
 /// Try to demangle a symbol name as C++ (Itanium ABI), Rust, or MSVC.
 /// Returns the original name unchanged if it's not mangled.
+///
+/// Also handles linker-generated thunk symbols (e.g., `__ThumbV7PILongThunk_<mangled>`)
+/// by stripping the prefix, demangling the inner name, and reattaching the prefix.
 pub fn demangle(name: &str) -> String {
+    // Check for linker thunk prefixes wrapping a mangled name
+    for prefix in THUNK_PREFIXES {
+        if let Some(inner) = name.strip_prefix(prefix) {
+            if !inner.is_empty() {
+                if let Some(demangled) = try_demangle(inner) {
+                    return format!("{prefix}{demangled}");
+                }
+            }
+            break;
+        }
+    }
+
+    try_demangle(name).unwrap_or_else(|| name.to_string())
+}
+
+/// Attempt demangling as C++ (Itanium ABI), Rust, or MSVC.
+/// Returns `None` if the name is not recognized as mangled.
+fn try_demangle(name: &str) -> Option<String> {
     // Try C++ (Itanium ABI) demangling first
     if let Ok(sym) = cpp_demangle::Symbol::new(name) {
         if let Ok(demangled) = sym.demangle(&cpp_demangle::DemangleOptions::default()) {
-            return demangled;
+            return Some(demangled);
         }
     }
 
     // Try Rust demangling
     if let Ok(demangled) = rustc_demangle::try_demangle(name) {
-        return demangled.to_string();
+        return Some(demangled.to_string());
     }
 
     // Try MSVC demangling (symbols start with '?')
     if name.starts_with('?') {
         if let Ok(demangled) = msvc_demangler::demangle(name, msvc_demangler::DemangleFlags::llvm()) {
-            return demangled;
+            return Some(demangled);
         }
     }
 
-    name.to_string()
+    None
 }
 
 /// Demangle a symbol name if `enabled` is true, otherwise return it unchanged.
@@ -127,5 +160,52 @@ mod tests {
         assert!(result.contains("mozilla"));
         assert!(result.contains("TimeStamp"));
         assert!(!result.starts_with("__Z"));
+    }
+
+    #[test]
+    fn test_demangle_thumb_thunk_cpp() {
+        // ARM32 linker thunk wrapping a C++ Itanium mangled name
+        let name = "__ThumbV7PILongThunk__Z19NS_ProcessNextEventP9nsIThreadb";
+        let result = demangle(name);
+        assert!(result.starts_with("__ThumbV7PILongThunk_"), "Prefix preserved: {result}");
+        assert!(result.contains("NS_ProcessNextEvent"), "Demangled inner name: {result}");
+        assert!(!result.contains("_Z19"), "Mangled part should be gone: {result}");
+    }
+
+    #[test]
+    fn test_demangle_thumb_thunk_plain_c() {
+        // ARM32 linker thunk wrapping a plain C name (no mangling to strip)
+        let name = "__ThumbV7PILongThunk_sysconf";
+        let result = demangle(name);
+        assert_eq!(result, name, "Plain C thunk target stays unchanged");
+    }
+
+    #[test]
+    fn test_demangle_arm_thunk_cpp() {
+        // ARM-mode thunk variant
+        let name = "__ARMv7PILongThunk__ZN7mozilla3dom7Element12SetAttributeE";
+        let result = demangle(name);
+        assert!(result.starts_with("__ARMv7PILongThunk_"), "Prefix preserved: {result}");
+        assert!(result.contains("mozilla"), "Demangled inner name: {result}");
+        assert!(result.contains("SetAttribute"), "Demangled inner name: {result}");
+    }
+
+    #[test]
+    fn test_demangle_aarch64_thunk() {
+        // AArch64 thunk variant
+        let name = "__AArch64AbsLongThunk__ZN7mozilla9TimeStamp3NowEb";
+        let result = demangle(name);
+        assert!(result.starts_with("__AArch64AbsLongThunk_"), "Prefix preserved: {result}");
+        assert!(result.contains("TimeStamp"), "Demangled inner name: {result}");
+    }
+
+    #[test]
+    fn test_demangle_thunk_rust() {
+        // Thunk wrapping a Rust legacy mangled name
+        let name = "__ThumbV7PILongThunk__ZN4test3foo17h1234567890abcdefE";
+        let result = demangle(name);
+        assert!(result.starts_with("__ThumbV7PILongThunk_"), "Prefix preserved: {result}");
+        assert!(result.contains("test"), "Demangled inner name: {result}");
+        assert!(result.contains("foo"), "Demangled inner name: {result}");
     }
 }
