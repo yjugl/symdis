@@ -177,6 +177,10 @@ impl Disassembler {
             });
         }
 
+        if self.arch == CpuArch::Arm64 {
+            resolve_aarch64_indirect(&mut result);
+        }
+
         Ok((result, total_count))
     }
 
@@ -196,6 +200,7 @@ impl Disassembler {
             || mnemonic == "bl"
             || mnemonic == "b"
             || mnemonic == "blr"
+            || mnemonic == "br"
             || mnemonic.starts_with("callq")
             || mnemonic.starts_with("jmpq");
 
@@ -264,6 +269,152 @@ impl Disassembler {
             }
         }
         None
+    }
+}
+
+/// Parse an AArch64 X register name (e.g., "x16" → Some(16)).
+fn parse_xreg(s: &str) -> Option<u8> {
+    s.trim()
+        .strip_prefix('x')
+        .and_then(|num| num.parse::<u8>().ok())
+        .filter(|&n| n <= 30)
+}
+
+/// Parse an ARM64 immediate value (e.g., "#0x10" → 16, "#-0x10" → -16).
+fn parse_arm64_imm(s: &str) -> Option<i64> {
+    let s = s.trim().trim_start_matches('#');
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u64::from_str_radix(hex, 16).ok().map(|v| v as i64)
+    } else if let Some(rest) = s.strip_prefix("-0x").or_else(|| s.strip_prefix("-0X")) {
+        u64::from_str_radix(rest, 16).ok().map(|v| -(v as i64))
+    } else {
+        s.parse::<i64>().ok()
+    }
+}
+
+/// Parse ADRP operands: "x16, #0x411000" → Some((register=16, page=0x411000)).
+fn parse_adrp_operands(operands: &str) -> Option<(u8, u64)> {
+    let (dest_str, rest) = operands.split_once(',')?;
+    let dest = parse_xreg(dest_str)?;
+    let page = parse_arm64_imm(rest)? as u64;
+    Some((dest, page))
+}
+
+/// Parse LDR memory operands: "x16, [x17, #0x10]" → Some((dest=16, base=17, offset=0x10)).
+/// Also handles zero offset: "x16, [x17]" → Some((16, 17, 0)).
+fn parse_ldr_operands(operands: &str) -> Option<(u8, u8, i64)> {
+    let (dest_str, rest) = operands.split_once(',')?;
+    let dest = parse_xreg(dest_str)?;
+    let bracket_start = rest.find('[')?;
+    let bracket_end = rest.find(']')?;
+    let mem = &rest[bracket_start + 1..bracket_end];
+    if let Some((base_str, offset_str)) = mem.split_once(',') {
+        let base = parse_xreg(base_str)?;
+        let offset = parse_arm64_imm(offset_str)?;
+        Some((dest, base, offset))
+    } else {
+        let base = parse_xreg(mem)?;
+        Some((dest, base, 0))
+    }
+}
+
+/// Check if an AArch64 instruction writes to register xN.
+///
+/// Conservative: assumes most instructions write to their first operand,
+/// except known non-writing instructions (stores, branches, comparisons,
+/// system instructions).
+fn writes_to_xreg(mnemonic: &str, operands: &str, reg: u8) -> bool {
+    // Branches
+    if matches!(mnemonic, "b" | "bl" | "br" | "blr" | "ret"
+        | "cbz" | "cbnz" | "tbz" | "tbnz")
+        || mnemonic.starts_with("b.")
+    {
+        return false;
+    }
+    // Stores (str, stp, stur, stlr, stxr, etc.)
+    if mnemonic.starts_with("st") {
+        return false;
+    }
+    // Comparisons/tests
+    if matches!(mnemonic, "cmp" | "cmn" | "tst" | "ccmp" | "ccmn") {
+        return false;
+    }
+    // System/barrier/prefetch
+    if matches!(mnemonic, "nop" | "dmb" | "dsb" | "isb" | "svc" | "prfm") {
+        return false;
+    }
+
+    let first_op = operands.split(',').next().unwrap_or("").trim();
+    parse_xreg(first_op) == Some(reg)
+}
+
+/// Resolve AArch64 ADRP+LDR+BLR/BR indirect call patterns.
+///
+/// On AArch64, the standard indirect call pattern for GOT/IAT access is:
+/// ```text
+/// adrp xM, #page       ; xM = page-aligned address
+/// ldr  xN, [xM, #off]  ; xN = *(xM + off) — load GOT/IAT slot
+/// blr  xN               ; call through register
+/// ```
+///
+/// This post-pass scans backward from each `blr`/`br` instruction to find
+/// matching ADRP+LDR sequences and computes `indirect_mem_addr = page + off`.
+/// The annotation pipeline then resolves through `resolve_import` or
+/// `read_pointer_at_rva` + sym lookup.
+fn resolve_aarch64_indirect(instructions: &mut [Instruction]) {
+    for i in 0..instructions.len() {
+        if !instructions[i].is_indirect_call || instructions[i].indirect_mem_addr.is_some() {
+            continue;
+        }
+        if instructions[i].mnemonic != "blr" && instructions[i].mnemonic != "br" {
+            continue;
+        }
+        let blr_reg = match parse_xreg(&instructions[i].operands) {
+            Some(r) => r,
+            None => continue,
+        };
+
+        // Scan backward (up to 10 instructions) for LDR that writes to blr_reg
+        let scan_start = i.saturating_sub(10);
+        let mut ldr_result = None;
+        for j in (scan_start..i).rev() {
+            if instructions[j].mnemonic == "ldr" {
+                if let Some((dest, base, offset)) = parse_ldr_operands(&instructions[j].operands) {
+                    if dest == blr_reg {
+                        ldr_result = Some((j, base, offset));
+                        break;
+                    }
+                }
+            }
+            if writes_to_xreg(&instructions[j].mnemonic, &instructions[j].operands, blr_reg) {
+                break;
+            }
+        }
+        let (ldr_idx, ldr_base, ldr_offset) = match ldr_result {
+            Some(r) => r,
+            None => continue,
+        };
+
+        // Scan backward from LDR (up to 10 instructions) for ADRP that writes to ldr_base
+        let scan_start2 = ldr_idx.saturating_sub(10);
+        let mut adrp_page = None;
+        for j in (scan_start2..ldr_idx).rev() {
+            if instructions[j].mnemonic == "adrp" {
+                if let Some((dest, page)) = parse_adrp_operands(&instructions[j].operands) {
+                    if dest == ldr_base {
+                        adrp_page = Some(page);
+                        break;
+                    }
+                }
+            }
+            if writes_to_xreg(&instructions[j].mnemonic, &instructions[j].operands, ldr_base) {
+                break;
+            }
+        }
+
+        if let Some(page) = adrp_page {
+            instructions[i].indirect_mem_addr = Some(page.wrapping_add(ldr_offset as u64));
+        }
     }
 }
 
@@ -519,5 +670,165 @@ mod tests {
         assert_eq!(insns.len(), 1);
         // Should decode as ARM push, not garbage
         assert!(insns[0].mnemonic == "push" || insns[0].mnemonic == "stmdb");
+    }
+
+    // --- AArch64 ADRP+LDR+BLR/BR resolution tests ---
+
+    fn make_arm64_insn(addr: u64, mnemonic: &str, operands: &str) -> Instruction {
+        let is_indirect = mnemonic == "blr" || mnemonic == "br";
+        Instruction {
+            address: addr,
+            size: 4,
+            bytes: vec![0; 4],
+            mnemonic: mnemonic.to_string(),
+            operands: operands.to_string(),
+            call_target: None,
+            is_indirect_call: is_indirect,
+            indirect_mem_addr: None,
+        }
+    }
+
+    #[test]
+    fn test_parse_xreg() {
+        assert_eq!(parse_xreg("x0"), Some(0));
+        assert_eq!(parse_xreg("x16"), Some(16));
+        assert_eq!(parse_xreg("x30"), Some(30));
+        assert_eq!(parse_xreg("x31"), None);
+        assert_eq!(parse_xreg("w0"), None);
+        assert_eq!(parse_xreg("sp"), None);
+        assert_eq!(parse_xreg(""), None);
+    }
+
+    #[test]
+    fn test_parse_arm64_imm() {
+        assert_eq!(parse_arm64_imm("#0x10"), Some(0x10));
+        assert_eq!(parse_arm64_imm("#0x411000"), Some(0x411000));
+        assert_eq!(parse_arm64_imm("#16"), Some(16));
+        assert_eq!(parse_arm64_imm("#-0x10"), Some(-0x10));
+        assert_eq!(parse_arm64_imm("#0"), Some(0));
+        assert_eq!(parse_arm64_imm("x16"), None);
+    }
+
+    #[test]
+    fn test_parse_adrp_operands() {
+        assert_eq!(parse_adrp_operands("x16, #0x411000"), Some((16, 0x411000)));
+        assert_eq!(parse_adrp_operands("x0, #0x0"), Some((0, 0)));
+        assert_eq!(parse_adrp_operands("x8, #0x200000"), Some((8, 0x200000)));
+    }
+
+    #[test]
+    fn test_parse_ldr_operands() {
+        assert_eq!(parse_ldr_operands("x16, [x16, #0x10]"), Some((16, 16, 0x10)));
+        assert_eq!(parse_ldr_operands("x16, [x17, #0x20]"), Some((16, 17, 0x20)));
+        assert_eq!(parse_ldr_operands("x16, [x16]"), Some((16, 16, 0)));
+        assert_eq!(parse_ldr_operands("x0, [x1, #0x8]"), Some((0, 1, 0x8)));
+    }
+
+    #[test]
+    fn test_aarch64_adrp_ldr_blr_resolution() {
+        let mut insns = vec![
+            make_arm64_insn(0x1000, "adrp", "x16, #0x411000"),
+            make_arm64_insn(0x1004, "ldr", "x16, [x16, #0x10]"),
+            make_arm64_insn(0x1008, "blr", "x16"),
+        ];
+        resolve_aarch64_indirect(&mut insns);
+        assert_eq!(insns[2].indirect_mem_addr, Some(0x411010));
+    }
+
+    #[test]
+    fn test_aarch64_adrp_ldr_blr_different_regs() {
+        let mut insns = vec![
+            make_arm64_insn(0x1000, "adrp", "x17, #0x200000"),
+            make_arm64_insn(0x1004, "ldr", "x16, [x17, #0x20]"),
+            make_arm64_insn(0x1008, "blr", "x16"),
+        ];
+        resolve_aarch64_indirect(&mut insns);
+        assert_eq!(insns[2].indirect_mem_addr, Some(0x200020));
+    }
+
+    #[test]
+    fn test_aarch64_clobbered_between_ldr_blr() {
+        // Register x16 is clobbered between LDR and BLR
+        let mut insns = vec![
+            make_arm64_insn(0x1000, "adrp", "x16, #0x411000"),
+            make_arm64_insn(0x1004, "ldr", "x16, [x16, #0x10]"),
+            make_arm64_insn(0x1008, "mov", "x16, x0"),
+            make_arm64_insn(0x100c, "blr", "x16"),
+        ];
+        resolve_aarch64_indirect(&mut insns);
+        assert_eq!(insns[3].indirect_mem_addr, None);
+    }
+
+    #[test]
+    fn test_aarch64_clobbered_between_adrp_ldr() {
+        // Register x16 is clobbered between ADRP and LDR
+        let mut insns = vec![
+            make_arm64_insn(0x1000, "adrp", "x16, #0x411000"),
+            make_arm64_insn(0x1004, "add", "x16, x0, #0x100"),
+            make_arm64_insn(0x1008, "ldr", "x16, [x16, #0x10]"),
+            make_arm64_insn(0x100c, "blr", "x16"),
+        ];
+        resolve_aarch64_indirect(&mut insns);
+        assert_eq!(insns[3].indirect_mem_addr, None);
+    }
+
+    #[test]
+    fn test_aarch64_br_resolution() {
+        // BR (indirect jump) should also be resolved
+        let mut insns = vec![
+            make_arm64_insn(0x1000, "adrp", "x16, #0x300000"),
+            make_arm64_insn(0x1004, "ldr", "x16, [x16, #0x8]"),
+            make_arm64_insn(0x1008, "br", "x16"),
+        ];
+        resolve_aarch64_indirect(&mut insns);
+        assert_eq!(insns[2].indirect_mem_addr, Some(0x300008));
+    }
+
+    #[test]
+    fn test_aarch64_non_clobbering_between() {
+        // Stores, comparisons between ADRP/LDR/BLR should not prevent resolution
+        let mut insns = vec![
+            make_arm64_insn(0x1000, "adrp", "x16, #0x500000"),
+            make_arm64_insn(0x1004, "str", "x0, [sp, #0x10]"),
+            make_arm64_insn(0x1008, "cmp", "x1, #0"),
+            make_arm64_insn(0x100c, "ldr", "x16, [x16, #0x30]"),
+            make_arm64_insn(0x1010, "blr", "x16"),
+        ];
+        resolve_aarch64_indirect(&mut insns);
+        assert_eq!(insns[4].indirect_mem_addr, Some(0x500030));
+    }
+
+    #[test]
+    fn test_aarch64_ldr_zero_offset() {
+        let mut insns = vec![
+            make_arm64_insn(0x1000, "adrp", "x16, #0x100000"),
+            make_arm64_insn(0x1004, "ldr", "x16, [x16]"),
+            make_arm64_insn(0x1008, "blr", "x16"),
+        ];
+        resolve_aarch64_indirect(&mut insns);
+        assert_eq!(insns[2].indirect_mem_addr, Some(0x100000));
+    }
+
+    #[test]
+    fn test_aarch64_blr_at_start_no_crash() {
+        // BLR as the first instruction — should not crash
+        let mut insns = vec![
+            make_arm64_insn(0x1000, "blr", "x16"),
+        ];
+        resolve_aarch64_indirect(&mut insns);
+        assert_eq!(insns[0].indirect_mem_addr, None);
+    }
+
+    #[test]
+    fn test_aarch64_already_resolved_skipped() {
+        // BLR with indirect_mem_addr already set should be skipped
+        let mut insns = vec![
+            make_arm64_insn(0x1000, "adrp", "x16, #0x411000"),
+            make_arm64_insn(0x1004, "ldr", "x16, [x16, #0x10]"),
+            make_arm64_insn(0x1008, "blr", "x16"),
+        ];
+        insns[2].indirect_mem_addr = Some(0xDEAD);
+        resolve_aarch64_indirect(&mut insns);
+        assert_eq!(insns[2].indirect_mem_addr, Some(0xDEAD));
     }
 }

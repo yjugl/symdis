@@ -366,6 +366,14 @@ TIPS:
     architectures). If the memory slot does not point to an import,
     symdis also tries reading the on-disk pointer value to resolve
     intra-module function pointer tables.
+  - On AArch64, indirect calls via ADRP+LDR+BLR sequences are resolved
+    automatically. The engine scans backward from each blr/br instruction
+    to find the matching adrp+ldr pair, computes the GOT/IAT slot address,
+    and resolves the import name or intra-module target. This covers the
+    standard indirect calling convention on AArch64 across all platforms
+    (Linux ELF, macOS Mach-O, Windows PE, Android ELF). Register clobber
+    detection prevents incorrect resolution when the register chain is
+    broken between instructions.
   - On ARM/AArch64 ELF binaries, direct calls to PLT stubs (bl <addr>)
     are resolved to their import names (e.g., "memcpy", "recvmsg").
     This covers the standard calling convention for imported functions
