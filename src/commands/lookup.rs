@@ -89,60 +89,127 @@ fn lookup_by_name(
 ) -> Result<()> {
     let demangle_enabled = !config.no_demangle;
 
-    let func = if fuzzy {
-        let matches = sym.find_function_by_name_fuzzy(name);
-        match matches.len() {
-            0 => bail!("function not found: '{name}'"),
-            1 => matches[0],
-            _ => {
-                // Multiple matches — report them as an error
-                match config.format {
-                    OutputFormat::Text => {
-                        let mut msg = format!("ambiguous function name '{name}'. Matches:\n");
-                        for (i, f) in matches.iter().enumerate().take(20) {
-                            writeln!(
-                                msg,
-                                "  {}. {} (RVA: 0x{:x}, size: 0x{:x})",
-                                i + 1, maybe_demangle(&f.name, demangle_enabled), f.address, f.size
-                            ).unwrap();
-                        }
-                        if matches.len() > 20 {
-                            writeln!(msg, "  ... and {} more", matches.len() - 20).unwrap();
-                        }
-                        bail!("{msg}");
-                    }
-                    OutputFormat::Json => {
-                        let output = format_fuzzy_matches_json(name, &matches, demangle_enabled);
-                        println!("{output}");
-                        std::process::exit(1);
-                    }
-                }
+    if fuzzy {
+        lookup_by_name_fuzzy(name, sym, config, demangle_enabled)
+    } else {
+        lookup_by_name_exact(name, sym, config, demangle_enabled)
+    }
+}
+
+fn lookup_by_name_exact(
+    name: &str,
+    sym: &SymFile,
+    config: &Config,
+    demangle_enabled: bool,
+) -> Result<()> {
+    // 1. FUNC exact match
+    if let Some(func) = sym.find_function_by_name(name) {
+        return display_func(func, sym, config, demangle_enabled);
+    }
+
+    // 2. PUBLIC exact match (raw name)
+    if let Some(public) = sym.find_public_by_name(name) {
+        return display_public(public, config, demangle_enabled);
+    }
+
+    // 3. PUBLIC demangled match
+    for public in &sym.publics {
+        let demangled = crate::demangle::demangle(&public.name);
+        if demangled == name {
+            return display_public(public, config, demangle_enabled);
+        }
+    }
+
+    // Not found — show suggestions from both FUNC and PUBLIC
+    let func_suggestions = sym.find_function_by_name_fuzzy(name);
+    let public_suggestions = sym.find_public_by_name_fuzzy(name);
+    if !func_suggestions.is_empty() || !public_suggestions.is_empty() {
+        let mut msg = format!("function '{name}' not found. Similar names:\n");
+        for f in func_suggestions.iter().take(5) {
+            writeln!(msg, "  - {} (FUNC, 0x{:x})", maybe_demangle(&f.name, demangle_enabled), f.address).unwrap();
+        }
+        for p in public_suggestions.iter().take(5) {
+            writeln!(msg, "  - {} (PUBLIC, 0x{:x})", maybe_demangle(&p.name, demangle_enabled), p.address).unwrap();
+        }
+        bail!("{msg}");
+    }
+    bail!("function '{name}' not found");
+}
+
+fn lookup_by_name_fuzzy(
+    name: &str,
+    sym: &SymFile,
+    config: &Config,
+    demangle_enabled: bool,
+) -> Result<()> {
+    // Collect matches from both FUNC and PUBLIC
+    let func_matches = sym.find_function_by_name_fuzzy(name);
+    let public_matches: Vec<&crate::symbols::breakpad::PublicRecord> = sym.publics
+        .iter()
+        .filter(|p| {
+            let demangled = crate::demangle::demangle(&p.name);
+            p.name.contains(name) || demangled.contains(name)
+        })
+        .collect();
+
+    let total = func_matches.len() + public_matches.len();
+
+    match total {
+        0 => bail!("function not found: '{name}'"),
+        1 => {
+            if let Some(func) = func_matches.first() {
+                display_func(func, sym, config, demangle_enabled)
+            } else {
+                display_public(public_matches[0], config, demangle_enabled)
             }
         }
-    } else {
-        match sym.find_function_by_name(name) {
-            Some(f) => f,
-            None => {
-                // Try fuzzy for helpful suggestions
-                let suggestions = sym.find_function_by_name_fuzzy(name);
-                if !suggestions.is_empty() {
-                    let mut msg = format!("function '{name}' not found. Similar names:\n");
-                    for f in suggestions.iter().take(10) {
-                        writeln!(msg, "  - {} (0x{:x})", maybe_demangle(&f.name, demangle_enabled), f.address).unwrap();
+        _ => {
+            // Multiple matches — report them
+            match config.format {
+                OutputFormat::Text => {
+                    let mut msg = format!("ambiguous function name '{name}'. Matches:\n");
+                    for (i, f) in func_matches.iter().enumerate().take(20) {
+                        writeln!(
+                            msg,
+                            "  {}. {} (FUNC, 0x{:x}, size: 0x{:x})",
+                            i + 1, maybe_demangle(&f.name, demangle_enabled), f.address, f.size
+                        ).unwrap();
+                    }
+                    let remaining = 20usize.saturating_sub(func_matches.len());
+                    for (i, p) in public_matches.iter().enumerate().take(remaining) {
+                        writeln!(
+                            msg,
+                            "  {}. {} (PUBLIC, 0x{:x})",
+                            func_matches.len() + i + 1, maybe_demangle(&p.name, demangle_enabled), p.address
+                        ).unwrap();
+                    }
+                    if total > 20 {
+                        writeln!(msg, "  ... and {} more", total - 20).unwrap();
                     }
                     bail!("{msg}");
                 }
-                bail!("function '{name}' not found");
+                OutputFormat::Json => {
+                    let output = format_fuzzy_matches_combined_json(
+                        name, &func_matches, &public_matches, demangle_enabled,
+                    );
+                    println!("{output}");
+                    std::process::exit(1);
+                }
             }
         }
-    };
+    }
+}
 
-    // Get the function's primary source file from first line record
+fn display_func(
+    func: &crate::symbols::breakpad::FuncRecord,
+    sym: &SymFile,
+    config: &Config,
+    demangle_enabled: bool,
+) -> Result<()> {
     let source_file = func
         .lines
         .first()
         .and_then(|lr| sym.files.get(lr.file_index).cloned());
-
     let demangled_name = maybe_demangle(&func.name, demangle_enabled);
 
     match config.format {
@@ -155,7 +222,34 @@ fn lookup_by_name(
             println!("{output}");
         }
     }
+    Ok(())
+}
 
+fn display_public(
+    public: &crate::symbols::breakpad::PublicRecord,
+    config: &Config,
+    demangle_enabled: bool,
+) -> Result<()> {
+    let demangled_name = maybe_demangle(&public.name, demangle_enabled);
+
+    match config.format {
+        OutputFormat::Text => {
+            let mut out = String::new();
+            writeln!(out, "{}", demangled_name).unwrap();
+            writeln!(out, "  Address: 0x{:08x}", public.address).unwrap();
+            writeln!(out, "  Type: PUBLIC").unwrap();
+            print!("{out}");
+        }
+        OutputFormat::Json => {
+            let output = JsonLookupFunction {
+                function: demangled_name,
+                function_address: format!("0x{:x}", public.address),
+                function_size: None,
+                source_file: None,
+            };
+            println!("{}", serde_json::to_string_pretty(&output).expect("JSON serialization should not fail"));
+        }
+    }
     Ok(())
 }
 
@@ -257,7 +351,8 @@ struct JsonInlineFrame {
 struct JsonLookupFunction {
     function: String,
     function_address: String,
-    function_size: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    function_size: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     source_file: Option<String>,
 }
@@ -279,7 +374,9 @@ struct JsonErrorDetail {
 struct JsonFuzzyMatch {
     name: String,
     address: String,
-    size: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<String>,
+    symbol_type: String,
 }
 
 fn format_offset_json(
@@ -324,12 +421,13 @@ fn format_function_json_demangled(
     let output = JsonLookupFunction {
         function: display_name.to_string(),
         function_address: format!("0x{:x}", func.address),
-        function_size: format!("0x{:x}", func.size),
+        function_size: Some(format!("0x{:x}", func.size)),
         source_file: source_file.map(|s| s.to_string()),
     };
     serde_json::to_string_pretty(&output).expect("JSON serialization should not fail")
 }
 
+#[cfg(test)]
 fn format_fuzzy_matches_json(
     name: &str,
     matches: &[&crate::symbols::breakpad::FuncRecord],
@@ -347,9 +445,45 @@ fn format_fuzzy_matches_json(
             .map(|f| JsonFuzzyMatch {
                 name: maybe_demangle(&f.name, demangle_enabled),
                 address: format!("0x{:x}", f.address),
-                size: format!("0x{:x}", f.size),
+                size: Some(format!("0x{:x}", f.size)),
+                symbol_type: "FUNC".to_string(),
             })
             .collect(),
+    };
+    serde_json::to_string_pretty(&output).expect("JSON serialization should not fail")
+}
+
+fn format_fuzzy_matches_combined_json(
+    name: &str,
+    func_matches: &[&crate::symbols::breakpad::FuncRecord],
+    public_matches: &[&crate::symbols::breakpad::PublicRecord],
+    demangle_enabled: bool,
+) -> String {
+    let total = func_matches.len() + public_matches.len();
+    let mut matches: Vec<JsonFuzzyMatch> = func_matches
+        .iter()
+        .take(20)
+        .map(|f| JsonFuzzyMatch {
+            name: maybe_demangle(&f.name, demangle_enabled),
+            address: format!("0x{:x}", f.address),
+            size: Some(format!("0x{:x}", f.size)),
+            symbol_type: "FUNC".to_string(),
+        })
+        .collect();
+    let remaining = 20usize.saturating_sub(matches.len());
+    matches.extend(public_matches.iter().take(remaining).map(|p| JsonFuzzyMatch {
+        name: maybe_demangle(&p.name, demangle_enabled),
+        address: format!("0x{:x}", p.address),
+        size: None,
+        symbol_type: "PUBLIC".to_string(),
+    }));
+    let output = JsonFuzzyError {
+        error: JsonErrorDetail {
+            code: "AMBIGUOUS_FUNCTION".to_string(),
+            message: format!("ambiguous function name '{name}'"),
+        },
+        total_matches: total,
+        matches,
     };
     serde_json::to_string_pretty(&output).expect("JSON serialization should not fail")
 }
@@ -501,6 +635,60 @@ PUBLIC 4000 0 _AnotherPublic
         assert_eq!(v["total_matches"], 2);
         let matches = v["matches"].as_array().unwrap();
         assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0]["symbol_type"], "FUNC");
+    }
+
+    #[test]
+    fn test_public_lookup_text() {
+        let sym = SymFile::parse(Cursor::new(make_test_sym())).unwrap();
+        let public = sym.find_public_by_name("_PublicSymbol").unwrap();
+        let mut out = String::new();
+        writeln!(out, "{}", public.name).unwrap();
+        writeln!(out, "  Address: 0x{:08x}", public.address).unwrap();
+        writeln!(out, "  Type: PUBLIC").unwrap();
+        assert!(out.contains("_PublicSymbol"));
+        assert!(out.contains("Address: 0x00003000"));
+        assert!(out.contains("Type: PUBLIC"));
+    }
+
+    #[test]
+    fn test_public_lookup_json() {
+        let sym = SymFile::parse(Cursor::new(make_test_sym())).unwrap();
+        let public = sym.find_public_by_name("_PublicSymbol").unwrap();
+        let output = JsonLookupFunction {
+            function: public.name.clone(),
+            function_address: format!("0x{:x}", public.address),
+            function_size: None,
+            source_file: None,
+        };
+        let json_str = serde_json::to_string_pretty(&output).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(v["function"], "_PublicSymbol");
+        assert_eq!(v["function_address"], "0x3000");
+        assert!(v["function_size"].is_null());
+    }
+
+    #[test]
+    fn test_fuzzy_combined_json() {
+        let sym = SymFile::parse(Cursor::new(make_test_sym())).unwrap();
+        let func_matches = sym.find_function_by_name_fuzzy("Function");
+        let public_matches: Vec<&crate::symbols::breakpad::PublicRecord> = sym.publics
+            .iter()
+            .filter(|p| p.name.contains("Public"))
+            .collect();
+        let json_str = format_fuzzy_matches_combined_json(
+            "Function", &func_matches, &public_matches, false,
+        );
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        assert_eq!(v["total_matches"], 4); // 2 FUNC + 2 PUBLIC
+        let matches = v["matches"].as_array().unwrap();
+        assert_eq!(matches[0]["symbol_type"], "FUNC");
+        assert!(matches[0]["size"].is_string());
+        // PUBLIC matches follow FUNC matches
+        let public_match = matches.iter().find(|m| m["symbol_type"] == "PUBLIC").unwrap();
+        assert!(public_match["size"].is_null());
     }
 
     #[test]
