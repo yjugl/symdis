@@ -18,6 +18,12 @@ use commands::Cli;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let checker = moz_cli_version_check::VersionChecker::new(
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION"),
+    );
+    checker.check_async();
+
     let cli = Cli::parse();
 
     let level = match cli.verbose {
@@ -32,5 +38,7 @@ async fn main() -> Result<()> {
         .without_time()
         .init();
 
-    commands::run(cli).await
+    let result = commands::run(cli).await;
+    checker.print_warning();
+    result
 }

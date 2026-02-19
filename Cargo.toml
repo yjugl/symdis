@@ -38,6 +38,7 @@ backhand = { version = "0.24", default-features = false, features = ["xz", "lzo"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 pdb = "0.8"
 msvc-demangler = "0.10"
+moz-cli-version-check = "0.2"
 
 [profile.release]
 strip = true

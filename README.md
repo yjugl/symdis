@@ -229,6 +229,10 @@ offline = false
 | `DEBUGINFOD_URLS` | Space-separated debuginfod server URLs |
 | `_NT_SYMBOL_PATH` | Windows symbol path (used for cache directory resolution) |
 
+## Update Check
+
+On each run, symdis checks [crates.io](https://crates.io/crates/symdis) in the background for a newer version. If one is found, a notice is printed to stderr after the command completes. The check is cached for 24 hours and can be disabled by setting `MOZTOOLS_UPDATE_CHECK=0`.
+
 ## Cache
 
 Downloaded symbol files and binaries are cached locally. The cache directory is resolved in this order:

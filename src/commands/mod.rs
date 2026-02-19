@@ -549,7 +549,12 @@ TIPS:
         lookup   Resolve offset → symbol or symbol → address (sym file only)\n  \
         info     Show module metadata (sym file availability, function count)\n  \
         fetch    Pre-fetch symbols and binary into cache\n  \
-        cache    Manage the local cache (path, size, clear, list)"
+        cache    Manage the local cache (path, size, clear, list)\n\n\
+        Update check:\n  \
+        On each run, symdis checks crates.io in the background for a newer\n  \
+        version. If one is found, a notice is printed to stderr after the\n  \
+        command completes. The check is cached for 24 hours and can be\n  \
+        disabled by setting MOZTOOLS_UPDATE_CHECK=0."
 )]
 pub struct Cli {
     #[command(subcommand)]
