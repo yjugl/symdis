@@ -8,11 +8,13 @@ Designed primarily for use by AI agents analyzing [Socorro/Crash Stats](https://
 
 - **Fetch symbols and binaries** from Mozilla's [Tecken](https://symbols.mozilla.org/) symbol server, Microsoft's public symbol server, [debuginfod](https://sourceware.org/elfutils/Debuginfod.html) servers, the [Snap Store](https://snapcraft.io/) (Ubuntu snaps), and Mozilla's FTP archive — with automatic CAB decompression, `.tar.xz` extraction, `.pkg` (XAR/cpio) extraction, and `.apk` (ZIP) extraction
 - **Not limited to Mozilla modules**: Mozilla's crash infrastructure generates `.sym` files from Microsoft PDBs for all modules seen in crash stacks, so Windows system DLLs (ntdll, kernel32, kernelbase, etc.) are fully supported. Other third-party modules may also have symbols available
-- **Windows, Linux, macOS, and Android** module support: PE (via section table), ELF (via PT_LOAD segments), and Mach-O (including fat/universal binaries) binary formats; Android support for Fenix (Firefox for Android) and Focus (Firefox Focus) via APK extraction
-- **Find functions** by exact name, substring match (`--fuzzy`), or by RVA/offset
-- **Disassemble** x86, x86-64, ARM32, and AArch64 code via [Capstone](https://www.capstone-engine.org/)
-- **Annotate** instructions with source file/line, resolved call targets (FUNC/PUBLIC/IAT/PLT/dylib imports), and inline function boundaries
-- **Demangle** C++ (Itanium ABI) and Rust symbol names automatically (`--no-demangle` to disable)
+- **PDB support**: fetch and parse PDB files directly from Microsoft's symbol server or Tecken (`--pdb` flag); auto-fallback when `.sym` is unavailable for Windows modules; inline frames, srcsrv VCS paths, MSVC-demangled function signatures
+- **Windows, Linux, macOS, and Android** module support: PE (via section table), ELF (via PT_LOAD segments), and Mach-O (including fat/universal binaries) binary formats; Android support for Fenix (Firefox for Android) and Focus (Firefox Focus) via APK extraction; Windows kernel drivers (`.sys` files) supported with PDB auto-fallback
+- **Find functions** by exact name, substring match (`--fuzzy`), or by RVA/offset; searches FUNC records, PUBLIC symbols (with demangling), and binary exports
+- **Disassemble** x86, x86-64, ARM32, and AArch64 code via [Capstone](https://www.capstone-engine.org/); ARM32 Thumb-2 mode auto-detected from ELF symbol metadata
+- **Annotate** instructions with source file/line, resolved call targets (FUNC/PUBLIC/IAT/PLT/GOT/dylib imports), and inline function boundaries
+- **Resolve indirect calls**: IAT imports on x86/x86-64, PLT stubs on ARM/AArch64 ELF, `__stubs` entries on Mach-O, GOT slots on Linux ELF, and AArch64 ADRP+LDR+BLR/BR sequences across all platforms
+- **Demangle** C++ (Itanium ABI), Rust, and MSVC (`?Name@...`) symbol names automatically (`--no-demangle` to disable)
 - **Highlight** a specific offset (e.g., a crash address) in the output
 - **Graceful degradation**: binary+sym gives full annotated disassembly; binary-only gives raw disassembly; sym-only gives function metadata
 - **Text and JSON** output formats (`--format text|json`)
@@ -173,6 +175,121 @@ Output is abbreviated — the tool prints all instructions in the function.
 | `info` | Show module metadata |
 | `fetch` | Pre-fetch symbols and binary for a module |
 | `cache` | Manage the local cache (`path`, `size`, `clear`, `list`) |
+
+Run `symdis <command> --help` for full documentation, crash report field mappings, and more examples.
+
+### disasm
+
+The primary command. See the [Quick Start](#quick-start) section above for common examples. Additional examples:
+
+```bash
+# Non-Mozilla module (Windows system DLL):
+symdis disasm \
+    --debug-file ntdll.pdb \
+    --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
+    --code-file ntdll.dll --code-id 5b6dddee267000 \
+    --function NtCreateFile
+
+# Windows kernel driver (PDB auto-fallback, .pdata function bounds):
+symdis disasm \
+    --debug-file win32kfull.pdb \
+    --debug-id 874E89B5C0960A8CE25E012F602168591 \
+    --code-file win32kfull.sys --code-id 73E41EF8412000 \
+    --function xxxResolveDesktop
+
+# Fenix (Firefox for Android) — MUST use --product fenix:
+symdis disasm \
+    --debug-file libxul.so \
+    --debug-id 9E915B1A91D7345C4FF0753CF13E53280 \
+    --code-file libxul.so \
+    --code-id 1a5b919ed7915c344ff0753cf13e532814635a84 \
+    --product fenix \
+    --version 147.0.3 --channel release \
+    --offset 0x03fc39d4 --highlight-offset 0x03fc39d4
+
+# Use PDB for richer symbol data (Windows modules only):
+symdis disasm \
+    --debug-file ntdll.pdb \
+    --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
+    --code-file ntdll.dll --code-id 5b6dddee267000 \
+    --function NtCreateFile --pdb
+```
+
+### lookup
+
+Resolves offsets to symbols or symbols to addresses using the `.sym` file only (no binary needed). Searches both FUNC and PUBLIC symbols.
+
+```bash
+# Resolve an offset to a symbol name:
+symdis lookup \
+    --debug-file xul.pdb \
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --offset 0x0144c8d2
+
+# Find a function's address by name (substring match):
+symdis lookup \
+    --debug-file xul.pdb \
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --function ProcessIncomingMessages --fuzzy
+```
+
+### info
+
+Shows module metadata: OS, architecture, function count, and whether sym/binary files are available.
+
+```bash
+# Check module metadata and sym/binary availability:
+symdis info \
+    --debug-file xul.pdb \
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --code-file xul.dll --code-id 68d1a3cd87be000
+
+# JSON output:
+symdis info \
+    --debug-file xul.pdb \
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --code-file xul.dll --code-id 68d1a3cd87be000 \
+    --format json
+```
+
+### fetch
+
+Pre-fetches sym and binary into the local cache so subsequent `disasm` calls are instant.
+
+```bash
+# Pre-fetch a Windows module:
+symdis fetch \
+    --debug-file xul.pdb \
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --code-file xul.dll --code-id 68d1a3cd87be000
+
+# Pre-fetch a Linux module with FTP archive fallback:
+symdis fetch \
+    --debug-file libxul.so \
+    --debug-id 669D6B010E4BF04FF9B3F43CCF735A340 \
+    --code-file libxul.so \
+    --code-id 016b9d664b0e4ff0f9b3f43ccf735a3482db0fd6 \
+    --version 147.0.3 --channel release
+
+# Pre-fetch including PDB file:
+symdis fetch \
+    --debug-file ntdll.pdb \
+    --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
+    --code-file ntdll.dll --code-id 5b6dddee267000 \
+    --pdb
+```
+
+### cache
+
+Manage the local cache.
+
+```bash
+symdis cache path                             # Print cache directory path
+symdis cache size                             # Show total cache size
+symdis cache clear                            # Delete all cached files
+symdis cache clear --older-than 30            # Delete files older than 30 days
+symdis cache list --debug-file xul.pdb        # List cached artifacts for a module
+```
 
 ## Global Options
 

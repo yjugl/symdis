@@ -402,6 +402,14 @@ const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   to the containing function name, or a function name to its address and
   size. Useful for quick symbol lookups without full disassembly.
 
+  When looking up by --function, the search order is:
+    1. FUNC records (exact name match)
+    2. PUBLIC symbols (exact raw name, then demangled name match)
+    3. If no match, suggestions from both FUNC and PUBLIC (fuzzy)
+
+  With --fuzzy, both FUNC and PUBLIC symbols are searched by substring
+  match (against raw and demangled names).
+
 EXAMPLES:
 
   # Resolve an offset to a symbol name:
@@ -513,9 +521,15 @@ const INFO_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   module.debug_id        --debug-id      Required. 33-char hex string
   module.filename        --code-file     Optional. For binary availability
   module.code_id         --code-id       Optional. For binary availability
+  (from release info)    --version       E.g. "128.0.3". FTP fallback
+  (from release info)    --channel       release|beta|esr|nightly|aurora|default
+  (from release info)    --build-id      14-digit timestamp (nightly only)
+  (from product name)    --product       firefox|thunderbird|fenix|focus (default: firefox)
 
   Shows module metadata from the .sym file: module name, debug ID, OS,
   architecture, function count, and whether the binary is available.
+  Binary availability is checked using the same fetch chain as disasm
+  (Tecken → Microsoft → debuginfod → FTP archive).
 
 EXAMPLES:
 
@@ -525,10 +539,33 @@ EXAMPLES:
       --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
       --code-file xul.dll --code-id 68d1a3cd87be000
 
+  # Check a non-Mozilla module (Windows system DLL):
+  symdis info \
+      --debug-file ntdll.pdb \
+      --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
+      --code-file ntdll.dll --code-id 5b6dddee267000
+
+  # Check a Linux module with FTP archive fallback:
+  symdis info \
+      --debug-file libxul.so \
+      --debug-id 669D6B010E4BF04FF9B3F43CCF735A340 \
+      --code-file libxul.so \
+      --code-id 016b9d664b0e4ff0f9b3f43ccf735a3482db0fd6 \
+      --version 147.0.3 --channel release
+
+  # JSON output:
+  symdis info \
+      --debug-file xul.pdb \
+      --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+      --code-file xul.dll --code-id 68d1a3cd87be000 \
+      --format json
+
 TIPS:
 
   - Run 'symdis info' before 'symdis disasm' to check whether the sym
-    file and binary are available before attempting full disassembly."#;
+    file and binary are available before attempting full disassembly.
+  - Provide --code-file and --code-id for accurate binary availability.
+  - Use --version and --channel to check FTP archive fallback availability."#;
 
 #[derive(Parser)]
 #[command(
@@ -734,8 +771,9 @@ pub struct InfoArgs {
     #[arg(long)]
     pub build_id: Option<String>,
 
-    /// Mozilla product: firefox (default), thunderbird, or fenix.
-    /// For Android/Fenix crashes, you MUST specify --product fenix.
+    /// Mozilla product: firefox (default), thunderbird, fenix, or focus.
+    /// For Android crashes, you MUST specify --product fenix or --product focus.
+    /// It cannot be auto-detected (Android .sym files report OS as "Linux").
     #[arg(long, default_value = "firefox")]
     pub product: String,
 }
@@ -775,8 +813,9 @@ pub struct FetchArgs {
     #[arg(long)]
     pub snap: Option<String>,
 
-    /// Mozilla product: firefox (default), thunderbird, or fenix.
-    /// For Android/Fenix crashes, you MUST specify --product fenix.
+    /// Mozilla product: firefox (default), thunderbird, fenix, or focus.
+    /// For Android crashes, you MUST specify --product fenix or --product focus.
+    /// It cannot be auto-detected (Android .sym files report OS as "Linux").
     #[arg(long, default_value = "firefox")]
     pub product: String,
 
@@ -786,7 +825,28 @@ pub struct FetchArgs {
     pub pdb: bool,
 }
 
+const CACHE_LONG_HELP: &str = r#"EXAMPLES:
+
+  # Print the cache directory path:
+  symdis cache path
+
+  # Show total cache size:
+  symdis cache size
+
+  # Delete all cached files:
+  symdis cache clear
+
+  # Delete cached files older than 30 days:
+  symdis cache clear --older-than 30
+
+  # List cached artifacts for a specific module:
+  symdis cache list --debug-file xul.pdb
+
+  # List cached artifacts for a Linux module:
+  symdis cache list --debug-file libxul.so"#;
+
 #[derive(Parser)]
+#[command(after_long_help = CACHE_LONG_HELP)]
 pub struct CacheArgs {
     #[command(subcommand)]
     pub action: CacheAction,
