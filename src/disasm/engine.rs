@@ -3,8 +3,8 @@
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 use anyhow::Result;
-use capstone::prelude::*;
 use capstone::arch::x86::{X86OperandType, X86Reg};
+use capstone::prelude::*;
 use tracing::info;
 
 use crate::binary::CpuArch;
@@ -87,14 +87,12 @@ impl Disassembler {
                     .build()
                     .map_err(|e| anyhow::anyhow!("capstone init: {e}"))?
             }
-            CpuArch::Arm64 => {
-                Capstone::new()
-                    .arm64()
-                    .mode(arch::arm64::ArchMode::Arm)
-                    .detail(true)
-                    .build()
-                    .map_err(|e| anyhow::anyhow!("capstone init: {e}"))?
-            }
+            CpuArch::Arm64 => Capstone::new()
+                .arm64()
+                .mode(arch::arm64::ArchMode::Arm)
+                .detail(true)
+                .build()
+                .map_err(|e| anyhow::anyhow!("capstone init: {e}"))?,
         };
 
         Ok(Self { cs, arch })
@@ -216,7 +214,10 @@ impl Disassembler {
 
         // For direct calls, try to parse the target address from the operand
         // ARM/ARM64 use '#' prefix for immediates (e.g. "bl #0x1234")
-        let target_str = operands.trim().trim_start_matches('#').trim_start_matches("0x");
+        let target_str = operands
+            .trim()
+            .trim_start_matches('#')
+            .trim_start_matches("0x");
         if let Ok(target) = u64::from_str_radix(target_str, 16) {
             return (Some(target), false, None);
         }
@@ -325,9 +326,10 @@ fn parse_ldr_operands(operands: &str) -> Option<(u8, u8, i64)> {
 /// system instructions).
 fn writes_to_xreg(mnemonic: &str, operands: &str, reg: u8) -> bool {
     // Branches
-    if matches!(mnemonic, "b" | "bl" | "br" | "blr" | "ret"
-        | "cbz" | "cbnz" | "tbz" | "tbnz")
-        || mnemonic.starts_with("b.")
+    if matches!(
+        mnemonic,
+        "b" | "bl" | "br" | "blr" | "ret" | "cbz" | "cbnz" | "tbz" | "tbnz"
+    ) || mnemonic.starts_with("b.")
     {
         return false;
     }
@@ -386,7 +388,11 @@ fn resolve_aarch64_indirect(instructions: &mut [Instruction]) {
                     }
                 }
             }
-            if writes_to_xreg(&instructions[j].mnemonic, &instructions[j].operands, blr_reg) {
+            if writes_to_xreg(
+                &instructions[j].mnemonic,
+                &instructions[j].operands,
+                blr_reg,
+            ) {
                 break;
             }
         }
@@ -407,7 +413,11 @@ fn resolve_aarch64_indirect(instructions: &mut [Instruction]) {
                     }
                 }
             }
-            if writes_to_xreg(&instructions[j].mnemonic, &instructions[j].operands, ldr_base) {
+            if writes_to_xreg(
+                &instructions[j].mnemonic,
+                &instructions[j].operands,
+                ldr_base,
+            ) {
                 break;
             }
         }
@@ -529,7 +539,9 @@ mod tests {
         // call dword ptr [0x10005000] with image_base 0x10000000:
         // slot_rva = 0x10005000 - 0x10000000 = 0x5000
         let code = [0xff, 0x15, 0x00, 0x50, 0x00, 0x10];
-        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0x10000000).unwrap();
+        let (insns, _) = disasm
+            .disassemble(&code, 0x1000, 100, None, 0x10000000)
+            .unwrap();
 
         assert_eq!(insns.len(), 1);
         assert_eq!(insns[0].mnemonic, "call");
@@ -545,7 +557,9 @@ mod tests {
         // call dword ptr [0x80001234] with image_base 0x10000000:
         // slot_rva = 0x80001234 - 0x10000000 = 0x70001234
         let code = [0xff, 0x15, 0x34, 0x12, 0x00, 0x80];
-        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0x10000000).unwrap();
+        let (insns, _) = disasm
+            .disassemble(&code, 0x1000, 100, None, 0x10000000)
+            .unwrap();
 
         assert_eq!(insns.len(), 1);
         assert!(insns[0].is_indirect_call);
@@ -558,7 +572,9 @@ mod tests {
         let disasm = Disassembler::new(CpuArch::X86, Syntax::Intel, false).unwrap();
         // FF 10 = call dword ptr [eax]
         let code = [0xff, 0x10];
-        let (insns, _) = disasm.disassemble(&code, 0x1000, 100, None, 0x10000000).unwrap();
+        let (insns, _) = disasm
+            .disassemble(&code, 0x1000, 100, None, 0x10000000)
+            .unwrap();
 
         assert_eq!(insns.len(), 1);
         assert!(insns[0].is_indirect_call);
@@ -718,8 +734,14 @@ mod tests {
 
     #[test]
     fn test_parse_ldr_operands() {
-        assert_eq!(parse_ldr_operands("x16, [x16, #0x10]"), Some((16, 16, 0x10)));
-        assert_eq!(parse_ldr_operands("x16, [x17, #0x20]"), Some((16, 17, 0x20)));
+        assert_eq!(
+            parse_ldr_operands("x16, [x16, #0x10]"),
+            Some((16, 16, 0x10))
+        );
+        assert_eq!(
+            parse_ldr_operands("x16, [x17, #0x20]"),
+            Some((16, 17, 0x20))
+        );
         assert_eq!(parse_ldr_operands("x16, [x16]"), Some((16, 16, 0)));
         assert_eq!(parse_ldr_operands("x0, [x1, #0x8]"), Some((0, 1, 0x8)));
     }
@@ -812,9 +834,7 @@ mod tests {
     #[test]
     fn test_aarch64_blr_at_start_no_crash() {
         // BLR as the first instruction — should not crash
-        let mut insns = vec![
-            make_arm64_insn(0x1000, "blr", "x16"),
-        ];
+        let mut insns = vec![make_arm64_insn(0x1000, "blr", "x16")];
         resolve_aarch64_indirect(&mut insns);
         assert_eq!(insns[0].indirect_mem_addr, None);
     }

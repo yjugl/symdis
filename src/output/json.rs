@@ -170,7 +170,10 @@ pub fn format_json(
     let output = JsonDisasmOutput {
         module: JsonModule::from_info(module),
         function: JsonFunction::from_info(function),
-        instructions: instructions.iter().map(JsonInstruction::from_annotated).collect(),
+        instructions: instructions
+            .iter()
+            .map(JsonInstruction::from_annotated)
+            .collect(),
         source: data_source.to_string(),
         warnings: warnings.to_vec(),
     };
@@ -316,7 +319,13 @@ mod tests {
         let function = make_function_info();
         let instructions = make_annotated_instructions();
 
-        let json_str = format_json(&module, &function, &instructions, &DataSource::BinaryAndSym, &[]);
+        let json_str = format_json(
+            &module,
+            &function,
+            &instructions,
+            &DataSource::BinaryAndSym,
+            &[],
+        );
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         // Top-level fields
@@ -354,7 +363,13 @@ mod tests {
         let function = make_function_info();
         let instructions = make_annotated_instructions();
 
-        let json_str = format_json(&module, &function, &instructions, &DataSource::BinaryAndSym, &[]);
+        let json_str = format_json(
+            &module,
+            &function,
+            &instructions,
+            &DataSource::BinaryAndSym,
+            &[],
+        );
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         // Function addresses are hex strings
@@ -372,7 +387,13 @@ mod tests {
         let function = make_function_info();
         let instructions = make_annotated_instructions();
 
-        let json_str = format_json(&module, &function, &instructions, &DataSource::BinaryAndSym, &[]);
+        let json_str = format_json(
+            &module,
+            &function,
+            &instructions,
+            &DataSource::BinaryAndSym,
+            &[],
+        );
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         // Bytes are hex-encoded strings
@@ -412,7 +433,13 @@ mod tests {
             highlighted: false,
         }];
 
-        let json_str = format_json(&module, &function, &instructions, &DataSource::BinaryOnly, &[]);
+        let json_str = format_json(
+            &module,
+            &function,
+            &instructions,
+            &DataSource::BinaryOnly,
+            &[],
+        );
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         // None fields should be absent
@@ -444,7 +471,7 @@ mod tests {
 
     #[test]
     fn test_json_sym_only_enriched() {
-        use crate::output::text::{SymOnlyData, SymOnlyLine, SymOnlyInline};
+        use crate::output::text::{SymOnlyData, SymOnlyInline, SymOnlyLine};
 
         let module = make_module_info();
         let function = make_function_info();
@@ -472,13 +499,16 @@ mod tests {
                 call_file: Some("src/helper.h".to_string()),
                 call_line: 40,
             }],
-            source_files: vec![
-                "src/main.cpp".to_string(),
-                "src/helper.h".to_string(),
-            ],
+            source_files: vec!["src/main.cpp".to_string(), "src/helper.h".to_string()],
         };
 
-        let json_str = format_json_sym_only(&module, &function, Some(&sym_data), &DataSource::SymOnly, &[]);
+        let json_str = format_json_sym_only(
+            &module,
+            &function,
+            Some(&sym_data),
+            &DataSource::SymOnly,
+            &[],
+        );
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         assert_eq!(v["source"], "sym");

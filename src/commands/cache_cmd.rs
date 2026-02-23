@@ -61,8 +61,8 @@ pub fn run(args: CacheArgs, config: &Config) -> Result<()> {
 fn walk_size(dir: &Path) -> Result<(u64, usize)> {
     let mut total: u64 = 0;
     let mut count: usize = 0;
-    let entries = std::fs::read_dir(dir)
-        .with_context(|| format!("reading directory: {}", dir.display()))?;
+    let entries =
+        std::fs::read_dir(dir).with_context(|| format!("reading directory: {}", dir.display()))?;
     for entry in entries {
         let entry = entry?;
         let ft = entry.file_type()?;
@@ -80,9 +80,8 @@ fn walk_size(dir: &Path) -> Result<(u64, usize)> {
 
 /// Delete cached files, optionally filtering by age.
 fn clear_cache(root: &Path, older_than_days: Option<u64>) -> Result<usize> {
-    let cutoff = older_than_days.map(|days| {
-        SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60)
-    });
+    let cutoff =
+        older_than_days.map(|days| SystemTime::now() - Duration::from_secs(days * 24 * 60 * 60));
     let mut removed = 0;
     remove_files_recursive(root, cutoff, &mut removed)?;
     // Clean up empty directories after removing files
@@ -96,8 +95,8 @@ fn remove_files_recursive(
     cutoff: Option<SystemTime>,
     removed: &mut usize,
 ) -> Result<()> {
-    let entries = std::fs::read_dir(dir)
-        .with_context(|| format!("reading directory: {}", dir.display()))?;
+    let entries =
+        std::fs::read_dir(dir).with_context(|| format!("reading directory: {}", dir.display()))?;
     for entry in entries {
         let entry = entry?;
         let ft = entry.file_type()?;
@@ -106,7 +105,10 @@ fn remove_files_recursive(
         } else if ft.is_file() {
             let should_remove = match cutoff {
                 Some(cutoff_time) => {
-                    let modified = entry.metadata()?.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                    let modified = entry
+                        .metadata()?
+                        .modified()
+                        .unwrap_or(SystemTime::UNIX_EPOCH);
                     modified < cutoff_time
                 }
                 None => true,
@@ -170,7 +172,11 @@ fn list_module(module_dir: &Path, debug_file: &str) -> Result<String> {
         file_entries.sort_by_key(|e| e.file_name());
 
         for file_entry in &file_entries {
-            if !file_entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+            if !file_entry
+                .file_type()
+                .map(|ft| ft.is_file())
+                .unwrap_or(false)
+            {
                 continue;
             }
             let fname = file_entry.file_name();

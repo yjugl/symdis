@@ -5,7 +5,7 @@
 use reqwest::Client;
 use tracing::debug;
 
-use super::{FetchResult, compress_filename, decompress_cab};
+use super::{compress_filename, decompress_cab, FetchResult};
 
 pub const DEFAULT_MS_SYMBOL_SERVER: &str = "https://msdl.microsoft.com/download/symbols";
 
@@ -33,12 +33,10 @@ pub async fn fetch_pdb(
     let url = format!("{base}/{pdb_name}/{debug_id}/{compressed_name}");
     debug!("Microsoft PDB compressed URL: {url}");
     match fetch_url(client, &url).await {
-        FetchResult::Ok(data) => {
-            match decompress_cab(&data) {
-                Ok(decompressed) => FetchResult::Ok(decompressed),
-                Err(e) => FetchResult::Error(format!("CAB decompression failed: {e}")),
-            }
-        }
+        FetchResult::Ok(data) => match decompress_cab(&data) {
+            Ok(decompressed) => FetchResult::Ok(decompressed),
+            Err(e) => FetchResult::Error(format!("CAB decompression failed: {e}")),
+        },
         FetchResult::NotFound => FetchResult::NotFound,
         FetchResult::Error(e) => FetchResult::Error(e),
     }

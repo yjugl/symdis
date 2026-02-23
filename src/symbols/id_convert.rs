@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 
 /// Convert a Linux ELF build ID to a standard Breakpad debug ID (33 chars).
 ///
@@ -18,7 +18,10 @@ use anyhow::{Result, bail};
 /// Age is always 0 for Linux.
 pub fn build_id_to_debug_id(build_id: &str) -> Result<String> {
     if build_id.len() < 32 {
-        bail!("build ID too short: expected at least 32 hex chars, got {}", build_id.len());
+        bail!(
+            "build ID too short: expected at least 32 hex chars, got {}",
+            build_id.len()
+        );
     }
 
     let guid_part = &build_id[..32];

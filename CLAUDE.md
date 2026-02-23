@@ -18,6 +18,7 @@ cargo run -- disasm --help           # Run CLI with args
 Always run these before proposing a commit:
 
 ```bash
+cargo fmt                            # Format all code
 cargo clippy -- -D warnings          # Must pass with zero warnings
 cargo test                           # All tests must pass
 ```

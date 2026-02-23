@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{Result, Context, bail};
+use anyhow::{bail, Context, Result};
 use goblin::pe::PE;
 
 use super::{BinaryFile, CpuArch};
@@ -32,8 +32,8 @@ struct SectionInfo {
 impl PeFile {
     /// Load and parse a PE file.
     pub fn load(path: &Path) -> Result<Self> {
-        let data = std::fs::read(path)
-            .with_context(|| format!("reading PE file: {}", path.display()))?;
+        let data =
+            std::fs::read(path).with_context(|| format!("reading PE file: {}", path.display()))?;
         Self::from_bytes(data)
     }
 
@@ -108,7 +108,9 @@ impl PeFile {
     /// Returns (begin_rva, end_rva) if found.
     pub fn find_pdata_bounds(&self, rva: u64) -> Option<(u64, u64)> {
         let rva32 = u32::try_from(rva).ok()?;
-        let idx = self.pdata_entries.partition_point(|&(begin, _)| begin <= rva32);
+        let idx = self
+            .pdata_entries
+            .partition_point(|&(begin, _)| begin <= rva32);
         if idx == 0 {
             return None;
         }
@@ -184,7 +186,9 @@ impl BinaryFile for PeFile {
             return None;
         }
         let value = if ptr_size == 4 {
-            u64::from(u32::from_le_bytes(self.data[offset..offset + 4].try_into().ok()?))
+            u64::from(u32::from_le_bytes(
+                self.data[offset..offset + 4].try_into().ok()?,
+            ))
         } else {
             u64::from_le_bytes(self.data[offset..offset + 8].try_into().ok()?)
         };
@@ -242,11 +246,7 @@ mod tests {
             exports_list: Vec::new(),
             imports_map: HashMap::new(),
             sections: Vec::new(),
-            pdata_entries: vec![
-                (0x1000, 0x1100),
-                (0x2000, 0x2200),
-                (0x3000, 0x3050),
-            ],
+            pdata_entries: vec![(0x1000, 0x1100), (0x2000, 0x2200), (0x3000, 0x3050)],
         };
 
         // Exact start of function

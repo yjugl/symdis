@@ -5,12 +5,10 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{Result, Context, bail};
+use anyhow::{bail, Context, Result};
 use pdb::FallibleIterator;
 
-use super::breakpad::{
-    FuncRecord, InlineRecord, LineRecord, ModuleRecord, PublicRecord, SymFile,
-};
+use super::breakpad::{FuncRecord, InlineRecord, LineRecord, ModuleRecord, PublicRecord, SymFile};
 
 /// Extract code ranges from an InlineSiteSymbol's binary annotations.
 ///
@@ -93,7 +91,9 @@ fn extract_inline_ranges(
             None => {
                 // Infer length from distance to next emission
                 if i + 1 < emissions.len() {
-                    emissions[i + 1].offset.offset
+                    emissions[i + 1]
+                        .offset
+                        .offset
                         .saturating_sub(emissions[i].offset.offset)
                 } else {
                     continue; // Skip last record with unknown length
@@ -245,7 +245,11 @@ fn extract_vcs_prefix(url: &str) -> Option<String> {
     if host_and_path.starts_with("github.com/") {
         let path_parts: Vec<&str> = host_and_path.splitn(4, '/').collect();
         if path_parts.len() >= 3 {
-            return Some(format!("git:{}/{}", path_parts[0], path_parts[1..3].join("/")));
+            return Some(format!(
+                "git:{}/{}",
+                path_parts[0],
+                path_parts[1..3].join("/")
+            ));
         }
     }
 
@@ -260,12 +264,12 @@ fn extract_vcs_prefix(url: &str) -> Option<String> {
 pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFile> {
     let file = std::fs::File::open(path)
         .with_context(|| format!("opening PDB file: {}", path.display()))?;
-    let mut pdb = pdb::PDB::open(file)
-        .context("parsing PDB file")?;
+    let mut pdb = pdb::PDB::open(file).context("parsing PDB file")?;
 
     // 1. Machine type → architecture string
     let arch = {
-        let dbi = pdb.debug_information()
+        let dbi = pdb
+            .debug_information()
             .context("reading PDB debug information")?;
         match dbi.machine_type() {
             Ok(pdb::MachineType::Amd64) => "x86_64",
@@ -278,8 +282,7 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
     };
 
     // 2. Address map for section:offset → RVA conversion
-    let address_map = pdb.address_map()
-        .context("reading PDB address map")?;
+    let address_map = pdb.address_map().context("reading PDB address map")?;
 
     // 3. String table (needed for file name resolution in line programs).
     // Some PDBs (especially newer Windows kernel modules) lack a string table;
@@ -289,8 +292,7 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
     // 4. Public symbols
     let mut publics: Vec<PublicRecord> = Vec::new();
     {
-        let global_symbols = pdb.global_symbols()
-            .context("reading PDB global symbols")?;
+        let global_symbols = pdb.global_symbols().context("reading PDB global symbols")?;
         let mut iter = global_symbols.iter();
         while let Some(symbol) = iter.next().context("iterating global symbols")? {
             if let Ok(pdb::SymbolData::Public(data)) = symbol.parse() {
@@ -343,10 +345,10 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
     let mut origin_intern: HashMap<String, usize> = HashMap::new();
     let mut functions: Vec<FuncRecord> = Vec::new();
 
-    let dbi = pdb.debug_information()
+    let dbi = pdb
+        .debug_information()
         .context("reading PDB debug information (modules)")?;
-    let mut modules = dbi.modules()
-        .context("reading PDB modules")?;
+    let mut modules = dbi.modules().context("reading PDB modules")?;
 
     // Suppress panic messages from the `pdb` crate during module processing.
     // Some PDB modules trigger assertion failures that we catch and skip.
@@ -367,8 +369,8 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
             // Scope stack for tracking Procedure → InlineSite nesting.
             struct ScopeEntry {
                 end_offset: u32,
-                depth: i32,        // -1 for Procedure, 0+ for InlineSite
-                func_idx: usize,   // index into module_procs
+                depth: i32,      // -1 for Procedure, 0+ for InlineSite
+                func_idx: usize, // index into module_procs
                 proc_offset: pdb::PdbInternalSectionOffset,
             }
 
@@ -382,7 +384,10 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
                     let sym_offset = symbol.index().0;
 
                     // Pop expired scopes
-                    while scope_stack.last().is_some_and(|s| sym_offset >= s.end_offset) {
+                    while scope_stack
+                        .last()
+                        .is_some_and(|s| sym_offset >= s.end_offset)
+                    {
                         scope_stack.pop();
                     }
 
@@ -425,20 +430,17 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
                                 let name = inlinee_names
                                     .get(&site.inlinee.0)
                                     .cloned()
-                                    .unwrap_or_else(|| {
-                                        format!("<inline #{}>", site.inlinee.0)
-                                    });
+                                    .unwrap_or_else(|| format!("<inline #{}>", site.inlinee.0));
 
                                 // Intern the origin name
-                                let origin_idx =
-                                    if let Some(&idx) = origin_intern.get(&name) {
-                                        idx
-                                    } else {
-                                        let idx = inline_origins.len();
-                                        inline_origins.push(name.clone());
-                                        origin_intern.insert(name, idx);
-                                        idx
-                                    };
+                                let origin_idx = if let Some(&idx) = origin_intern.get(&name) {
+                                    idx
+                                } else {
+                                    let idx = inline_origins.len();
+                                    inline_origins.push(name.clone());
+                                    origin_intern.insert(name, idx);
+                                    idx
+                                };
 
                                 // Extract code ranges from binary annotations
                                 let ranges = extract_inline_ranges(
@@ -496,9 +498,7 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
 
                     // Resolve file name, mapping build paths to VCS paths via srcsrv
                     let file_info = line_program.get_file_info(line_info.file_index)?;
-                    let raw_name = string_table.get(file_info.name)?
-                        .to_string()
-                        .into_owned();
+                    let raw_name = string_table.get(file_info.name)?.to_string().into_owned();
                     let file_name = srcsrv_map
                         .get(&raw_name.replace('\\', "/"))
                         .cloned()
@@ -607,7 +607,13 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
         name: debug_file.to_string(),
     };
 
-    Ok(SymFile::from_parts(module, files, functions, publics, inline_origins))
+    Ok(SymFile::from_parts(
+        module,
+        files,
+        functions,
+        publics,
+        inline_origins,
+    ))
 }
 
 #[cfg(test)]
@@ -618,9 +624,24 @@ mod tests {
     fn test_line_size_computation() {
         // Simulate what parse_pdb does for line size computation
         let mut lines = vec![
-            LineRecord { address: 0x1000, size: 0, line: 10, file_index: 0 },
-            LineRecord { address: 0x1010, size: 0, line: 11, file_index: 0 },
-            LineRecord { address: 0x1030, size: 0, line: 12, file_index: 0 },
+            LineRecord {
+                address: 0x1000,
+                size: 0,
+                line: 10,
+                file_index: 0,
+            },
+            LineRecord {
+                address: 0x1010,
+                size: 0,
+                line: 11,
+                file_index: 0,
+            },
+            LineRecord {
+                address: 0x1030,
+                size: 0,
+                line: 12,
+                file_index: 0,
+            },
         ];
         let func_end = 0x1050;
 
@@ -665,16 +686,34 @@ mod tests {
                 param_size: 0,
                 name: "FirstFunc".to_string(),
                 lines: vec![
-                    LineRecord { address: 0x1020, size: 0x10, line: 11, file_index: 0 },
-                    LineRecord { address: 0x1000, size: 0x20, line: 10, file_index: 0 },
+                    LineRecord {
+                        address: 0x1020,
+                        size: 0x10,
+                        line: 11,
+                        file_index: 0,
+                    },
+                    LineRecord {
+                        address: 0x1000,
+                        size: 0x20,
+                        line: 10,
+                        file_index: 0,
+                    },
                 ],
                 inlines: Vec::new(),
             },
         ];
 
         let publics = vec![
-            PublicRecord { address: 0x4000, param_size: 0, name: "Pub2".to_string() },
-            PublicRecord { address: 0x3000, param_size: 0, name: "Pub1".to_string() },
+            PublicRecord {
+                address: 0x4000,
+                param_size: 0,
+                name: "Pub2".to_string(),
+            },
+            PublicRecord {
+                address: 0x3000,
+                param_size: 0,
+                name: "Pub1".to_string(),
+            },
         ];
 
         let sym = SymFile::from_parts(
@@ -736,18 +775,9 @@ mod tests {
             ],
         }];
 
-        let inline_origins = vec![
-            "HelperFunc".to_string(),
-            "NestedHelper".to_string(),
-        ];
+        let inline_origins = vec!["HelperFunc".to_string(), "NestedHelper".to_string()];
 
-        let sym = SymFile::from_parts(
-            module,
-            Vec::new(),
-            functions,
-            Vec::new(),
-            inline_origins,
-        );
+        let sym = SymFile::from_parts(module, Vec::new(), functions, Vec::new(), inline_origins);
 
         let func = sym.find_function_by_name("MyFunc").unwrap();
         assert_eq!(func.inlines.len(), 2);
@@ -791,15 +821,13 @@ mod tests {
             param_size: 0,
             name: "BigFunc".to_string(),
             lines: Vec::new(),
-            inlines: vec![
-                InlineRecord {
-                    depth: 0,
-                    call_line: 0,
-                    call_file_index: usize::MAX,
-                    origin_index: 0,
-                    ranges: vec![(0x5010, 0x20), (0x5080, 0x40)],
-                },
-            ],
+            inlines: vec![InlineRecord {
+                depth: 0,
+                call_line: 0,
+                call_file_index: usize::MAX,
+                origin_index: 0,
+                ranges: vec![(0x5010, 0x20), (0x5080, 0x40)],
+            }],
         }];
 
         let sym = SymFile::from_parts(
@@ -904,11 +932,13 @@ mod tests {
 
         let map = parse_srcsrv_stream(srcsrv);
         assert_eq!(
-            map.get("/builds/worker/checkouts/gecko/dom/base/Element.cpp").unwrap(),
+            map.get("/builds/worker/checkouts/gecko/dom/base/Element.cpp")
+                .unwrap(),
             "hg:hg.mozilla.org/releases/mozilla-esr140:dom/base/Element.cpp:abc123def456"
         );
         assert_eq!(
-            map.get("/builds/worker/checkouts/gecko/gfx/layers/Compositor.cpp").unwrap(),
+            map.get("/builds/worker/checkouts/gecko/gfx/layers/Compositor.cpp")
+                .unwrap(),
             "hg:hg.mozilla.org/releases/mozilla-esr140:gfx/layers/Compositor.cpp:abc123def456"
         );
     }
@@ -925,7 +955,8 @@ mod tests {
 
         let map = parse_srcsrv_stream(srcsrv);
         assert_eq!(
-            map.get("/rustc/abc123/library/core/src/fmt/mod.rs").unwrap(),
+            map.get("/rustc/abc123/library/core/src/fmt/mod.rs")
+                .unwrap(),
             "git:github.com/rust-lang/rust:library/core/src/fmt/mod.rs:abc123"
         );
     }
@@ -970,7 +1001,8 @@ mod tests {
         let map = parse_srcsrv_stream(srcsrv);
         // HG entry mapped
         assert_eq!(
-            map.get("/builds/worker/checkouts/gecko/xpcom/base/nsDebugImpl.cpp").unwrap(),
+            map.get("/builds/worker/checkouts/gecko/xpcom/base/nsDebugImpl.cpp")
+                .unwrap(),
             "hg:hg.mozilla.org/releases/mozilla-esr140:xpcom/base/nsDebugImpl.cpp:aaa111"
         );
         // Rust entry mapped
@@ -986,7 +1018,10 @@ mod tests {
     #[test]
     fn test_resolve_srcsrv_vars_basic() {
         let mut vars = HashMap::new();
-        vars.insert("HGSERVER".to_string(), "https://hg.mozilla.org/releases/mozilla-esr140".to_string());
+        vars.insert(
+            "HGSERVER".to_string(),
+            "https://hg.mozilla.org/releases/mozilla-esr140".to_string(),
+        );
 
         let result = resolve_srcsrv_vars("%hgserver%/raw-file/%var4%/%var3%", &vars);
         assert_eq!(
@@ -998,8 +1033,12 @@ mod tests {
     #[test]
     fn test_resolve_srcsrv_vars_no_vars() {
         let vars = HashMap::new();
-        let result = resolve_srcsrv_vars("https://github.com/rust-lang/rust/raw/%var4%/%var3%", &vars);
-        assert_eq!(result, "https://github.com/rust-lang/rust/raw/%var4%/%var3%");
+        let result =
+            resolve_srcsrv_vars("https://github.com/rust-lang/rust/raw/%var4%/%var3%", &vars);
+        assert_eq!(
+            result,
+            "https://github.com/rust-lang/rust/raw/%var4%/%var3%"
+        );
     }
 
     #[test]

@@ -52,7 +52,8 @@ fn try_demangle(name: &str) -> Option<String> {
 
     // Try MSVC demangling (symbols start with '?')
     if name.starts_with('?') {
-        if let Ok(demangled) = msvc_demangler::demangle(name, msvc_demangler::DemangleFlags::llvm()) {
+        if let Ok(demangled) = msvc_demangler::demangle(name, msvc_demangler::DemangleFlags::llvm())
+        {
             return Some(demangled);
         }
     }
@@ -117,17 +118,32 @@ mod tests {
         // MSVC-mangled symbol: void mozilla::ipc::NodeChannel::OnMessageReceived(const IPC::Message &)
         let mangled = "?OnMessageReceived@NodeChannel@ipc@mozilla@@UEAAXAEBVMessage@IPC@@@Z";
         let result = demangle(mangled);
-        assert!(!result.starts_with('?'), "MSVC symbol should be demangled: {result}");
-        assert!(result.contains("OnMessageReceived"), "Should contain function name: {result}");
-        assert!(result.contains("mozilla"), "Should contain namespace: {result}");
+        assert!(
+            !result.starts_with('?'),
+            "MSVC symbol should be demangled: {result}"
+        );
+        assert!(
+            result.contains("OnMessageReceived"),
+            "Should contain function name: {result}"
+        );
+        assert!(
+            result.contains("mozilla"),
+            "Should contain namespace: {result}"
+        );
     }
 
     #[test]
     fn test_demangle_msvc_simple() {
         let mangled = "?hello@@YAHXZ";
         let result = demangle(mangled);
-        assert!(!result.starts_with('?'), "MSVC symbol should be demangled: {result}");
-        assert!(result.contains("hello"), "Should contain function name: {result}");
+        assert!(
+            !result.starts_with('?'),
+            "MSVC symbol should be demangled: {result}"
+        );
+        assert!(
+            result.contains("hello"),
+            "Should contain function name: {result}"
+        );
     }
 
     #[test]
@@ -167,9 +183,18 @@ mod tests {
         // ARM32 linker thunk wrapping a C++ Itanium mangled name
         let name = "__ThumbV7PILongThunk__Z19NS_ProcessNextEventP9nsIThreadb";
         let result = demangle(name);
-        assert!(result.starts_with("__ThumbV7PILongThunk_"), "Prefix preserved: {result}");
-        assert!(result.contains("NS_ProcessNextEvent"), "Demangled inner name: {result}");
-        assert!(!result.contains("_Z19"), "Mangled part should be gone: {result}");
+        assert!(
+            result.starts_with("__ThumbV7PILongThunk_"),
+            "Prefix preserved: {result}"
+        );
+        assert!(
+            result.contains("NS_ProcessNextEvent"),
+            "Demangled inner name: {result}"
+        );
+        assert!(
+            !result.contains("_Z19"),
+            "Mangled part should be gone: {result}"
+        );
     }
 
     #[test]
@@ -185,9 +210,15 @@ mod tests {
         // ARM-mode thunk variant
         let name = "__ARMv7PILongThunk__ZN7mozilla3dom7Element12SetAttributeE";
         let result = demangle(name);
-        assert!(result.starts_with("__ARMv7PILongThunk_"), "Prefix preserved: {result}");
+        assert!(
+            result.starts_with("__ARMv7PILongThunk_"),
+            "Prefix preserved: {result}"
+        );
         assert!(result.contains("mozilla"), "Demangled inner name: {result}");
-        assert!(result.contains("SetAttribute"), "Demangled inner name: {result}");
+        assert!(
+            result.contains("SetAttribute"),
+            "Demangled inner name: {result}"
+        );
     }
 
     #[test]
@@ -195,8 +226,14 @@ mod tests {
         // AArch64 thunk variant
         let name = "__AArch64AbsLongThunk__ZN7mozilla9TimeStamp3NowEb";
         let result = demangle(name);
-        assert!(result.starts_with("__AArch64AbsLongThunk_"), "Prefix preserved: {result}");
-        assert!(result.contains("TimeStamp"), "Demangled inner name: {result}");
+        assert!(
+            result.starts_with("__AArch64AbsLongThunk_"),
+            "Prefix preserved: {result}"
+        );
+        assert!(
+            result.contains("TimeStamp"),
+            "Demangled inner name: {result}"
+        );
     }
 
     #[test]
@@ -204,7 +241,10 @@ mod tests {
         // Thunk wrapping a Rust legacy mangled name
         let name = "__ThumbV7PILongThunk__ZN4test3foo17h1234567890abcdefE";
         let result = demangle(name);
-        assert!(result.starts_with("__ThumbV7PILongThunk_"), "Prefix preserved: {result}");
+        assert!(
+            result.starts_with("__ThumbV7PILongThunk_"),
+            "Prefix preserved: {result}"
+        );
         assert!(result.contains("test"), "Demangled inner name: {result}");
         assert!(result.contains("foo"), "Demangled inner name: {result}");
     }

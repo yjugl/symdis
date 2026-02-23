@@ -4,11 +4,11 @@
 
 use std::io::Read;
 
-use anyhow::{Result, Context, bail};
+use anyhow::{bail, Context, Result};
 use reqwest::Client;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
-use crate::cache::{Cache, CacheResult, BinaryCacheKey};
+use crate::cache::{BinaryCacheKey, Cache, CacheResult};
 use crate::symbols::breakpad::SymFile;
 
 use super::FetchResult;
@@ -147,10 +147,7 @@ fn extract_usr_src_source_name(path: &str) -> Option<&str> {
 /// a '-' boundary where the next parts diverge.
 fn longest_common_prefix_at_dash<'a>(a: &'a str, b: &str) -> Option<&'a str> {
     // Find character-by-character common prefix length
-    let common_len = a.bytes()
-        .zip(b.bytes())
-        .take_while(|(x, y)| x == y)
-        .count();
+    let common_len = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
 
     // Find the last '-' in the common prefix portion of `a`.
     let common = &a[..common_len];
@@ -177,11 +174,12 @@ pub async fn resolve_package(
     source_package: Option<&str>,
 ) -> Result<Vec<(String, String)>> {
     let explicit_package = locator.package.as_deref();
-    let search_name = explicit_package.or(source_package)
-        .ok_or_else(|| anyhow::anyhow!(
+    let search_name = explicit_package.or(source_package).ok_or_else(|| {
+        anyhow::anyhow!(
             "cannot determine package name: use --apt <package_name> or ensure \
              the sym file contains Ubuntu build paths"
-        ))?;
+        )
+    })?;
 
     // Determine archive base URL based on architecture
     // ports.ubuntu.com for arm64/armhf/etc, archive.ubuntu.com for amd64/i386
@@ -206,8 +204,14 @@ pub async fn resolve_package(
     for pocket in &pockets {
         for component in COMPONENTS {
             let packages_data = fetch_packages_index(
-                client, cache, archive_base, pocket, component, &locator.architecture,
-            ).await;
+                client,
+                cache,
+                archive_base,
+                pocket,
+                component,
+                &locator.architecture,
+            )
+            .await;
 
             let packages_data = match packages_data {
                 Ok(data) => data,
@@ -232,8 +236,11 @@ pub async fn resolve_package(
     }
 
     if all_candidates.is_empty() {
-        bail!("package '{search_name}' not found in APT index for {} {}",
-              locator.release, locator.architecture);
+        bail!(
+            "package '{search_name}' not found in APT index for {} {}",
+            locator.release,
+            locator.architecture
+        );
     }
 
     Ok(all_candidates)
@@ -270,12 +277,14 @@ async fn fetch_packages_index(
         }
     }
 
-    let url = format!(
-        "{archive_base}/dists/{release}/{component}/binary-{architecture}/Packages.xz"
-    );
+    let url =
+        format!("{archive_base}/dists/{release}/{component}/binary-{architecture}/Packages.xz");
     info!("downloading APT index: {url}");
 
-    let response = client.get(&url).send().await
+    let response = client
+        .get(&url)
+        .send()
+        .await
         .context("downloading Packages.xz")?;
 
     let status = response.status();
@@ -286,12 +295,16 @@ async fn fetch_packages_index(
         bail!("Packages.xz download failed: HTTP {status}");
     }
 
-    let compressed = response.bytes().await
+    let compressed = response
+        .bytes()
+        .await
         .context("reading Packages.xz response")?
         .to_vec();
 
-    info!("downloaded Packages.xz ({:.1} KB compressed)",
-          compressed.len() as f64 / 1024.0);
+    info!(
+        "downloaded Packages.xz ({:.1} KB compressed)",
+        compressed.len() as f64 / 1024.0
+    );
 
     // Cache the compressed index
     cache.store_binary(&key, &compressed)?;
@@ -303,7 +316,9 @@ async fn fetch_packages_index(
 fn decompress_xz(data: &[u8]) -> Result<Vec<u8>> {
     let mut decoder = liblzma::read::XzDecoder::new(data);
     let mut buf = Vec::new();
-    decoder.read_to_end(&mut buf).context("decompressing Packages.xz")?;
+    decoder
+        .read_to_end(&mut buf)
+        .context("decompressing Packages.xz")?;
     Ok(buf)
 }
 
@@ -410,7 +425,11 @@ impl<'a> Iterator for PackagesIter<'a> {
             }
 
             if package.is_some() || filename.is_some() {
-                return Some(PackageStanza { package, source, filename });
+                return Some(PackageStanza {
+                    package,
+                    source,
+                    filename,
+                });
             }
         }
     }
@@ -435,7 +454,10 @@ pub async fn download_deb(client: &Client, url: &str) -> FetchResult {
 
     match response.bytes().await {
         Ok(bytes) => {
-            info!("downloaded .deb ({:.1} MB)", bytes.len() as f64 / 1_048_576.0);
+            info!(
+                "downloaded .deb ({:.1} MB)",
+                bytes.len() as f64 / 1_048_576.0
+            );
             FetchResult::Ok(bytes.to_vec())
         }
         Err(e) => FetchResult::Error(format!("reading deb response body: {e}")),
@@ -492,15 +514,15 @@ fn find_ar_member<'a>(data: &'a [u8], name_prefix: &str) -> Result<&'a [u8]> {
         }
 
         // Parse name (first 16 bytes)
-        let name_raw = std::str::from_utf8(&header[..16])
-            .context("ar entry name is not UTF-8")?;
+        let name_raw = std::str::from_utf8(&header[..16]).context("ar entry name is not UTF-8")?;
         let name = name_raw.trim_end_matches([' ', '/']);
 
         // Parse size (bytes 48-57)
         let size_str = std::str::from_utf8(&header[48..58])
             .context("ar entry size is not UTF-8")?
             .trim();
-        let size: usize = size_str.parse()
+        let size: usize = size_str
+            .parse()
             .with_context(|| format!("invalid ar entry size: '{size_str}'"))?;
 
         let data_start = pos + HEADER_SIZE;
@@ -532,9 +554,11 @@ fn decompress_deb_data(data: &[u8]) -> Result<Vec<u8>> {
     if data[0] == 0x28 && data[1] == 0xB5 && data[2] == 0x2F && data[3] == 0xFD {
         debug!("data.tar compression: zstd");
         let mut buf = Vec::new();
-        let mut decoder = zstd::stream::read::Decoder::new(data)
-            .context("creating zstd decoder")?;
-        decoder.read_to_end(&mut buf).context("decompressing data.tar.zst")?;
+        let mut decoder =
+            zstd::stream::read::Decoder::new(data).context("creating zstd decoder")?;
+        decoder
+            .read_to_end(&mut buf)
+            .context("decompressing data.tar.zst")?;
         return Ok(buf);
     }
 
@@ -543,7 +567,9 @@ fn decompress_deb_data(data: &[u8]) -> Result<Vec<u8>> {
         debug!("data.tar compression: xz");
         let mut buf = Vec::new();
         let mut decoder = liblzma::read::XzDecoder::new(data);
-        decoder.read_to_end(&mut buf).context("decompressing data.tar.xz")?;
+        decoder
+            .read_to_end(&mut buf)
+            .context("decompressing data.tar.xz")?;
         return Ok(buf);
     }
 
@@ -552,7 +578,9 @@ fn decompress_deb_data(data: &[u8]) -> Result<Vec<u8>> {
         debug!("data.tar compression: gzip");
         let mut buf = Vec::new();
         let mut decoder = flate2::read::GzDecoder::new(data);
-        decoder.read_to_end(&mut buf).context("decompressing data.tar.gz")?;
+        decoder
+            .read_to_end(&mut buf)
+            .context("decompressing data.tar.gz")?;
         return Ok(buf);
     }
 
@@ -573,21 +601,24 @@ fn extract_from_tar(tar_data: &[u8], target_name: &str) -> Result<Vec<u8>> {
         let mut entry = entry.context("reading tar entry")?;
         let path = entry.path().context("reading entry path")?;
 
-        let filename = path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         if filename == target_name {
             let entry_type = entry.header().entry_type();
             if entry_type == tar::EntryType::Regular || entry_type == tar::EntryType::GNUSparse {
-                debug!("found '{}' in deb data.tar at '{}'", target_name, path.display());
+                debug!(
+                    "found '{}' in deb data.tar at '{}'",
+                    target_name,
+                    path.display()
+                );
                 let mut buf = Vec::new();
                 entry.read_to_end(&mut buf).context("reading tar entry")?;
                 return Ok(buf);
             }
             if entry_type == tar::EntryType::Symlink || entry_type == tar::EntryType::Link {
                 if let Ok(Some(link)) = entry.link_name() {
-                    let link_name = link.file_name()
+                    let link_name = link
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("")
                         .to_string();
@@ -603,17 +634,23 @@ fn extract_from_tar(tar_data: &[u8], target_name: &str) -> Result<Vec<u8>> {
     // Second pass: follow symlink target
     if let Some(ref link_name) = symlink_target {
         let mut archive = tar::Archive::new(tar_data);
-        for entry in archive.entries().context("reading tar entries (symlink follow)")? {
+        for entry in archive
+            .entries()
+            .context("reading tar entries (symlink follow)")?
+        {
             let mut entry = entry.context("reading tar entry")?;
             let path = entry.path().context("reading entry path")?;
-            let filename = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
+            let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
             if filename == link_name {
                 let entry_type = entry.header().entry_type();
-                if entry_type == tar::EntryType::Regular || entry_type == tar::EntryType::GNUSparse {
-                    debug!("found symlink target '{}' at '{}'", link_name, path.display());
+                if entry_type == tar::EntryType::Regular || entry_type == tar::EntryType::GNUSparse
+                {
+                    debug!(
+                        "found symlink target '{}' at '{}'",
+                        link_name,
+                        path.display()
+                    );
                     let mut buf = Vec::new();
                     entry.read_to_end(&mut buf).context("reading tar entry")?;
                     return Ok(buf);
@@ -634,7 +671,9 @@ fn extract_from_tar(tar_data: &[u8], target_name: &str) -> Result<Vec<u8>> {
 /// Layout: `<deb_filename> / <release>-<arch> / <deb_filename>`
 pub fn deb_cache_key(deb_url: &str, locator: &AptLocator) -> (String, String) {
     // Extract filename from URL: ".../libglib2.0-0t64_2.80.0-6ubuntu3.8_amd64.deb"
-    let filename = deb_url.rsplit('/').next()
+    let filename = deb_url
+        .rsplit('/')
+        .next()
         .unwrap_or("package.deb")
         .to_string();
     let cache_id = format!("{}-{}", locator.release, locator.architecture);
@@ -661,27 +700,39 @@ mod tests {
         let sym_file = SymFile::parse(std::io::Cursor::new(
             "MODULE Linux x86_64 ABC123 libxml2.so.2\n\
              FILE 0 /build/libxml2-2gYHdD/libxml2-2.9.13+dfsg/parser.c\n\
-             FILE 1 /build/libxml2-2gYHdD/libxml2-2.9.13+dfsg/tree.c\n"
-        )).unwrap();
-        assert_eq!(detect_apt_source_package(&sym_file), Some("libxml2".to_string()));
+             FILE 1 /build/libxml2-2gYHdD/libxml2-2.9.13+dfsg/tree.c\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            detect_apt_source_package(&sym_file),
+            Some("libxml2".to_string())
+        );
     }
 
     #[test]
     fn test_detect_apt_source_package_mesa() {
         let sym_file = SymFile::parse(std::io::Cursor::new(
             "MODULE Linux x86_64 ABC123 libgallium-24.0.5.so\n\
-             FILE 0 /build/mesa-JhNbTR/mesa-24.0.5/src/gallium/drivers/radeonsi/si_shader.c\n"
-        )).unwrap();
-        assert_eq!(detect_apt_source_package(&sym_file), Some("mesa".to_string()));
+             FILE 0 /build/mesa-JhNbTR/mesa-24.0.5/src/gallium/drivers/radeonsi/si_shader.c\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            detect_apt_source_package(&sym_file),
+            Some("mesa".to_string())
+        );
     }
 
     #[test]
     fn test_detect_apt_source_package_libdrm() {
         let sym_file = SymFile::parse(std::io::Cursor::new(
             "MODULE Linux x86_64 ABC123 libdrm.so.2\n\
-             FILE 0 /build/libdrm-FbhG3x/libdrm-2.4.120/xf86drm.c\n"
-        )).unwrap();
-        assert_eq!(detect_apt_source_package(&sym_file), Some("libdrm".to_string()));
+             FILE 0 /build/libdrm-FbhG3x/libdrm-2.4.120/xf86drm.c\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            detect_apt_source_package(&sym_file),
+            Some("libdrm".to_string())
+        );
     }
 
     #[test]
@@ -689,9 +740,13 @@ mod tests {
         // Source package name with dots and digits
         let sym_file = SymFile::parse(std::io::Cursor::new(
             "MODULE Linux x86_64 ABC123 libglib-2.0.so.0\n\
-             FILE 0 /build/glib2.0-A3kYj2/glib2.0-2.80.0/glib/gmain.c\n"
-        )).unwrap();
-        assert_eq!(detect_apt_source_package(&sym_file), Some("glib2.0".to_string()));
+             FILE 0 /build/glib2.0-A3kYj2/glib2.0-2.80.0/glib/gmain.c\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            detect_apt_source_package(&sym_file),
+            Some("glib2.0".to_string())
+        );
     }
 
     #[test]
@@ -699,8 +754,9 @@ mod tests {
         // Snap paths should NOT be detected as APT
         let sym_file = SymFile::parse(std::io::Cursor::new(
             "MODULE Linux x86_64 ABC123 libglib-2.0.so.0\n\
-             FILE 0 /build/gnome-42-2204-sdk/parts/glib/src/glib/gmain.c\n"
-        )).unwrap();
+             FILE 0 /build/gnome-42-2204-sdk/parts/glib/src/glib/gmain.c\n",
+        ))
+        .unwrap();
         assert_eq!(detect_apt_source_package(&sym_file), None);
     }
 
@@ -709,8 +765,9 @@ mod tests {
         // Mozilla build paths should not match
         let sym_file = SymFile::parse(std::io::Cursor::new(
             "MODULE Linux x86_64 ABC123 libxul.so\n\
-             FILE 0 /builds/worker/workspace/build/src/xpcom/base/nsCOMPtr.cpp\n"
-        )).unwrap();
+             FILE 0 /builds/worker/workspace/build/src/xpcom/base/nsCOMPtr.cpp\n",
+        ))
+        .unwrap();
         assert_eq!(detect_apt_source_package(&sym_file), None);
     }
 
@@ -767,19 +824,20 @@ mod tests {
             None
         );
         // No version
-        assert_eq!(
-            extract_usr_src_source_name("/usr/src/nodashes/foo.c"),
-            None
-        );
+        assert_eq!(extract_usr_src_source_name("/usr/src/nodashes/foo.c"), None);
     }
 
     #[test]
     fn test_detect_apt_source_package_usr_src() {
         let sym_file = SymFile::parse(std::io::Cursor::new(
             "MODULE Linux x86_64 ABC123 libgobject-2.0.so.0\n\
-             FILE 0 /usr/src/glib2.0-2.80.0-6ubuntu3.8/gobject/gtype.c\n"
-        )).unwrap();
-        assert_eq!(detect_apt_source_package(&sym_file), Some("glib2.0".to_string()));
+             FILE 0 /usr/src/glib2.0-2.80.0-6ubuntu3.8/gobject/gtype.c\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            detect_apt_source_package(&sym_file),
+            Some("glib2.0".to_string())
+        );
     }
 
     #[test]
@@ -816,14 +874,8 @@ mod tests {
 
     #[test]
     fn test_longest_common_prefix_at_dash_no_match() {
-        assert_eq!(
-            longest_common_prefix_at_dash("abc", "def"),
-            None
-        );
-        assert_eq!(
-            longest_common_prefix_at_dash("", ""),
-            None
-        );
+        assert_eq!(longest_common_prefix_at_dash("abc", "def"), None);
+        assert_eq!(longest_common_prefix_at_dash("", ""), None);
     }
 
     #[test]
@@ -933,7 +985,10 @@ Filename: pool/main/m/mesa/mesa-common-dev_24.0.5-1_amd64.deb
     fn test_find_ar_member_bad_magic() {
         let result = find_ar_member(b"not an ar archive", "data.tar");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not an ar archive"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("not an ar archive"));
     }
 
     #[test]
@@ -986,10 +1041,16 @@ Filename: pool/main/b/bar/libbar_2.0_amd64.deb
         assert_eq!(stanzas.len(), 2);
         assert_eq!(stanzas[0].package, Some("libfoo"));
         assert_eq!(stanzas[0].source, Some("foo (1.0-1)"));
-        assert_eq!(stanzas[0].filename, Some("pool/main/f/foo/libfoo_1.0-1_amd64.deb"));
+        assert_eq!(
+            stanzas[0].filename,
+            Some("pool/main/f/foo/libfoo_1.0-1_amd64.deb")
+        );
         assert_eq!(stanzas[1].package, Some("libbar"));
         assert_eq!(stanzas[1].source, None);
-        assert_eq!(stanzas[1].filename, Some("pool/main/b/bar/libbar_2.0_amd64.deb"));
+        assert_eq!(
+            stanzas[1].filename,
+            Some("pool/main/b/bar/libbar_2.0_amd64.deb")
+        );
     }
 
     #[test]

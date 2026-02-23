@@ -4,28 +4,33 @@
 
 use std::io::BufReader;
 
-use anyhow::{Result, Context, bail};
+use anyhow::{bail, Context, Result};
 use tracing::warn;
 
 use super::DisasmArgs;
-use crate::binary::{BinaryFile, CpuArch};
-use crate::demangle::maybe_demangle;
 use crate::binary::elf::ElfFile;
 use crate::binary::macho::MachOFile;
 use crate::binary::pe::PeFile;
+use crate::binary::{BinaryFile, CpuArch};
 use crate::cache::Cache;
 use crate::config::{Config, OutputFormat};
+use crate::demangle::maybe_demangle;
 use crate::disasm::annotate;
 use crate::disasm::engine::Disassembler;
 use crate::fetch;
 use crate::output::json;
-use crate::output::text::{self, DataSource, FunctionInfo, ModuleInfo, SymOnlyData, SymOnlyLine, SymOnlyInline};
+use crate::output::text::{
+    self, DataSource, FunctionInfo, ModuleInfo, SymOnlyData, SymOnlyInline, SymOnlyLine,
+};
 use crate::symbols::breakpad::SymFile;
 use crate::symbols::pdb as pdb_parser;
 
 /// Parse a hex offset string (with or without 0x prefix) to u64.
 fn parse_offset(s: &str) -> Result<u64> {
-    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
     u64::from_str_radix(s, 16).context("invalid hex offset")
 }
 
@@ -80,22 +85,28 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     let sym_file = if use_pdb_primary {
         // --pdb mode: try PDB first, fall back to .sym
         match &pdb_result {
-            Ok(path) => {
-                match pdb_parser::parse_pdb(path, &args.debug_file, &args.debug_id) {
-                    Ok(sym) => {
-                        from_pdb = true;
-                        Some(sym)
-                    }
-                    Err(e) => {
-                        warn!("failed to parse PDB file: {e}");
-                        None
-                    }
+            Ok(path) => match pdb_parser::parse_pdb(path, &args.debug_file, &args.debug_id) {
+                Ok(sym) => {
+                    from_pdb = true;
+                    Some(sym)
                 }
-            }
+                Err(e) => {
+                    warn!("failed to parse PDB file: {e}");
+                    None
+                }
+            },
             Err(e) => {
                 warn!("PDB file not available: {e}");
                 // Fall back to .sym
-                match fetch::fetch_sym_file(&client, &cache, config, &args.debug_file, &args.debug_id).await {
+                match fetch::fetch_sym_file(
+                    &client,
+                    &cache,
+                    config,
+                    &args.debug_file,
+                    &args.debug_id,
+                )
+                .await
+                {
                     Ok(path) => parse_sym_file(&path),
                     Err(e2) => {
                         warn!("sym file also not available: {e2}");
@@ -112,7 +123,15 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                 warn!("sym file not available: {e}");
                 // Auto-fallback: try PDB if this is a Windows module
                 if is_pdb_module {
-                    match fetch::fetch_pdb_file(&client, &cache, config, &args.debug_file, &args.debug_id).await {
+                    match fetch::fetch_pdb_file(
+                        &client,
+                        &cache,
+                        config,
+                        &args.debug_file,
+                        &args.debug_id,
+                    )
+                    .await
+                    {
                         Ok(path) => {
                             match pdb_parser::parse_pdb(&path, &args.debug_file, &args.debug_id) {
                                 Ok(sym) => {
@@ -149,13 +168,18 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     let bin_result = match bin_result {
         Ok(path) => Ok(path),
         Err(e) => {
-            let is_linux = sym_file.as_ref()
+            let is_linux = sym_file
+                .as_ref()
                 .map(|sym| sym.module.os.eq_ignore_ascii_case("linux"))
                 .unwrap_or_else(|| looks_like_elf(&args.debug_file, effective_code_id));
             if is_linux {
                 if let Some(code_id) = effective_code_id {
                     let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                    match fetch::fetch_binary_debuginfod(&client, &cache, config, code_file, code_id).await {
+                    match fetch::fetch_binary_debuginfod(
+                        &client, &cache, config, code_file, code_id,
+                    )
+                    .await
+                    {
                         Ok(path) => Ok(path),
                         Err(_) => {
                             let msg = e.to_string();
@@ -179,14 +203,18 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     let bin_result = match bin_result {
         Ok(path) => Ok(path),
         Err(e) => {
-            let is_linux = sym_file.as_ref()
+            let is_linux = sym_file
+                .as_ref()
                 .map(|sym| sym.module.os.eq_ignore_ascii_case("linux"))
                 .unwrap_or_else(|| looks_like_elf(&args.debug_file, effective_code_id));
             if is_linux {
                 if let Some(code_id) = effective_code_id {
-                    let snap_name = args.snap.clone()
+                    let snap_name = args
+                        .snap
+                        .clone()
                         .or_else(|| sym_file.as_ref().and_then(fetch::snap::detect_snap_name));
-                    let arch = sym_file.as_ref()
+                    let arch = sym_file
+                        .as_ref()
                         .and_then(|sym| fetch::snap::snap_architecture(&sym.module.arch));
                     if let (Some(snap_name), Some(arch)) = (snap_name, arch) {
                         let locator = fetch::snap::SnapLocator {
@@ -226,7 +254,8 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     let bin_result = match bin_result {
         Ok(path) => Ok(path),
         Err(e) => {
-            let is_linux = sym_file.as_ref()
+            let is_linux = sym_file
+                .as_ref()
                 .map(|sym| sym.module.os.eq_ignore_ascii_case("linux"))
                 .unwrap_or_else(|| looks_like_elf(&args.debug_file, effective_code_id));
             if is_linux && args.apt.is_some() {
@@ -238,14 +267,19 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                             return Err(e);
                         }
                     };
-                    let arch = sym_file.as_ref()
+                    let arch = sym_file
+                        .as_ref()
                         .and_then(|sym| fetch::apt::apt_architecture(&sym.module.arch));
                     if let Some(arch) = arch {
-                        let apt_package = args.apt.as_deref()
+                        let apt_package = args
+                            .apt
+                            .as_deref()
                             .and_then(|s| if s.is_empty() { None } else { Some(s) })
                             .map(|s| s.to_string());
                         let auto_source = if apt_package.is_none() {
-                            sym_file.as_ref().and_then(fetch::apt::detect_apt_source_package)
+                            sym_file
+                                .as_ref()
+                                .and_then(fetch::apt::detect_apt_source_package)
                         } else {
                             None
                         };
@@ -288,7 +322,8 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     let bin_result = match bin_result {
         Ok(path) => Ok(path),
         Err(e) => {
-            let (os, arch_str) = sym_file.as_ref()
+            let (os, arch_str) = sym_file
+                .as_ref()
                 .map(|s| (s.module.os.as_str(), s.module.arch.as_str()))
                 .unwrap_or_else(|| infer_platform_from_code_id(effective_code_id));
             if let (Some(version), Some(channel)) = (&args.version, &args.channel) {
@@ -304,7 +339,16 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                                 build_id: args.build_id.clone(),
                             };
                             let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                            match fetch::fetch_binary_ftp(&archive_client, &cache, config, code_file, code_id, &locator).await {
+                            match fetch::fetch_binary_ftp(
+                                &archive_client,
+                                &cache,
+                                config,
+                                code_file,
+                                code_id,
+                                &locator,
+                            )
+                            .await
+                            {
                                 Ok(path) => Ok(path),
                                 Err(ftp_err) => {
                                     warn!("FTP archive fallback failed: {ftp_err:#}");
@@ -328,7 +372,8 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     };
 
     // Determine target arch from sym file for fat binary selection
-    let target_arch = sym_file.as_ref()
+    let target_arch = sym_file
+        .as_ref()
         .and_then(|sym| CpuArch::from_sym_arch(&sym.module.arch));
 
     // Parse binary if available — try PE first, then ELF, then Mach-O
@@ -344,7 +389,8 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     let arch = determine_arch(&sym_file, binary_file.as_ref().map(|b| b.as_ref()))?;
 
     // Find the target function
-    let (func_name, func_addr, func_size) = find_target(args, &sym_file, binary_file.as_ref().map(|b| b.as_ref()))?;
+    let (func_name, func_addr, func_size) =
+        find_target(args, &sym_file, binary_file.as_ref().map(|b| b.as_ref()))?;
 
     // Handle empty functions (size 0)
     if func_size == 0 {
@@ -393,11 +439,9 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     // Verify binary identity — discard the binary on mismatch to avoid
     // showing disassembly from a different build.
     if let Some(ref bin) = binary_file {
-        if let Some(msg) = check_binary_identity(
-            bin.as_ref(),
-            args.code_id.as_deref(),
-            &args.debug_id,
-        ) {
+        if let Some(msg) =
+            check_binary_identity(bin.as_ref(), args.code_id.as_deref(), &args.debug_id)
+        {
             warn!("{msg}");
             binary_file = None;
         }
@@ -407,21 +451,28 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
 
     // Disassemble if binary is available
     if let Some(ref bin) = binary_file {
-        let code = bin.extract_code(func_addr, func_size)
+        let code = bin
+            .extract_code(func_addr, func_size)
             .context("extracting code from binary")?;
 
         let thumb = bin.is_thumb(func_addr);
         let disassembler = Disassembler::new(arch, config.syntax, thumb)?;
         let image_base = bin.image_base();
         let (instructions, total_count) = disassembler.disassemble(
-            &code, func_addr, config.max_instructions, highlight_offset, image_base,
+            &code,
+            func_addr,
+            config.max_instructions,
+            highlight_offset,
+            image_base,
         )?;
 
         if instructions.len() < total_count {
             warnings.push(format!(
                 "Output truncated to {} of {} instructions. \
                  Use --max-instructions {} to see all.",
-                instructions.len(), total_count, total_count
+                instructions.len(),
+                total_count,
+                total_count
             ));
         }
 
@@ -456,32 +507,64 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         }
 
         let data_source = if sym_file.is_some() {
-            if from_pdb { DataSource::BinaryAndPdb } else { DataSource::BinaryAndSym }
+            if from_pdb {
+                DataSource::BinaryAndPdb
+            } else {
+                DataSource::BinaryAndSym
+            }
         } else {
             DataSource::BinaryOnly
         };
 
         match config.format {
             OutputFormat::Text => {
-                let output = text::format_text(&module_info, &function_info, &annotated, &data_source, &warnings);
+                let output = text::format_text(
+                    &module_info,
+                    &function_info,
+                    &annotated,
+                    &data_source,
+                    &warnings,
+                );
                 print!("{output}");
             }
             OutputFormat::Json => {
-                let output = json::format_json(&module_info, &function_info, &annotated, &data_source, &warnings);
+                let output = json::format_json(
+                    &module_info,
+                    &function_info,
+                    &annotated,
+                    &data_source,
+                    &warnings,
+                );
                 println!("{output}");
             }
         }
     } else if let Some(ref sym) = sym_file {
         // Sym only - no binary available
         let sym_data = func_record.map(|func| build_sym_only_data(sym, func, demangle_enabled));
-        let data_source = if from_pdb { DataSource::PdbOnly } else { DataSource::SymOnly };
+        let data_source = if from_pdb {
+            DataSource::PdbOnly
+        } else {
+            DataSource::SymOnly
+        };
         match config.format {
             OutputFormat::Text => {
-                let output = text::format_sym_only(&module_info, &function_info, sym_data.as_ref(), &data_source, &warnings);
+                let output = text::format_sym_only(
+                    &module_info,
+                    &function_info,
+                    sym_data.as_ref(),
+                    &data_source,
+                    &warnings,
+                );
                 print!("{output}");
             }
             OutputFormat::Json => {
-                let output = json::format_json_sym_only(&module_info, &function_info, sym_data.as_ref(), &data_source, &warnings);
+                let output = json::format_json_sym_only(
+                    &module_info,
+                    &function_info,
+                    sym_data.as_ref(),
+                    &data_source,
+                    &warnings,
+                );
                 println!("{output}");
             }
         }
@@ -531,9 +614,7 @@ fn infer_platform_from_code_id(code_id: Option<&str>) -> (&'static str, &'static
         Some(id) if id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit()) => {
             ("Linux", "x86_64")
         }
-        Some(id) if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) => {
-            ("mac", "")
-        }
+        Some(id) if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) => ("mac", ""),
         _ => ("", ""),
     }
 }
@@ -542,9 +623,7 @@ fn infer_platform_from_code_id(code_id: Option<&str>) -> (&'static str, &'static
 /// Checks for `.so` in the debug file name or a 40-char hex code ID (GNU build ID).
 fn looks_like_elf(debug_file: &str, code_id: Option<&str>) -> bool {
     debug_file.contains(".so")
-        || code_id.is_some_and(|id| {
-            id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit())
-        })
+        || code_id.is_some_and(|id| id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// Derive a code file name from a debug file name.
@@ -562,7 +641,10 @@ fn derive_code_file(debug_file: &str) -> String {
 }
 
 /// Load a binary file, trying PE first, then ELF, then Mach-O.
-fn load_binary(path: &std::path::Path, target_arch: Option<CpuArch>) -> Option<Box<dyn BinaryFile>> {
+fn load_binary(
+    path: &std::path::Path,
+    target_arch: Option<CpuArch>,
+) -> Option<Box<dyn BinaryFile>> {
     if let Ok(pe) = PeFile::load(path) {
         return Some(Box::new(pe));
     }
@@ -577,10 +659,7 @@ fn load_binary(path: &std::path::Path, target_arch: Option<CpuArch>) -> Option<B
 }
 
 /// Determine the CPU architecture from available sources.
-fn determine_arch(
-    sym_file: &Option<SymFile>,
-    binary: Option<&dyn BinaryFile>,
-) -> Result<CpuArch> {
+fn determine_arch(sym_file: &Option<SymFile>, binary: Option<&dyn BinaryFile>) -> Result<CpuArch> {
     // Try sym file first
     if let Some(sym) = sym_file {
         if let Some(arch) = CpuArch::from_sym_arch(&sym.module.arch) {
@@ -971,23 +1050,49 @@ mod tests {
     }
 
     impl BinaryFile for StubBinary {
-        fn arch(&self) -> CpuArch { CpuArch::X86_64 }
-        fn extract_code(&self, _rva: u64, _size: u64) -> Result<Vec<u8>> { Ok(Vec::new()) }
-        fn resolve_import(&self, _rva: u64) -> Option<(String, String)> { None }
-        fn exports(&self) -> &[(u64, String)] { &[] }
+        fn arch(&self) -> CpuArch {
+            CpuArch::X86_64
+        }
+        fn extract_code(&self, _rva: u64, _size: u64) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        fn resolve_import(&self, _rva: u64) -> Option<(String, String)> {
+            None
+        }
+        fn exports(&self) -> &[(u64, String)] {
+            &[]
+        }
         fn function_bounds(&self, rva: u64) -> Option<(u64, u64)> {
             let idx = self.pdata.partition_point(|&(begin, _)| begin <= rva);
-            if idx == 0 { return None; }
+            if idx == 0 {
+                return None;
+            }
             let (begin, end) = self.pdata[idx - 1];
-            if rva < end { Some((begin, end)) } else { None }
+            if rva < end {
+                Some((begin, end))
+            } else {
+                None
+            }
         }
     }
 
     fn make_publics() -> Vec<PublicRecord> {
         vec![
-            PublicRecord { address: 0x1000, param_size: 0, name: "FuncA".to_string() },
-            PublicRecord { address: 0x1200, param_size: 0, name: "FuncB".to_string() },
-            PublicRecord { address: 0x1500, param_size: 0, name: "FuncC".to_string() },
+            PublicRecord {
+                address: 0x1000,
+                param_size: 0,
+                name: "FuncA".to_string(),
+            },
+            PublicRecord {
+                address: 0x1200,
+                param_size: 0,
+                name: "FuncB".to_string(),
+            },
+            PublicRecord {
+                address: 0x1500,
+                param_size: 0,
+                name: "FuncC".to_string(),
+            },
         ]
     }
 
@@ -1016,7 +1121,9 @@ mod tests {
     fn test_resolve_public_size_no_pdata_match() {
         let publics = make_publics();
         // Binary has no .pdata for this address — falls back to estimate
-        let binary = StubBinary { pdata: vec![(0x5000, 0x5100)] };
+        let binary = StubBinary {
+            pdata: vec![(0x5000, 0x5100)],
+        };
         assert_eq!(resolve_public_size(&publics, 0x1000, Some(&binary)), 0x200);
     }
 

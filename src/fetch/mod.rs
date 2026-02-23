@@ -11,13 +11,13 @@ pub mod tecken;
 
 use std::path::PathBuf;
 
-use anyhow::{Result, Context, bail};
+use anyhow::{bail, Context, Result};
 use reqwest::Client;
-use tracing::{warn, info, debug};
+use tracing::{debug, info, warn};
 
 use std::io::Read;
 
-use crate::cache::{Cache, CacheResult, SymbolCacheKey, BinaryCacheKey, PdbCacheKey};
+use crate::cache::{BinaryCacheKey, Cache, CacheResult, PdbCacheKey, SymbolCacheKey};
 use crate::config::Config;
 
 /// Result of a fetch attempt.
@@ -86,7 +86,9 @@ pub async fn fetch_sym_file(
     }
 
     // Try Tecken (first symbol server)
-    let tecken_url = config.symbol_servers.first()
+    let tecken_url = config
+        .symbol_servers
+        .first()
         .map(|s| s.as_str())
         .unwrap_or(tecken::DEFAULT_TECKEN_BASE);
 
@@ -154,7 +156,9 @@ pub async fn fetch_pdb_file(
     let pdb_client = build_archive_http_client(config)?;
 
     // Try Tecken first (has PDBs for Mozilla modules AND Microsoft modules it has processed)
-    let tecken_url = config.symbol_servers.first()
+    let tecken_url = config
+        .symbol_servers
+        .first()
         .map(|s| s.as_str())
         .unwrap_or(tecken::DEFAULT_TECKEN_BASE);
 
@@ -174,7 +178,9 @@ pub async fn fetch_pdb_file(
     }
 
     // Try Microsoft Symbol Server
-    let ms_url = config.symbol_servers.get(1)
+    let ms_url = config
+        .symbol_servers
+        .get(1)
         .map(|s| s.as_str())
         .unwrap_or(microsoft::DEFAULT_MS_SYMBOL_SERVER);
 
@@ -235,7 +241,9 @@ pub async fn fetch_binary(
     }
 
     // Try Tecken (code-file/code-id lookup)
-    let tecken_url = config.symbol_servers.first()
+    let tecken_url = config
+        .symbol_servers
+        .first()
         .map(|s| s.as_str())
         .unwrap_or(tecken::DEFAULT_TECKEN_BASE);
 
@@ -256,7 +264,9 @@ pub async fn fetch_binary(
 
     // Try Microsoft Symbol Server (only for Windows binaries)
     if looks_like_windows_binary(code_file) {
-        let ms_url = config.symbol_servers.get(1)
+        let ms_url = config
+            .symbol_servers
+            .get(1)
             .map(|s| s.as_str())
             .unwrap_or(microsoft::DEFAULT_MS_SYMBOL_SERVER);
 
@@ -336,7 +346,9 @@ pub async fn fetch_binary_debuginfod(
 
     info!(
         "trying debuginfod for {} (build ID: {}, {} server(s))",
-        code_file, build_id, config.debuginfod_urls.len()
+        code_file,
+        build_id,
+        config.debuginfod_urls.len()
     );
 
     match debuginfod::fetch_executable(client, &build_id, &config.debuginfod_urls).await {
@@ -364,7 +376,9 @@ pub async fn fetch_binary_debuginfod(
 pub fn build_archive_http_client(config: &Config) -> Result<Client> {
     Client::builder()
         .user_agent(&config.user_agent)
-        .timeout(std::time::Duration::from_secs(config.archive_timeout_seconds))
+        .timeout(std::time::Duration::from_secs(
+            config.archive_timeout_seconds,
+        ))
         .redirect(reqwest::redirect::Policy::limited(10))
         .gzip(true)
         .build()
@@ -445,8 +459,9 @@ pub async fn fetch_binary_ftp(
         }
     };
 
-    let binary_data = archive::extract_and_verify(&archive_data, code_file, &build_id, &locator.platform)
-        .context("FTP archive extraction")?;
+    let binary_data =
+        archive::extract_and_verify(&archive_data, code_file, &build_id, &locator.platform)
+            .context("FTP archive extraction")?;
 
     let path = cache.store_binary(&key, &binary_data)?;
     Ok(path)
@@ -503,7 +518,9 @@ pub async fn fetch_binary_snap(
             let (download_url, revision) = snap::query_snap_store(client, locator).await?;
             info!(
                 "downloading snap: {} rev {} ({:.0} ...)",
-                locator.snap_name, revision, download_url.len()
+                locator.snap_name,
+                revision,
+                download_url.len()
             );
 
             let response = client
@@ -535,8 +552,8 @@ pub async fn fetch_binary_snap(
     };
 
     // Extract binary from squashfs
-    let binary_data = snap::extract_from_squashfs(&snap_path, code_file)
-        .context("snap extraction")?;
+    let binary_data =
+        snap::extract_from_squashfs(&snap_path, code_file).context("snap extraction")?;
 
     // Verify build ID
     archive::verify_binary_id(&binary_data, &build_id).map_err(|e| {

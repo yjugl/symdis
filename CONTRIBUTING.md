@@ -6,6 +6,7 @@
 git clone https://github.com/yjugl/symdis.git
 cd symdis
 cargo build
+cargo fmt
 cargo test
 cargo clippy -- -D warnings
 ```

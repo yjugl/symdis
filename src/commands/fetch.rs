@@ -20,13 +20,7 @@ pub async fn run(args: &FetchArgs, config: &Config) -> Result<()> {
     let client = fetch::build_http_client(config)?;
 
     // Fetch .sym file and binary concurrently
-    let sym_fut = fetch::fetch_sym_file(
-        &client,
-        &cache,
-        config,
-        &args.debug_file,
-        &args.debug_id,
-    );
+    let sym_fut = fetch::fetch_sym_file(&client, &cache, config, &args.debug_file, &args.debug_id);
     let bin_fut = async {
         if let (Some(code_file), Some(code_id)) = (&args.code_file, &args.code_id) {
             fetch::fetch_binary(&client, &cache, config, code_file, code_id).await
@@ -74,11 +68,7 @@ pub async fn run(args: &FetchArgs, config: &Config) -> Result<()> {
                 if let Some(code_id) = effective_code_id {
                     let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
                     match fetch::fetch_binary_debuginfod(
-                        &client,
-                        &cache,
-                        config,
-                        code_file,
-                        code_id,
+                        &client, &cache, config, code_file, code_id,
                     )
                     .await
                     {
@@ -173,7 +163,9 @@ pub async fn run(args: &FetchArgs, config: &Config) -> Result<()> {
                         .as_ref()
                         .and_then(|s| fetch::apt::apt_architecture(&s.module.arch));
                     if let Some(arch) = arch {
-                        let apt_package = args.apt.as_deref()
+                        let apt_package = args
+                            .apt
+                            .as_deref()
                             .and_then(|s| if s.is_empty() { None } else { Some(s) })
                             .map(|s| s.to_string());
                         // For fetch, no auto-detection (SymFileSummary doesn't
@@ -269,7 +261,8 @@ pub async fn run(args: &FetchArgs, config: &Config) -> Result<()> {
 
     // Optionally fetch PDB when --pdb is set
     let pdb_status = if args.pdb && args.debug_file.to_ascii_lowercase().ends_with(".pdb") {
-        match fetch::fetch_pdb_file(&client, &cache, config, &args.debug_file, &args.debug_id).await {
+        match fetch::fetch_pdb_file(&client, &cache, config, &args.debug_file, &args.debug_id).await
+        {
             Ok(path) => {
                 let size = std::fs::metadata(&path).map(|m| m.len()).ok();
                 FileStatus::Available { size }
@@ -329,9 +322,7 @@ fn infer_platform_from_code_id(code_id: Option<&str>) -> (&'static str, &'static
         Some(id) if id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit()) => {
             ("Linux", "x86_64")
         }
-        Some(id) if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) => {
-            ("mac", "")
-        }
+        Some(id) if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) => ("mac", ""),
         _ => ("", ""),
     }
 }
@@ -340,9 +331,7 @@ fn infer_platform_from_code_id(code_id: Option<&str>) -> (&'static str, &'static
 /// Checks for `.so` in the debug file name or a 40-char hex code ID (GNU build ID).
 fn looks_like_elf(debug_file: &str, code_id: Option<&str>) -> bool {
     debug_file.contains(".so")
-        || code_id.is_some_and(|id| {
-            id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit())
-        })
+        || code_id.is_some_and(|id| id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// Derive a code file name from a debug file name.

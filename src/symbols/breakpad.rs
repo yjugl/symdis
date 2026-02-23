@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::io::BufRead;
 
-use anyhow::{Result, Context, bail};
+use anyhow::{bail, Context, Result};
 
 /// Parsed Breakpad .sym file.
 pub struct SymFile {
@@ -122,7 +122,12 @@ impl SymFileSummary {
         }
 
         let module = module.ok_or_else(|| anyhow::anyhow!("no MODULE record found"))?;
-        Ok(Self { module, function_count, public_count, code_id })
+        Ok(Self {
+            module,
+            function_count,
+            public_count,
+            code_id,
+        })
     }
 }
 
@@ -194,10 +199,7 @@ impl SymFile {
         // Build name index
         let mut name_index: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, func) in functions.iter().enumerate() {
-            name_index
-                .entry(func.name.clone())
-                .or_default()
-                .push(i);
+            name_index.entry(func.name.clone()).or_default().push(i);
         }
 
         // Build public name index
@@ -243,10 +245,7 @@ impl SymFile {
         // Build name index
         let mut name_index: HashMap<String, Vec<usize>> = HashMap::new();
         for (i, func) in functions.iter().enumerate() {
-            name_index
-                .entry(func.name.clone())
-                .or_default()
-                .push(i);
+            name_index.entry(func.name.clone()).or_default().push(i);
         }
 
         // Build public name index

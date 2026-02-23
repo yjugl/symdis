@@ -8,7 +8,7 @@ pub mod fetch;
 pub mod info;
 pub mod lookup;
 
-use anyhow::{Result, bail};
+use anyhow::{bail, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::config::Config;
@@ -982,9 +982,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             }
             lookup::run(args, &config).await
         }
-        Command::Info(ref args) => {
-            info::run(args, &config).await
-        }
+        Command::Info(ref args) => info::run(args, &config).await,
         Command::Fetch(ref args) => fetch::run(args, &config).await,
         Command::Cache(args) => cache_cmd::run(args, &config),
     }

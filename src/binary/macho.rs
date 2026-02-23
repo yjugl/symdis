@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{Result, Context, bail};
+use anyhow::{bail, Context, Result};
 use goblin::mach::constants::cputype::*;
 use goblin::mach::constants::{SECTION_TYPE, S_SYMBOL_STUBS};
 use goblin::mach::exports::ExportInfo;
@@ -65,14 +65,15 @@ impl MachOFile {
                     arches.iter().find(|a| a.cputype == cputype)
                 } else {
                     // Default: prefer x86_64, then arm64
-                    arches.iter().find(|a| a.cputype == CPU_TYPE_X86_64)
+                    arches
+                        .iter()
+                        .find(|a| a.cputype == CPU_TYPE_X86_64)
                         .or_else(|| arches.iter().find(|a| a.cputype == CPU_TYPE_ARM64))
                 };
 
                 let fat_arch = fat_arch.ok_or_else(|| {
-                    let available: Vec<_> = arches.iter()
-                        .filter_map(|a| arch_name(a.cputype))
-                        .collect();
+                    let available: Vec<_> =
+                        arches.iter().filter_map(|a| arch_name(a.cputype)).collect();
                     anyhow::anyhow!(
                         "no matching architecture in fat binary (available: {})",
                         available.join(", ")
@@ -80,8 +81,8 @@ impl MachOFile {
                 })?;
 
                 let slice = fat_arch.slice(&data);
-                let macho = MachO::parse(slice, 0)
-                    .context("parsing Mach-O slice from fat binary")?;
+                let macho =
+                    MachO::parse(slice, 0).context("parsing Mach-O slice from fat binary")?;
                 // Use the slice, not the full fat binary — segment offsets
                 // are relative to the slice start
                 Self::from_macho(slice, &macho)
@@ -220,16 +221,12 @@ fn build_stub_imports(
                     if off + SIZEOF_SECTION_64 > data.len() {
                         break;
                     }
-                    let flags = u32::from_le_bytes(
-                        data[off + 64..off + 68].try_into().unwrap(),
-                    );
+                    let flags = u32::from_le_bytes(data[off + 64..off + 68].try_into().unwrap());
                     if flags & SECTION_TYPE != S_SYMBOL_STUBS {
                         continue;
                     }
-                    let addr =
-                        u64::from_le_bytes(data[off + 32..off + 40].try_into().unwrap());
-                    let size =
-                        u64::from_le_bytes(data[off + 40..off + 48].try_into().unwrap());
+                    let addr = u64::from_le_bytes(data[off + 32..off + 40].try_into().unwrap());
+                    let size = u64::from_le_bytes(data[off + 40..off + 48].try_into().unwrap());
                     let reserved1 =
                         u32::from_le_bytes(data[off + 68..off + 72].try_into().unwrap());
                     let reserved2 =
@@ -244,18 +241,14 @@ fn build_stub_imports(
                     if off + SIZEOF_SECTION_32 > data.len() {
                         break;
                     }
-                    let flags = u32::from_le_bytes(
-                        data[off + 56..off + 60].try_into().unwrap(),
-                    );
+                    let flags = u32::from_le_bytes(data[off + 56..off + 60].try_into().unwrap());
                     if flags & SECTION_TYPE != S_SYMBOL_STUBS {
                         continue;
                     }
-                    let addr = u32::from_le_bytes(
-                        data[off + 32..off + 36].try_into().unwrap(),
-                    ) as u64;
-                    let size = u32::from_le_bytes(
-                        data[off + 36..off + 40].try_into().unwrap(),
-                    ) as u64;
+                    let addr =
+                        u32::from_le_bytes(data[off + 32..off + 36].try_into().unwrap()) as u64;
+                    let size =
+                        u32::from_le_bytes(data[off + 36..off + 40].try_into().unwrap()) as u64;
                     let reserved1 =
                         u32::from_le_bytes(data[off + 60..off + 64].try_into().unwrap());
                     let reserved2 =
@@ -287,8 +280,7 @@ fn build_stub_imports(
                 break;
             }
 
-            let sym_idx =
-                u32::from_le_bytes(data[isym_off..isym_off + 4].try_into().unwrap());
+            let sym_idx = u32::from_le_bytes(data[isym_off..isym_off + 4].try_into().unwrap());
 
             // Skip INDIRECT_SYMBOL_LOCAL and INDIRECT_SYMBOL_ABS
             if sym_idx & (0x80000000 | 0x40000000) != 0 {
@@ -297,11 +289,7 @@ fn build_stub_imports(
 
             if let Ok((name, _nlist)) = symbols.get(sym_idx as usize) {
                 if !name.is_empty() {
-                    let dylib = name_to_dylib
-                        .get(name)
-                        .copied()
-                        .unwrap_or("")
-                        .to_string();
+                    let dylib = name_to_dylib.get(name).copied().unwrap_or("").to_string();
                     map.insert(stub_addr, (dylib, name.to_string()));
                 }
             }
@@ -402,13 +390,19 @@ impl BinaryFile for MachOFile {
             return None;
         }
         let value = if ptr_size == 4 {
-            u64::from(u32::from_le_bytes(self.data[offset..offset + 4].try_into().ok()?))
+            u64::from(u32::from_le_bytes(
+                self.data[offset..offset + 4].try_into().ok()?,
+            ))
         } else {
             u64::from_le_bytes(self.data[offset..offset + 8].try_into().ok()?)
         };
         // Mach-O pointers are absolute VAs — no base subtraction needed.
         // Filter out zero (unresolved lazy pointers).
-        if value == 0 { None } else { Some(value) }
+        if value == 0 {
+            None
+        } else {
+            Some(value)
+        }
     }
 
     fn build_id(&self) -> Option<String> {
@@ -432,9 +426,10 @@ mod tests {
                 (0x1000, "_main".to_string()),
                 (0x2000, "_helper".to_string()),
             ],
-            imports_map: HashMap::from([
-                (0x5000, ("libSystem.B.dylib".to_string(), "_printf".to_string())),
-            ]),
+            imports_map: HashMap::from([(
+                0x5000,
+                ("libSystem.B.dylib".to_string(), "_printf".to_string()),
+            )]),
             segments: vec![
                 MachOSegment {
                     vmaddr: 0x0,

@@ -78,11 +78,7 @@ pub fn annotate(
 }
 
 /// Annotate instructions with source file and line from the sym file's line records.
-fn annotate_source_lines(
-    insns: &mut [AnnotatedInstruction],
-    sym: &SymFile,
-    func: &FuncRecord,
-) {
+fn annotate_source_lines(insns: &mut [AnnotatedInstruction], sym: &SymFile, func: &FuncRecord) {
     for insn in insns.iter_mut() {
         if let Some(loc) = sym.get_source_line(insn.instruction.address, func) {
             insn.source_file = Some(loc.file);
@@ -154,11 +150,7 @@ fn annotate_call_targets(
 }
 
 /// Annotate instructions with inline function frame information.
-fn annotate_inlines(
-    insns: &mut [AnnotatedInstruction],
-    sym: &SymFile,
-    func: &FuncRecord,
-) {
+fn annotate_inlines(insns: &mut [AnnotatedInstruction], sym: &SymFile, func: &FuncRecord) {
     for insn in insns.iter_mut() {
         let frames = sym.get_inline_at(insn.instruction.address, func);
         insn.inline_frames = frames
@@ -273,8 +265,12 @@ PUBLIC 3000 0 _PublicSymbol
         /// Stub binary that resolves address 0x2000 as an import.
         struct StubBinaryWithPltImport;
         impl BinaryFile for StubBinaryWithPltImport {
-            fn arch(&self) -> CpuArch { CpuArch::Arm64 }
-            fn extract_code(&self, _rva: u64, _size: u64) -> anyhow::Result<Vec<u8>> { Ok(Vec::new()) }
+            fn arch(&self) -> CpuArch {
+                CpuArch::Arm64
+            }
+            fn extract_code(&self, _rva: u64, _size: u64) -> anyhow::Result<Vec<u8>> {
+                Ok(Vec::new())
+            }
             fn resolve_import(&self, rva: u64) -> Option<(String, String)> {
                 if rva == 0x2000 {
                     Some(("".to_string(), "memcpy".to_string()))
@@ -282,7 +278,9 @@ PUBLIC 3000 0 _PublicSymbol
                     None
                 }
             }
-            fn exports(&self) -> &[(u64, String)] { &[] }
+            fn exports(&self) -> &[(u64, String)] {
+                &[]
+            }
         }
 
         let sym = make_test_sym();
@@ -297,10 +295,7 @@ PUBLIC 3000 0 _PublicSymbol
         let annotated = annotate(instructions, Some(&sym), Some(func), Some(&binary), None);
 
         // ELF imports use empty DLL name, so just the function name is shown
-        assert_eq!(
-            annotated[0].call_target_name.as_deref(),
-            Some("memcpy")
-        );
+        assert_eq!(annotated[0].call_target_name.as_deref(), Some("memcpy"));
     }
 
     #[test]
@@ -313,10 +308,7 @@ PUBLIC 3000 0 _PublicSymbol
 
         let annotated = annotate(instructions, Some(&sym), Some(func), None, None);
 
-        assert_eq!(
-            annotated[0].call_target_name.as_deref(),
-            Some("[indirect]")
-        );
+        assert_eq!(annotated[0].call_target_name.as_deref(), Some("[indirect]"));
     }
 
     #[test]
@@ -364,7 +356,7 @@ PUBLIC 3000 0 _PublicSymbol
         // placing the highlight inside the instruction rather than at its start.
         let instructions = make_instructions(&[
             (0x1000, "push", "rbp"),
-            (0x1004, "call", "0x2000"),  // 4 bytes: 0x1004..0x1008
+            (0x1004, "call", "0x2000"), // 4 bytes: 0x1004..0x1008
             (0x1008, "mov", "rax, rbx"),
         ]);
 
@@ -378,10 +370,8 @@ PUBLIC 3000 0 _PublicSymbol
 
     #[test]
     fn test_no_sym_no_annotations() {
-        let instructions = make_instructions(&[
-            (0x1000, "push", "rbp"),
-            (0x1004, "mov", "rbp, rsp"),
-        ]);
+        let instructions =
+            make_instructions(&[(0x1000, "push", "rbp"), (0x1004, "mov", "rbp, rsp")]);
 
         let annotated = annotate(instructions, None, None, None, Some(0x1000));
 
@@ -415,8 +405,12 @@ PUBLIC 3000 0 _PublicSymbol
         /// Stub binary with a single IAT import.
         struct StubBinaryWithImport;
         impl BinaryFile for StubBinaryWithImport {
-            fn arch(&self) -> CpuArch { CpuArch::X86_64 }
-            fn extract_code(&self, _rva: u64, _size: u64) -> anyhow::Result<Vec<u8>> { Ok(Vec::new()) }
+            fn arch(&self) -> CpuArch {
+                CpuArch::X86_64
+            }
+            fn extract_code(&self, _rva: u64, _size: u64) -> anyhow::Result<Vec<u8>> {
+                Ok(Vec::new())
+            }
             fn resolve_import(&self, rva: u64) -> Option<(String, String)> {
                 if rva == 0x8000 {
                     Some(("kernel32.dll".to_string(), "CreateFileW".to_string()))
@@ -424,7 +418,9 @@ PUBLIC 3000 0 _PublicSymbol
                     None
                 }
             }
-            fn exports(&self) -> &[(u64, String)] { &[] }
+            fn exports(&self) -> &[(u64, String)] {
+                &[]
+            }
         }
 
         let sym = make_test_sym();
@@ -450,12 +446,24 @@ PUBLIC 3000 0 _PublicSymbol
         /// Stub binary whose on-disk pointer at RVA 0x9000 points to RVA 0x2000.
         struct StubBinaryWithPointer;
         impl BinaryFile for StubBinaryWithPointer {
-            fn arch(&self) -> CpuArch { CpuArch::X86_64 }
-            fn extract_code(&self, _rva: u64, _size: u64) -> anyhow::Result<Vec<u8>> { Ok(Vec::new()) }
-            fn resolve_import(&self, _rva: u64) -> Option<(String, String)> { None }
-            fn exports(&self) -> &[(u64, String)] { &[] }
+            fn arch(&self) -> CpuArch {
+                CpuArch::X86_64
+            }
+            fn extract_code(&self, _rva: u64, _size: u64) -> anyhow::Result<Vec<u8>> {
+                Ok(Vec::new())
+            }
+            fn resolve_import(&self, _rva: u64) -> Option<(String, String)> {
+                None
+            }
+            fn exports(&self) -> &[(u64, String)] {
+                &[]
+            }
             fn read_pointer_at_rva(&self, rva: u64) -> Option<u64> {
-                if rva == 0x9000 { Some(0x2000) } else { None }
+                if rva == 0x9000 {
+                    Some(0x2000)
+                } else {
+                    None
+                }
             }
         }
 
@@ -489,9 +497,6 @@ PUBLIC 3000 0 _PublicSymbol
         let annotated = annotate(instructions, Some(&sym), Some(func), None, None);
 
         // Falls through to [indirect]
-        assert_eq!(
-            annotated[0].call_target_name.as_deref(),
-            Some("[indirect]")
-        );
+        assert_eq!(annotated[0].call_target_name.as_deref(), Some("[indirect]"));
     }
 }

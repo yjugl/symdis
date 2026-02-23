@@ -5,11 +5,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{Result, Context, bail};
-use goblin::elf::Elf;
+use anyhow::{bail, Context, Result};
 use goblin::elf::program_header::PT_LOAD;
 use goblin::elf::reloc;
 use goblin::elf::sym::{STT_FUNC, STT_GNU_IFUNC, STT_NOTYPE};
+use goblin::elf::Elf;
 
 use super::{BinaryFile, CpuArch};
 
@@ -36,8 +36,8 @@ struct LoadSegment {
 impl ElfFile {
     /// Load and parse an ELF file.
     pub fn load(path: &Path) -> Result<Self> {
-        let data = std::fs::read(path)
-            .with_context(|| format!("reading ELF file: {}", path.display()))?;
+        let data =
+            std::fs::read(path).with_context(|| format!("reading ELF file: {}", path.display()))?;
         Self::from_bytes(data)
     }
 
@@ -46,10 +46,10 @@ impl ElfFile {
         let elf = Elf::parse(&data).context("parsing ELF file")?;
 
         let arch = match elf.header.e_machine {
-            3 => CpuArch::X86,       // EM_386
-            62 => CpuArch::X86_64,   // EM_X86_64
-            40 => CpuArch::Arm,      // EM_ARM
-            183 => CpuArch::Arm64,   // EM_AARCH64
+            3 => CpuArch::X86,     // EM_386
+            62 => CpuArch::X86_64, // EM_X86_64
+            40 => CpuArch::Arm,    // EM_ARM
+            183 => CpuArch::Arm64, // EM_AARCH64
             other => bail!("unsupported ELF machine type: {}", other),
         };
 
@@ -72,10 +72,7 @@ impl ElfFile {
         // .dynsym — defined (non-import) function symbols
         for sym in elf.dynsyms.iter() {
             let ty = sym.st_type();
-            if (ty == STT_FUNC || ty == STT_GNU_IFUNC)
-                && sym.st_value != 0
-                && !sym.is_import()
-            {
+            if (ty == STT_FUNC || ty == STT_GNU_IFUNC) && sym.st_value != 0 && !sym.is_import() {
                 if let Some(name) = elf.dynstrtab.get_at(sym.st_name) {
                     if !name.is_empty() {
                         exports_map.insert(sym.st_value, name.to_string());
@@ -87,13 +84,12 @@ impl ElfFile {
         // .symtab — defined function symbols (may not exist in stripped binaries)
         for sym in elf.syms.iter() {
             let ty = sym.st_type();
-            if (ty == STT_FUNC || ty == STT_GNU_IFUNC)
-                && sym.st_value != 0
-                && !sym.is_import()
-            {
+            if (ty == STT_FUNC || ty == STT_GNU_IFUNC) && sym.st_value != 0 && !sym.is_import() {
                 if let Some(name) = elf.strtab.get_at(sym.st_name) {
                     if !name.is_empty() {
-                        exports_map.entry(sym.st_value).or_insert_with(|| name.to_string());
+                        exports_map
+                            .entry(sym.st_value)
+                            .or_insert_with(|| name.to_string());
                     }
                 }
             }
@@ -288,14 +284,12 @@ fn got_reloc_types(arch: CpuArch) -> &'static [u32] {
 /// the imported symbol. This maps those GOT slots so that indirect calls/jumps
 /// through the GOT (e.g., x86-64 `call [rip+disp]`, AArch64 ADRP+LDR+BLR)
 /// can be resolved to their target import names.
-fn build_got_imports(
-    elf: &Elf,
-    arch: CpuArch,
-    imports_map: &mut HashMap<u64, (String, String)>,
-) {
+fn build_got_imports(elf: &Elf, arch: CpuArch, imports_map: &mut HashMap<u64, (String, String)>) {
     let types = got_reloc_types(arch);
 
-    let all_relocs = elf.dynrelas.iter()
+    let all_relocs = elf
+        .dynrelas
+        .iter()
         .chain(elf.dynrels.iter())
         .chain(elf.pltrelocs.iter());
 
@@ -353,7 +347,9 @@ impl BinaryFile for ElfFile {
     }
 
     fn build_id(&self) -> Option<String> {
-        crate::fetch::archive::extract_elf_build_id(&self.data).ok().flatten()
+        crate::fetch::archive::extract_elf_build_id(&self.data)
+            .ok()
+            .flatten()
     }
 
     fn read_pointer_at_rva(&self, rva: u64) -> Option<u64> {
@@ -366,13 +362,19 @@ impl BinaryFile for ElfFile {
             return None;
         }
         let value = if ptr_size == 4 {
-            u64::from(u32::from_le_bytes(self.data[offset..offset + 4].try_into().ok()?))
+            u64::from(u32::from_le_bytes(
+                self.data[offset..offset + 4].try_into().ok()?,
+            ))
         } else {
             u64::from_le_bytes(self.data[offset..offset + 8].try_into().ok()?)
         };
         // ELF pointers are absolute VAs (same address space as our RVAs),
         // so no base subtraction needed. Filter out zero (unresolved relocations).
-        if value == 0 { None } else { Some(value) }
+        if value == 0 {
+            None
+        } else {
+            Some(value)
+        }
     }
 
     fn is_thumb(&self, rva: u64) -> bool {
@@ -400,9 +402,7 @@ mod tests {
                 (0x1000, "func_a".to_string()),
                 (0x2000, "func_b".to_string()),
             ],
-            imports_map: HashMap::from([
-                (0x3000, ("libc.so.6".to_string(), "malloc".to_string())),
-            ]),
+            imports_map: HashMap::from([(0x3000, ("libc.so.6".to_string(), "malloc".to_string()))]),
             segments: vec![
                 LoadSegment {
                     vaddr: 0x0,
@@ -559,8 +559,8 @@ mod tests {
     fn test_is_thumb_single_thumb_marker() {
         let elf = make_arm_elf_with_markers(vec![(0x1000, true)]);
         assert!(!elf.is_thumb(0x0FFF)); // before marker
-        assert!(elf.is_thumb(0x1000));  // at marker
-        assert!(elf.is_thumb(0x2000));  // after marker
+        assert!(elf.is_thumb(0x1000)); // at marker
+        assert!(elf.is_thumb(0x2000)); // after marker
     }
 
     #[test]
@@ -581,8 +581,8 @@ mod tests {
         assert!(!elf.is_thumb(0x0FFF)); // before any marker
         assert!(!elf.is_thumb(0x1000)); // in ARM region
         assert!(!elf.is_thumb(0x1500)); // still ARM
-        assert!(elf.is_thumb(0x2000));  // Thumb region starts
-        assert!(elf.is_thumb(0x2800));  // still Thumb
+        assert!(elf.is_thumb(0x2000)); // Thumb region starts
+        assert!(elf.is_thumb(0x2800)); // still Thumb
         assert!(!elf.is_thumb(0x3000)); // back to ARM
         assert!(!elf.is_thumb(0x4000)); // still ARM
     }

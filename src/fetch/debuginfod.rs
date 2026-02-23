@@ -13,11 +13,7 @@ use super::FetchResult;
 ///
 /// Fires requests to all servers simultaneously and returns as soon as the
 /// first server responds with data. Remaining requests are cancelled.
-pub async fn fetch_executable(
-    client: &Client,
-    build_id: &str,
-    servers: &[String],
-) -> FetchResult {
+pub async fn fetch_executable(client: &Client, build_id: &str, servers: &[String]) -> FetchResult {
     let mut set = tokio::task::JoinSet::new();
 
     for server in servers {

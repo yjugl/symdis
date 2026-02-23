@@ -5,7 +5,7 @@
 use reqwest::Client;
 use tracing::debug;
 
-use super::{FetchResult, sym_filename, compress_filename, decompress_cab};
+use super::{compress_filename, decompress_cab, sym_filename, FetchResult};
 
 pub const DEFAULT_TECKEN_BASE: &str = "https://symbols.mozilla.org";
 

@@ -4,9 +4,9 @@
 
 use std::path::Path;
 
-use anyhow::{Result, Context, bail};
+use anyhow::{bail, Context, Result};
 use reqwest::Client;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 use crate::symbols::breakpad::SymFile;
 
@@ -62,12 +62,12 @@ fn extract_snap_name_from_path(path: &str) -> Option<&str> {
 /// Query the Snap Store API for a snap's download URL.
 ///
 /// Returns `(download_url, revision)` for the latest stable-channel revision.
-pub async fn query_snap_store(
-    client: &Client,
-    locator: &SnapLocator,
-) -> Result<(String, String)> {
+pub async fn query_snap_store(client: &Client, locator: &SnapLocator) -> Result<(String, String)> {
     let url = format!("{}/{}", SNAP_STORE_API, locator.snap_name);
-    debug!("querying Snap Store: {} ({})", locator.snap_name, locator.architecture);
+    debug!(
+        "querying Snap Store: {} ({})",
+        locator.snap_name, locator.architecture
+    );
 
     let response = client
         .get(&url)
@@ -129,18 +129,22 @@ pub async fn query_snap_store(
 pub fn extract_from_squashfs(snap_path: &Path, target_filename: &str) -> Result<Vec<u8>> {
     use backhand::{FilesystemReader, InnerNode};
 
-    info!("extracting {target_filename} from snap: {}", snap_path.display());
+    info!(
+        "extracting {target_filename} from snap: {}",
+        snap_path.display()
+    );
 
     let file = std::fs::File::open(snap_path)
         .with_context(|| format!("opening snap file: {}", snap_path.display()))?;
     let reader = std::io::BufReader::new(file);
-    let fs = FilesystemReader::from_reader(reader)
-        .context("reading squashfs from snap")?;
+    let fs = FilesystemReader::from_reader(reader).context("reading squashfs from snap")?;
 
     // First pass: find the target by filename, resolving symlinks
     let mut real_filename = None;
     for node in fs.files() {
-        let filename = node.fullpath.file_name()
+        let filename = node
+            .fullpath
+            .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("");
         if filename == target_filename {
@@ -150,7 +154,9 @@ pub fn extract_from_squashfs(snap_path: &Path, target_filename: &str) -> Result<
                 }
                 InnerNode::Symlink(symlink) => {
                     // Symlink target is typically a relative name like "libglib-2.0.so.0.7800.1"
-                    let link_target = symlink.link.file_name()
+                    let link_target = symlink
+                        .link
+                        .file_name()
                         .and_then(|n| n.to_str())
                         .unwrap_or("");
                     debug!(
@@ -168,7 +174,9 @@ pub fn extract_from_squashfs(snap_path: &Path, target_filename: &str) -> Result<
     // Second pass: if we found a symlink, extract its target
     if let Some(ref real_name) = real_filename {
         for node in fs.files() {
-            let filename = node.fullpath.file_name()
+            let filename = node
+                .fullpath
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
             if filename == real_name {
@@ -179,7 +187,10 @@ pub fn extract_from_squashfs(snap_path: &Path, target_filename: &str) -> Result<
         }
     }
 
-    bail!("file '{target_filename}' not found in snap: {}", snap_path.display())
+    bail!(
+        "file '{target_filename}' not found in snap: {}",
+        snap_path.display()
+    )
 }
 
 /// Read file data from a squashfs filesystem node.
@@ -190,8 +201,7 @@ fn read_squashfs_file(
 ) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     let mut file_reader = fs.file(file_data).reader();
-    std::io::Read::read_to_end(&mut file_reader, &mut buf)
-        .context("reading file from squashfs")?;
+    std::io::Read::read_to_end(&mut file_reader, &mut buf).context("reading file from squashfs")?;
     debug!("extracted {} ({} bytes) from snap", name, buf.len());
     Ok(buf)
 }
@@ -225,9 +235,13 @@ mod tests {
         let sym_file = SymFile::parse(std::io::Cursor::new(
             "MODULE Linux x86_64 8EF7C24A1B02B5A64F56BEA31DCF2B1E0 libglib-2.0.so.0\n\
              FILE 0 /build/gnome-42-2204-sdk/parts/glib/src/glib/gmain.c\n\
-             FILE 1 /build/gnome-42-2204-sdk/parts/glib/src/glib/garray.c\n"
-        )).unwrap();
-        assert_eq!(detect_snap_name(&sym_file), Some("gnome-42-2204-sdk".to_string()));
+             FILE 1 /build/gnome-42-2204-sdk/parts/glib/src/glib/garray.c\n",
+        ))
+        .unwrap();
+        assert_eq!(
+            detect_snap_name(&sym_file),
+            Some("gnome-42-2204-sdk".to_string())
+        );
     }
 
     #[test]
@@ -235,8 +249,9 @@ mod tests {
         let sym_file = SymFile::parse(std::io::Cursor::new(
             "MODULE Linux x86_64 ABC123 libxul.so\n\
              FILE 0 /builds/worker/workspace/build/src/xpcom/base/nsCOMPtr.cpp\n\
-             FILE 1 /usr/include/c++/11/bits/stl_vector.h\n"
-        )).unwrap();
+             FILE 1 /usr/include/c++/11/bits/stl_vector.h\n",
+        ))
+        .unwrap();
         assert_eq!(detect_snap_name(&sym_file), None);
     }
 
@@ -256,22 +271,19 @@ mod tests {
             None
         );
         // Empty name
-        assert_eq!(
-            extract_snap_name_from_path("/build//parts/something"),
-            None
-        );
+        assert_eq!(extract_snap_name_from_path("/build//parts/something"), None);
         // No /build/ prefix
-        assert_eq!(
-            extract_snap_name_from_path("/usr/src/gmain.c"),
-            None
-        );
+        assert_eq!(extract_snap_name_from_path("/usr/src/gmain.c"), None);
     }
 
     #[test]
     fn test_snap_store_url_format() {
         // Verify the API URL construction
         let url = format!("{}/{}", SNAP_STORE_API, "gnome-42-2204-sdk");
-        assert_eq!(url, "https://api.snapcraft.io/v2/snaps/info/gnome-42-2204-sdk");
+        assert_eq!(
+            url,
+            "https://api.snapcraft.io/v2/snaps/info/gnome-42-2204-sdk"
+        );
     }
 
     #[test]

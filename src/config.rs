@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::commands::{Cli, Command, FormatArg, SyntaxArg};
@@ -115,8 +115,7 @@ impl Config {
         let mut config = Config::default();
 
         // --- Layer 2: config file ---
-        let config_path = config_file_path_override()
-            .or_else(config_file_path_default);
+        let config_path = config_file_path_override().or_else(config_file_path_default);
 
         if let Some(path) = config_path {
             if path.exists() {
@@ -201,7 +200,8 @@ fn apply_config_file(config: &mut Config, file: &ConfigFile) {
 /// Apply environment variable overrides.
 fn apply_env_vars(config: &mut Config) {
     if let Ok(val) = std::env::var("SYMDIS_SYMBOL_SERVERS") {
-        let servers: Vec<String> = val.split(',')
+        let servers: Vec<String> = val
+            .split(',')
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
@@ -211,7 +211,8 @@ fn apply_env_vars(config: &mut Config) {
     }
 
     if let Ok(val) = std::env::var("DEBUGINFOD_URLS") {
-        let urls: Vec<String> = val.split_whitespace()
+        let urls: Vec<String> = val
+            .split_whitespace()
             .filter(|s| !s.is_empty())
             .map(|s| s.to_string())
             .collect();
@@ -258,7 +259,8 @@ fn apply_cli(config: &mut Config, cli: &Cli) {
 
 /// Get config file path from SYMDIS_CONFIG env var.
 fn config_file_path_override() -> Option<PathBuf> {
-    std::env::var("SYMDIS_CONFIG").ok()
+    std::env::var("SYMDIS_CONFIG")
+        .ok()
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
 }
@@ -330,7 +332,9 @@ pub fn parse_nt_symbol_path(sym_path: &str) -> Option<PathBuf> {
         } else if entry_lower.strip_prefix("symsrv*").is_some() {
             // symsrv*symsrv.dll*<cache>*<server> — skip the DLL name
             let original_rest = &entry[7..];
-            original_rest.split_once('*').map(|(_, after_dll)| after_dll)
+            original_rest
+                .split_once('*')
+                .map(|(_, after_dll)| after_dll)
         } else {
             None
         };
@@ -403,7 +407,10 @@ user_agent = "custom-agent/1.0"
         assert_eq!(config.cache_dir, PathBuf::from("/tmp/symdis-cache"));
         assert_eq!(config.miss_ttl_hours, 48);
         assert_eq!(config.symbol_servers, vec!["https://example.com/symbols"]);
-        assert_eq!(config.debuginfod_urls, vec!["https://debuginfod.example.com"]);
+        assert_eq!(
+            config.debuginfod_urls,
+            vec!["https://debuginfod.example.com"]
+        );
         assert_eq!(config.syntax, Syntax::Att);
         assert_eq!(config.max_instructions, 5000);
         assert_eq!(config.format, OutputFormat::Json);
@@ -458,17 +465,15 @@ timeout_seconds = 120
 
     #[test]
     fn test_srv_with_cache_and_server() {
-        let path = parse_nt_symbol_path(
-            "SRV*C:\\Symbols*https://msdl.microsoft.com/download/symbols",
-        );
+        let path =
+            parse_nt_symbol_path("SRV*C:\\Symbols*https://msdl.microsoft.com/download/symbols");
         assert_eq!(path, Some(PathBuf::from("C:\\Symbols")));
     }
 
     #[test]
     fn test_srv_chained() {
-        let path = parse_nt_symbol_path(
-            "SRV*C:\\Sym1*https://server1;SRV*C:\\Sym2*https://server2",
-        );
+        let path =
+            parse_nt_symbol_path("SRV*C:\\Sym1*https://server1;SRV*C:\\Sym2*https://server2");
         assert_eq!(path, Some(PathBuf::from("C:\\Sym1")));
     }
 
@@ -494,9 +499,7 @@ timeout_seconds = 120
 
     #[test]
     fn test_srv_server_only_skipped_then_cache_found() {
-        let path = parse_nt_symbol_path(
-            "SRV*https://server1;SRV*C:\\Symbols*https://server2",
-        );
+        let path = parse_nt_symbol_path("SRV*https://server1;SRV*C:\\Symbols*https://server2");
         assert_eq!(path, Some(PathBuf::from("C:\\Symbols")));
     }
 
@@ -511,9 +514,7 @@ timeout_seconds = 120
     #[test]
     #[cfg(target_os = "windows")]
     fn test_cache_no_dir_default() {
-        let path = parse_nt_symbol_path(
-            "cache*;srv*https://msdl.microsoft.com/download/symbols",
-        );
+        let path = parse_nt_symbol_path("cache*;srv*https://msdl.microsoft.com/download/symbols");
         let windbg_default = std::path::Path::new(r"C:\ProgramData\Dbg\sym");
         if windbg_default.is_dir() {
             assert_eq!(path, Some(windbg_default.to_path_buf()));

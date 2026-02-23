@@ -4,9 +4,9 @@
 
 use std::io::Read;
 
-use anyhow::{Result, Context, bail};
+use anyhow::{bail, Context, Result};
 use reqwest::Client;
-use tracing::{info, debug};
+use tracing::{debug, info};
 
 use super::FetchResult;
 
@@ -96,12 +96,10 @@ pub fn resolve_product_platform(
         _ if is_android => {
             bail!("product '{product}' is not available for Android (use --product fenix or --product focus)")
         }
-        _ => {
-            match ftp_platform(os, arch) {
-                Some(platform) => Ok(Some((product.to_string(), platform.to_string()))),
-                None => Ok(None),
-            }
-        }
+        _ => match ftp_platform(os, arch) {
+            Some(platform) => Ok(Some((product.to_string(), platform.to_string()))),
+            None => Ok(None),
+        },
     }
 }
 
@@ -176,7 +174,9 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
             ))
         }
         "nightly" => {
-            let build_id = locator.build_id.as_deref()
+            let build_id = locator
+                .build_id
+                .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("--build-id is required for nightly channel"))?;
             // Build ID format: YYYYMMDDHHmmSS (14 digits)
             if build_id.len() != 14 || !build_id.chars().all(|c| c.is_ascii_digit()) {
@@ -190,7 +190,11 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
             let sec = &build_id[12..14];
             let timestamp = format!("{year}-{month}-{day}-{hour}-{min}-{sec}");
             // Thunderbird nightly: /pub/thunderbird/nightly/YYYY/MM/... with comm-central
-            let tree = if locator.product == "thunderbird" { "comm-central" } else { "mozilla-central" };
+            let tree = if locator.product == "thunderbird" {
+                "comm-central"
+            } else {
+                "mozilla-central"
+            };
             if is_mac {
                 Ok(format!(
                     "{ftp_base}/nightly/{year}/{month}/{timestamp}-{tree}/{prefix}-{version}.en-US.{platform}.pkg"
@@ -201,7 +205,9 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
                 ))
             }
         }
-        other => bail!("unknown channel: {other} (expected: release, beta, esr, nightly, aurora, default)"),
+        other => bail!(
+            "unknown channel: {other} (expected: release, beta, esr, nightly, aurora, default)"
+        ),
     }
 }
 
@@ -213,8 +219,12 @@ pub fn build_archive_url(locator: &ArchiveLocator) -> Result<String> {
 fn build_android_archive_url(locator: &ArchiveLocator) -> Result<String> {
     let product = &locator.product;
     let version = &locator.version;
-    let abi = locator.platform.strip_prefix("android-")
-        .ok_or_else(|| anyhow::anyhow!("{product} platform must be android-{{abi}}, got: {}", locator.platform))?;
+    let abi = locator.platform.strip_prefix("android-").ok_or_else(|| {
+        anyhow::anyhow!(
+            "{product} platform must be android-{{abi}}, got: {}",
+            locator.platform
+        )
+    })?;
 
     let ftp_base = match product.as_str() {
         "fenix" => FENIX_FTP_BASE,
@@ -237,7 +247,9 @@ fn build_android_archive_url(locator: &ArchiveLocator) -> Result<String> {
             ))
         }
         "nightly" => {
-            let build_id = locator.build_id.as_deref()
+            let build_id = locator
+                .build_id
+                .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("--build-id is required for nightly channel"))?;
             if build_id.len() != 14 || !build_id.chars().all(|c| c.is_ascii_digit()) {
                 bail!("nightly build ID must be 14 digits (YYYYMMDDHHmmSS), got: {build_id}");
@@ -284,7 +296,8 @@ pub fn extract_from_apk(data: &[u8], target_name: &str, abi: &str) -> Result<Vec
     let cursor = std::io::Cursor::new(data);
     let mut archive = zip::ZipArchive::new(cursor).context("opening APK as ZIP")?;
     let entry_path = format!("lib/{abi}/{target_name}");
-    let mut file = archive.by_name(&entry_path)
+    let mut file = archive
+        .by_name(&entry_path)
         .with_context(|| format!("'{entry_path}' not found in APK"))?;
     let mut buf = Vec::new();
     file.read_to_end(&mut buf).context("reading APK entry")?;
@@ -305,15 +318,17 @@ fn extract_from_tar<R: Read>(reader: R, target_name: &str) -> Result<Vec<u8>> {
         entry_count += 1;
 
         // Match by filename component only (ignore directory prefix like "firefox/")
-        let filename = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         if filename == target_name {
-            debug!("found '{target_name}' at '{}' (entry #{entry_count})", path_str);
+            debug!(
+                "found '{target_name}' at '{}' (entry #{entry_count})",
+                path_str
+            );
             let mut buf = Vec::new();
-            entry.read_to_end(&mut buf).context("reading tar entry contents")?;
+            entry
+                .read_to_end(&mut buf)
+                .context("reading tar entry contents")?;
             return Ok(buf);
         }
 
@@ -352,8 +367,7 @@ pub fn extract_from_pkg(data: &[u8], target_name: &str) -> Result<Vec<u8>> {
 
     let header_size = u16::from_be_bytes([data[4], data[5]]) as usize;
     let toc_compressed_len = u64::from_be_bytes([
-        data[8], data[9], data[10], data[11],
-        data[12], data[13], data[14], data[15],
+        data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15],
     ]) as usize;
 
     if header_size + toc_compressed_len > data.len() {
@@ -364,7 +378,9 @@ pub fn extract_from_pkg(data: &[u8], target_name: &str) -> Result<Vec<u8>> {
     let toc_compressed = &data[header_size..header_size + toc_compressed_len];
     let mut toc_xml = Vec::new();
     let mut decoder = flate2::read::ZlibDecoder::new(toc_compressed);
-    decoder.read_to_end(&mut toc_xml).context("decompressing XAR TOC")?;
+    decoder
+        .read_to_end(&mut toc_xml)
+        .context("decompressing XAR TOC")?;
 
     // Parse TOC XML to find all Payload file entries
     let heap_start = header_size + toc_compressed_len;
@@ -390,15 +406,13 @@ pub fn extract_from_pkg(data: &[u8], target_name: &str) -> Result<Vec<u8>> {
         );
 
         match decompress_payload(payload_raw) {
-            Ok(payload) => {
-                match extract_from_cpio(&payload, target_name) {
-                    Ok(data) => return Ok(data),
-                    Err(e) => {
-                        debug!("Payload #{}: target not found in cpio: {e}", i);
-                        last_err = Some(e);
-                    }
+            Ok(payload) => match extract_from_cpio(&payload, target_name) {
+                Ok(data) => return Ok(data),
+                Err(e) => {
+                    debug!("Payload #{}: target not found in cpio: {e}", i);
+                    last_err = Some(e);
                 }
-            }
+            },
             Err(e) => {
                 debug!("Payload #{}: decompression failed: {e}", i);
                 last_err = Some(e);
@@ -421,13 +435,15 @@ fn decompress_payload(payload_raw: &[u8]) -> Result<Vec<u8>> {
         debug!("Payload compression: gzip");
         let mut buf = Vec::new();
         let mut gz = flate2::read::GzDecoder::new(payload_raw);
-        gz.read_to_end(&mut buf).context("decompressing gzip Payload")?;
+        gz.read_to_end(&mut buf)
+            .context("decompressing gzip Payload")?;
         Ok(buf)
     } else if payload_raw.len() >= 6 && &payload_raw[0..6] == b"\xfd7zXZ\x00" {
         debug!("Payload compression: XZ");
         let mut buf = Vec::new();
         let mut xz = liblzma::read::XzDecoder::new(payload_raw);
-        xz.read_to_end(&mut buf).context("decompressing XZ Payload")?;
+        xz.read_to_end(&mut buf)
+            .context("decompressing XZ Payload")?;
         Ok(buf)
     } else if payload_raw.len() >= 4 && &payload_raw[0..4] == b"pbzx" {
         debug!("Payload compression: pbzx");
@@ -453,19 +469,31 @@ fn decode_pbzx(data: &[u8]) -> Result<Vec<u8>> {
     }
 
     let mut pos = 4; // skip "pbzx"
-    // Skip the flags/chunk-size u64
+                     // Skip the flags/chunk-size u64
     pos += 8;
 
     let mut output = Vec::new();
 
     while pos + 16 <= data.len() {
         let compressed_size = u64::from_be_bytes([
-            data[pos], data[pos + 1], data[pos + 2], data[pos + 3],
-            data[pos + 4], data[pos + 5], data[pos + 6], data[pos + 7],
+            data[pos],
+            data[pos + 1],
+            data[pos + 2],
+            data[pos + 3],
+            data[pos + 4],
+            data[pos + 5],
+            data[pos + 6],
+            data[pos + 7],
         ]) as usize;
         let uncompressed_size = u64::from_be_bytes([
-            data[pos + 8], data[pos + 9], data[pos + 10], data[pos + 11],
-            data[pos + 12], data[pos + 13], data[pos + 14], data[pos + 15],
+            data[pos + 8],
+            data[pos + 9],
+            data[pos + 10],
+            data[pos + 11],
+            data[pos + 12],
+            data[pos + 13],
+            data[pos + 14],
+            data[pos + 15],
         ]) as usize;
         pos += 16;
 
@@ -474,7 +502,10 @@ fn decode_pbzx(data: &[u8]) -> Result<Vec<u8>> {
         }
 
         if pos + compressed_size > data.len() {
-            bail!("pbzx chunk extends beyond stream (need {} more bytes)", pos + compressed_size - data.len());
+            bail!(
+                "pbzx chunk extends beyond stream (need {} more bytes)",
+                pos + compressed_size - data.len()
+            );
         }
 
         let chunk = &data[pos..pos + compressed_size];
@@ -483,7 +514,8 @@ fn decode_pbzx(data: &[u8]) -> Result<Vec<u8>> {
         if chunk.len() >= 6 && &chunk[0..6] == b"\xfd7zXZ\x00" {
             let mut buf = Vec::with_capacity(uncompressed_size);
             let mut xz = liblzma::read::XzDecoder::new(chunk);
-            xz.read_to_end(&mut buf).context("decompressing pbzx XZ chunk")?;
+            xz.read_to_end(&mut buf)
+                .context("decompressing pbzx XZ chunk")?;
             output.extend_from_slice(&buf);
         } else {
             // Raw (uncompressed) chunk
@@ -540,9 +572,15 @@ fn parse_xar_toc_for_payloads(toc_xml: &[u8]) -> Result<Vec<(usize, usize)>> {
                 if let Some(ctx) = file_stack.last_mut() {
                     if tag == "name" && ctx.name.is_none() {
                         ctx.name = Some(current_text.trim().to_string());
-                    } else if tag == "offset" && path_contains(&path, "data") && ctx.data_offset.is_none() {
+                    } else if tag == "offset"
+                        && path_contains(&path, "data")
+                        && ctx.data_offset.is_none()
+                    {
                         ctx.data_offset = current_text.trim().parse().ok();
-                    } else if tag == "length" && path_contains(&path, "data") && ctx.data_length.is_none() {
+                    } else if tag == "length"
+                        && path_contains(&path, "data")
+                        && ctx.data_length.is_none()
+                    {
                         ctx.data_length = current_text.trim().parse().ok();
                     }
                 }
@@ -605,9 +643,10 @@ pub fn extract_elf_build_id(data: &[u8]) -> Result<Option<String>> {
     let elf = goblin::elf::Elf::parse(data).context("parsing ELF for build ID")?;
 
     // Find .note.gnu.build-id section
-    let note_section = elf.section_headers.iter().find(|sh| {
-        elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("") == ".note.gnu.build-id"
-    });
+    let note_section = elf
+        .section_headers
+        .iter()
+        .find(|sh| elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("") == ".note.gnu.build-id");
 
     let section = match note_section {
         Some(sh) => sh,
@@ -732,7 +771,10 @@ fn candidate_archive_urls(locator: &ArchiveLocator) -> Result<Vec<String>> {
     // From 128.x onwards, Thunderbird aligned with Firefox's convention.
     // Try the no-suffix variant as a fallback.
     if locator.product == "thunderbird" && locator.channel == "esr" {
-        let ver = locator.version.strip_suffix("esr").unwrap_or(&locator.version);
+        let ver = locator
+            .version
+            .strip_suffix("esr")
+            .unwrap_or(&locator.version);
         let ver_esr = format!("{ver}esr");
         let no_esr: Vec<String> = urls
             .iter()
@@ -748,10 +790,7 @@ fn candidate_archive_urls(locator: &ArchiveLocator) -> Result<Vec<String>> {
 /// Download a Mozilla product archive from the FTP server.
 ///
 /// Tries multiple URL candidates in order (see `candidate_archive_urls`).
-pub async fn download_archive(
-    client: &Client,
-    locator: &ArchiveLocator,
-) -> FetchResult {
+pub async fn download_archive(client: &Client, locator: &ArchiveLocator) -> FetchResult {
     let urls = match candidate_archive_urls(locator) {
         Ok(u) => u,
         Err(e) => return FetchResult::Error(format!("building archive URL: {e}")),
@@ -801,8 +840,9 @@ pub fn extract_and_verify(
     );
 
     let binary_data = if archive_data.starts_with(b"PK\x03\x04") {
-        let abi = platform.strip_prefix("android-")
-            .ok_or_else(|| anyhow::anyhow!("APK extraction requires android platform, got: {platform}"))?;
+        let abi = platform.strip_prefix("android-").ok_or_else(|| {
+            anyhow::anyhow!("APK extraction requires android platform, got: {platform}")
+        })?;
         extract_from_apk(archive_data, binary_name, abi)
             .with_context(|| format!("extracting {binary_name} from APK"))?
     } else if archive_data.starts_with(b"xar!") {
@@ -831,7 +871,11 @@ pub fn extract_and_verify(
 pub fn archive_cache_key(locator: &ArchiveLocator) -> Result<(String, String)> {
     let url = build_archive_url(locator)?;
     // Extract filename from URL (last path component)
-    let filename = url.rsplit('/').next().unwrap_or("archive.tar.xz").to_string();
+    let filename = url
+        .rsplit('/')
+        .next()
+        .unwrap_or("archive.tar.xz")
+        .to_string();
     let cache_id = format!("{}-{}", locator.channel, locator.platform);
     Ok((filename, cache_id))
 }
@@ -1168,14 +1212,14 @@ mod tests {
         // name="GNU\0" (4 bytes, already 4-byte aligned)
         // desc=20 bytes of build ID
         let mut note = Vec::new();
-        note.extend_from_slice(&4u32.to_le_bytes());   // namesz
-        note.extend_from_slice(&20u32.to_le_bytes());  // descsz
-        note.extend_from_slice(&3u32.to_le_bytes());   // type = NT_GNU_BUILD_ID
-        note.extend_from_slice(b"GNU\0");              // name
-        // 20 bytes of build ID
+        note.extend_from_slice(&4u32.to_le_bytes()); // namesz
+        note.extend_from_slice(&20u32.to_le_bytes()); // descsz
+        note.extend_from_slice(&3u32.to_le_bytes()); // type = NT_GNU_BUILD_ID
+        note.extend_from_slice(b"GNU\0"); // name
+                                          // 20 bytes of build ID
         let build_id_bytes: [u8; 20] = [
-            0xe6, 0x15, 0x48, 0xbb, 0x7e, 0x61, 0xdf, 0xba, 0xe0, 0x4c,
-            0x82, 0x88, 0xdc, 0x78, 0xc2, 0xbe, 0xcb, 0x85, 0xc9, 0x00,
+            0xe6, 0x15, 0x48, 0xbb, 0x7e, 0x61, 0xdf, 0xba, 0xe0, 0x4c, 0x82, 0x88, 0xdc, 0x78,
+            0xc2, 0xbe, 0xcb, 0x85, 0xc9, 0x00,
         ];
         note.extend_from_slice(&build_id_bytes);
 
@@ -1189,9 +1233,9 @@ mod tests {
     #[test]
     fn test_parse_build_id_note_wrong_type() {
         let mut note = Vec::new();
-        note.extend_from_slice(&4u32.to_le_bytes());   // namesz
-        note.extend_from_slice(&4u32.to_le_bytes());   // descsz
-        note.extend_from_slice(&1u32.to_le_bytes());   // type = 1 (not build ID)
+        note.extend_from_slice(&4u32.to_le_bytes()); // namesz
+        note.extend_from_slice(&4u32.to_le_bytes()); // descsz
+        note.extend_from_slice(&1u32.to_le_bytes()); // type = 1 (not build ID)
         note.extend_from_slice(b"GNU\0");
         note.extend_from_slice(&[0; 4]);
 
@@ -1266,7 +1310,10 @@ mod tests {
         let mut data = vec![0u8; 100];
         data[0..4].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]);
         let result = extract_from_pkg(&data, "test");
-        assert!(result.unwrap_err().to_string().contains("not a XAR archive"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("not a XAR archive"));
     }
 
     #[test]
@@ -1296,19 +1343,19 @@ mod tests {
              {:08x}\
              {:08x}\
              {:08x}",
-            1,         // ino
-            0o100644,  // mode (regular file)
-            0,         // uid
-            0,         // gid
-            1,         // nlink
-            0,         // mtime
-            filesize,  // filesize
-            0,         // devmajor
-            0,         // devminor
-            0,         // rdevmajor
-            0,         // rdevminor
-            namesize,  // namesize
-            0,         // check
+            1,        // ino
+            0o100644, // mode (regular file)
+            0,        // uid
+            0,        // gid
+            1,        // nlink
+            0,        // mtime
+            filesize, // filesize
+            0,        // devmajor
+            0,        // devminor
+            0,        // rdevmajor
+            0,        // rdevminor
+            namesize, // namesize
+            0,        // check
         );
         cpio.extend_from_slice(header.as_bytes());
         cpio.extend_from_slice(filename);
@@ -1454,7 +1501,10 @@ mod tests {
 </xar>"#;
         let result = parse_xar_toc_for_payloads(toc);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Payload not found"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Payload not found"));
     }
 
     #[test]
@@ -1686,7 +1736,10 @@ mod tests {
     #[test]
     fn test_resolve_product_platform_firefox_android() {
         let result = resolve_product_platform("firefox", "Android", "arm64").unwrap();
-        assert_eq!(result, Some(("fenix".to_string(), "android-arm64-v8a".to_string())));
+        assert_eq!(
+            result,
+            Some(("fenix".to_string(), "android-arm64-v8a".to_string()))
+        );
     }
 
     #[test]
@@ -1694,13 +1747,19 @@ mod tests {
         // Android builds have MODULE line saying "Linux", so --product fenix
         // should work regardless of OS.
         let result = resolve_product_platform("fenix", "Linux", "arm").unwrap();
-        assert_eq!(result, Some(("fenix".to_string(), "android-armeabi-v7a".to_string())));
+        assert_eq!(
+            result,
+            Some(("fenix".to_string(), "android-armeabi-v7a".to_string()))
+        );
     }
 
     #[test]
     fn test_resolve_product_platform_fenix_android() {
         let result = resolve_product_platform("fenix", "Android", "arm64").unwrap();
-        assert_eq!(result, Some(("fenix".to_string(), "android-arm64-v8a".to_string())));
+        assert_eq!(
+            result,
+            Some(("fenix".to_string(), "android-arm64-v8a".to_string()))
+        );
     }
 
     #[test]
@@ -1708,27 +1767,39 @@ mod tests {
         // Android builds have MODULE line saying "Linux", so --product focus
         // should work regardless of OS.
         let result = resolve_product_platform("focus", "Linux", "arm").unwrap();
-        assert_eq!(result, Some(("focus".to_string(), "android-armeabi-v7a".to_string())));
+        assert_eq!(
+            result,
+            Some(("focus".to_string(), "android-armeabi-v7a".to_string()))
+        );
     }
 
     #[test]
     fn test_resolve_product_platform_focus_android() {
         let result = resolve_product_platform("focus", "Android", "arm64").unwrap();
-        assert_eq!(result, Some(("focus".to_string(), "android-arm64-v8a".to_string())));
+        assert_eq!(
+            result,
+            Some(("focus".to_string(), "android-arm64-v8a".to_string()))
+        );
     }
 
     #[test]
     fn test_resolve_product_platform_thunderbird_android() {
         let result = resolve_product_platform("thunderbird", "Android", "arm64");
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("not available for Android"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("not available for Android"));
     }
 
     #[test]
     fn test_resolve_product_platform_firefox_linux() {
         // Normal case — should pass through to ftp_platform
         let result = resolve_product_platform("firefox", "Linux", "x86_64").unwrap();
-        assert_eq!(result, Some(("firefox".to_string(), "linux-x86_64".to_string())));
+        assert_eq!(
+            result,
+            Some(("firefox".to_string(), "linux-x86_64".to_string()))
+        );
     }
 
     #[test]
@@ -1917,7 +1988,7 @@ mod tests {
         buf.extend_from_slice(&1u32.to_le_bytes()); // e_version
         buf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
         buf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
-        // e_shoff: section headers at end (we'll fill this in)
+                                                    // e_shoff: section headers at end (we'll fill this in)
         let shoff_pos = buf.len();
         buf.extend_from_slice(&0u64.to_le_bytes()); // placeholder
         buf.extend_from_slice(&0u32.to_le_bytes()); // e_flags

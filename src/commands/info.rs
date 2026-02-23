@@ -5,9 +5,9 @@
 use std::fmt::Write;
 use std::io::BufReader;
 
-use anyhow::{Result, Context};
-use tracing::warn;
+use anyhow::{Context, Result};
 use serde::Serialize;
+use tracing::warn;
 
 use super::InfoArgs;
 use crate::cache::Cache;
@@ -58,13 +58,18 @@ pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
     let bin_result = match bin_result {
         Ok(path) => Ok(path),
         Err(e) => {
-            let is_linux = sym_summary.as_ref()
+            let is_linux = sym_summary
+                .as_ref()
                 .map(|s| s.module.os.eq_ignore_ascii_case("linux"))
                 .unwrap_or_else(|| looks_like_elf(&args.debug_file, effective_code_id));
             if is_linux {
                 if let Some(code_id) = effective_code_id {
                     let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                    match fetch::fetch_binary_debuginfod(&client, &cache, config, code_file, code_id).await {
+                    match fetch::fetch_binary_debuginfod(
+                        &client, &cache, config, code_file, code_id,
+                    )
+                    .await
+                    {
                         Ok(path) => Ok(path),
                         Err(_) => {
                             let msg = e.to_string();
@@ -88,7 +93,8 @@ pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
     let bin_result = match bin_result {
         Ok(path) => Ok(path),
         Err(e) => {
-            let (os, arch_str) = sym_summary.as_ref()
+            let (os, arch_str) = sym_summary
+                .as_ref()
                 .map(|s| (s.module.os.as_str(), s.module.arch.as_str()))
                 .unwrap_or_else(|| infer_platform_from_code_id(effective_code_id));
             if let (Some(version), Some(channel)) = (&args.version, &args.channel) {
@@ -104,7 +110,16 @@ pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
                                 build_id: args.build_id.clone(),
                             };
                             let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                            match fetch::fetch_binary_ftp(&archive_client, &cache, config, code_file, code_id, &locator).await {
+                            match fetch::fetch_binary_ftp(
+                                &archive_client,
+                                &cache,
+                                config,
+                                code_file,
+                                code_id,
+                                &locator,
+                            )
+                            .await
+                            {
                                 Ok(path) => Ok(path),
                                 Err(ftp_err) => {
                                     warn!("FTP archive fallback failed: {ftp_err:#}");
@@ -192,9 +207,7 @@ fn infer_platform_from_code_id(code_id: Option<&str>) -> (&'static str, &'static
         Some(id) if id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit()) => {
             ("Linux", "x86_64")
         }
-        Some(id) if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) => {
-            ("mac", "")
-        }
+        Some(id) if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) => ("mac", ""),
         _ => ("", ""),
     }
 }
@@ -203,9 +216,7 @@ fn infer_platform_from_code_id(code_id: Option<&str>) -> (&'static str, &'static
 /// Checks for `.so` in the debug file name or a 40-char hex code ID (GNU build ID).
 fn looks_like_elf(debug_file: &str, code_id: Option<&str>) -> bool {
     debug_file.contains(".so")
-        || code_id.is_some_and(|id| {
-            id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit())
-        })
+        || code_id.is_some_and(|id| id.len() == 40 && id.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// Derive a code file name from a debug file name.
@@ -402,12 +413,16 @@ mod tests {
             os: Some("windows".to_string()),
             arch: Some("x86_64".to_string()),
             sym_status: if sym_available {
-                FileStatus::Available { size: Some(432_000_000) }
+                FileStatus::Available {
+                    size: Some(432_000_000),
+                }
             } else {
                 FileStatus::NotFound
             },
             binary_status: if bin_available {
-                FileStatus::Available { size: Some(128_000_000) }
+                FileStatus::Available {
+                    size: Some(128_000_000),
+                }
             } else {
                 FileStatus::NotFound
             },

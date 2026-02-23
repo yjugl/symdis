@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 
 /// Represents the local cache for downloaded artifacts.
 pub struct Cache {
@@ -190,8 +190,7 @@ impl Cache {
         }
 
         let parent = target.parent().unwrap_or(Path::new("."));
-        let mut tmp = tempfile::NamedTempFile::new_in(parent)
-            .context("creating temp file")?;
+        let mut tmp = tempfile::NamedTempFile::new_in(parent).context("creating temp file")?;
         tmp.write_all(data).context("writing temp file")?;
         tmp.flush()?;
 

@@ -266,7 +266,11 @@ pub fn format_sym_only(
     writeln!(
         out,
         "; Binary not available -- no disassembly.{}",
-        if sym_data.is_none() { " Function metadata only." } else { "" }
+        if sym_data.is_none() {
+            " Function metadata only."
+        } else {
+            ""
+        }
     )
     .unwrap();
 
@@ -345,13 +349,16 @@ mod tests {
                 call_file: Some("src/helper.h".to_string()),
                 call_line: 40,
             }],
-            source_files: vec![
-                "src/helper.h".to_string(),
-                "src/main.cpp".to_string(),
-            ],
+            source_files: vec!["src/helper.h".to_string(), "src/main.cpp".to_string()],
         };
 
-        let output = format_sym_only(&module, &function, Some(&sym_data), &DataSource::SymOnly, &[]);
+        let output = format_sym_only(
+            &module,
+            &function,
+            Some(&sym_data),
+            &DataSource::SymOnly,
+            &[],
+        );
 
         assert!(output.contains("; Source line mapping:"));
         assert!(output.contains("0x001a3e80 - 0x001a3e90  src/main.cpp:10"));

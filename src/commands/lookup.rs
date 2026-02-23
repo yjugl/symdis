@@ -5,7 +5,7 @@
 use std::fmt::Write;
 use std::io::BufReader;
 
-use anyhow::{Result, Context, bail};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 
 use super::LookupArgs;
@@ -17,7 +17,10 @@ use crate::symbols::breakpad::SymFile;
 
 /// Parse a hex offset string (with or without 0x prefix) to u64.
 fn parse_offset(s: &str) -> Result<u64> {
-    let s = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")).unwrap_or(s);
+    let s = s
+        .strip_prefix("0x")
+        .or_else(|| s.strip_prefix("0X"))
+        .unwrap_or(s);
     u64::from_str_radix(s, 16).context("invalid hex offset")
 }
 
@@ -45,12 +48,9 @@ pub async fn run(args: &LookupArgs, config: &Config) -> Result<()> {
     }
 }
 
-fn lookup_by_offset(
-    offset: u64,
-    sym: &SymFile,
-    config: &Config,
-) -> Result<()> {
-    let mut info = sym.resolve_address(offset)
+fn lookup_by_offset(offset: u64, sym: &SymFile, config: &Config) -> Result<()> {
+    let mut info = sym
+        .resolve_address(offset)
         .ok_or_else(|| anyhow::anyhow!("no symbol found at offset 0x{:x}", offset))?;
 
     // Get source location and inline frames if we have a FuncRecord
@@ -81,12 +81,7 @@ fn lookup_by_offset(
     Ok(())
 }
 
-fn lookup_by_name(
-    name: &str,
-    fuzzy: bool,
-    sym: &SymFile,
-    config: &Config,
-) -> Result<()> {
+fn lookup_by_name(name: &str, fuzzy: bool, sym: &SymFile, config: &Config) -> Result<()> {
     let demangle_enabled = !config.no_demangle;
 
     if fuzzy {
@@ -126,10 +121,22 @@ fn lookup_by_name_exact(
     if !func_suggestions.is_empty() || !public_suggestions.is_empty() {
         let mut msg = format!("function '{name}' not found. Similar names:\n");
         for f in func_suggestions.iter().take(5) {
-            writeln!(msg, "  - {} (FUNC, 0x{:x})", maybe_demangle(&f.name, demangle_enabled), f.address).unwrap();
+            writeln!(
+                msg,
+                "  - {} (FUNC, 0x{:x})",
+                maybe_demangle(&f.name, demangle_enabled),
+                f.address
+            )
+            .unwrap();
         }
         for p in public_suggestions.iter().take(5) {
-            writeln!(msg, "  - {} (PUBLIC, 0x{:x})", maybe_demangle(&p.name, demangle_enabled), p.address).unwrap();
+            writeln!(
+                msg,
+                "  - {} (PUBLIC, 0x{:x})",
+                maybe_demangle(&p.name, demangle_enabled),
+                p.address
+            )
+            .unwrap();
         }
         bail!("{msg}");
     }
@@ -144,7 +151,8 @@ fn lookup_by_name_fuzzy(
 ) -> Result<()> {
     // Collect matches from both FUNC and PUBLIC
     let func_matches = sym.find_function_by_name_fuzzy(name);
-    let public_matches: Vec<&crate::symbols::breakpad::PublicRecord> = sym.publics
+    let public_matches: Vec<&crate::symbols::breakpad::PublicRecord> = sym
+        .publics
         .iter()
         .filter(|p| {
             let demangled = crate::demangle::demangle(&p.name);
@@ -172,16 +180,23 @@ fn lookup_by_name_fuzzy(
                         writeln!(
                             msg,
                             "  {}. {} (FUNC, 0x{:x}, size: 0x{:x})",
-                            i + 1, maybe_demangle(&f.name, demangle_enabled), f.address, f.size
-                        ).unwrap();
+                            i + 1,
+                            maybe_demangle(&f.name, demangle_enabled),
+                            f.address,
+                            f.size
+                        )
+                        .unwrap();
                     }
                     let remaining = 20usize.saturating_sub(func_matches.len());
                     for (i, p) in public_matches.iter().enumerate().take(remaining) {
                         writeln!(
                             msg,
                             "  {}. {} (PUBLIC, 0x{:x})",
-                            func_matches.len() + i + 1, maybe_demangle(&p.name, demangle_enabled), p.address
-                        ).unwrap();
+                            func_matches.len() + i + 1,
+                            maybe_demangle(&p.name, demangle_enabled),
+                            p.address
+                        )
+                        .unwrap();
                     }
                     if total > 20 {
                         writeln!(msg, "  ... and {} more", total - 20).unwrap();
@@ -190,7 +205,10 @@ fn lookup_by_name_fuzzy(
                 }
                 OutputFormat::Json => {
                     let output = format_fuzzy_matches_combined_json(
-                        name, &func_matches, &public_matches, demangle_enabled,
+                        name,
+                        &func_matches,
+                        &public_matches,
+                        demangle_enabled,
                     );
                     println!("{output}");
                     std::process::exit(1);
@@ -214,11 +232,13 @@ fn display_func(
 
     match config.format {
         OutputFormat::Text => {
-            let output = format_function_text_demangled(&demangled_name, func, source_file.as_deref());
+            let output =
+                format_function_text_demangled(&demangled_name, func, source_file.as_deref());
             print!("{output}");
         }
         OutputFormat::Json => {
-            let output = format_function_json_demangled(&demangled_name, func, source_file.as_deref());
+            let output =
+                format_function_json_demangled(&demangled_name, func, source_file.as_deref());
             println!("{output}");
         }
     }
@@ -247,7 +267,10 @@ fn display_public(
                 function_size: None,
                 source_file: None,
             };
-            println!("{}", serde_json::to_string_pretty(&output).expect("JSON serialization should not fail"));
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&output).expect("JSON serialization should not fail")
+            );
         }
     }
     Ok(())
@@ -267,7 +290,8 @@ fn format_offset_text(
         out,
         "0x{:08x} => {} + 0x{:x}",
         offset, info.name, info.offset_in_function
-    ).unwrap();
+    )
+    .unwrap();
 
     if let Some(loc) = source {
         writeln!(out, "  Source: {}:{}", loc.file, loc.line).unwrap();
@@ -280,7 +304,8 @@ fn format_offset_text(
             info.address,
             info.address + size,
             size
-        ).unwrap();
+        )
+        .unwrap();
     } else {
         writeln!(out, "  Function address: 0x{:08x}", info.address).unwrap();
     }
@@ -471,12 +496,17 @@ fn format_fuzzy_matches_combined_json(
         })
         .collect();
     let remaining = 20usize.saturating_sub(matches.len());
-    matches.extend(public_matches.iter().take(remaining).map(|p| JsonFuzzyMatch {
-        name: maybe_demangle(&p.name, demangle_enabled),
-        address: format!("0x{:x}", p.address),
-        size: None,
-        symbol_type: "PUBLIC".to_string(),
-    }));
+    matches.extend(
+        public_matches
+            .iter()
+            .take(remaining)
+            .map(|p| JsonFuzzyMatch {
+                name: maybe_demangle(&p.name, demangle_enabled),
+                address: format!("0x{:x}", p.address),
+                size: None,
+                symbol_type: "PUBLIC".to_string(),
+            }),
+    );
     let output = JsonFuzzyError {
         error: JsonErrorDetail {
             code: "AMBIGUOUS_FUNCTION".to_string(),
@@ -491,7 +521,7 @@ fn format_fuzzy_matches_combined_json(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::symbols::breakpad::{SymFile, SymbolInfo, SourceLocation, InlineInfo};
+    use crate::symbols::breakpad::{InlineInfo, SourceLocation, SymFile, SymbolInfo};
     use std::io::Cursor;
 
     fn make_test_sym() -> &'static str {
@@ -673,13 +703,13 @@ PUBLIC 4000 0 _AnotherPublic
     fn test_fuzzy_combined_json() {
         let sym = SymFile::parse(Cursor::new(make_test_sym())).unwrap();
         let func_matches = sym.find_function_by_name_fuzzy("Function");
-        let public_matches: Vec<&crate::symbols::breakpad::PublicRecord> = sym.publics
+        let public_matches: Vec<&crate::symbols::breakpad::PublicRecord> = sym
+            .publics
             .iter()
             .filter(|p| p.name.contains("Public"))
             .collect();
-        let json_str = format_fuzzy_matches_combined_json(
-            "Function", &func_matches, &public_matches, false,
-        );
+        let json_str =
+            format_fuzzy_matches_combined_json("Function", &func_matches, &public_matches, false);
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         assert_eq!(v["total_matches"], 4); // 2 FUNC + 2 PUBLIC
@@ -687,7 +717,10 @@ PUBLIC 4000 0 _AnotherPublic
         assert_eq!(matches[0]["symbol_type"], "FUNC");
         assert!(matches[0]["size"].is_string());
         // PUBLIC matches follow FUNC matches
-        let public_match = matches.iter().find(|m| m["symbol_type"] == "PUBLIC").unwrap();
+        let public_match = matches
+            .iter()
+            .find(|m| m["symbol_type"] == "PUBLIC")
+            .unwrap();
         assert!(public_match["size"].is_null());
     }
 
