@@ -212,6 +212,11 @@ fn plt_sizes(arch: CpuArch) -> (u64, u64) {
 /// PLT[1..] correspond to pltrelocs[0..] in order. The header size can
 /// differ from the entry size on ARM/AArch64.
 ///
+/// Also maps `.plt.sec` entries (used by modern toolchains with CET/IBT).
+/// `.plt.sec` has no header — entries start at offset 0 and correspond 1:1
+/// with pltrelocs. Direct calls go to `.plt.sec` instead of `.plt` when
+/// CET is enabled.
+///
 /// Also checks `.plt.got` and `.iplt` sections for additional PLT entries
 /// (used by some linkers, especially with `-z now` eager binding).
 fn build_plt_imports(elf: &Elf, arch: CpuArch) -> HashMap<u64, (String, String)> {
@@ -219,32 +224,47 @@ fn build_plt_imports(elf: &Elf, arch: CpuArch) -> HashMap<u64, (String, String)>
 
     let (plt_header_size, plt_entry_size) = plt_sizes(arch);
 
-    // Collect all PLT-like sections: .plt, .plt.got, .iplt
-    let plt_sections: Vec<u64> = elf.section_headers.iter().filter_map(|sh| {
+    // Find section addresses by name
+    let mut plt_addr: Option<u64> = None;
+    let mut plt_sec_addr: Option<u64> = None;
+
+    for sh in &elf.section_headers {
         let name = elf.shdr_strtab.get_at(sh.sh_name).unwrap_or("");
         match name {
-            ".plt" | ".plt.got" | ".iplt" => Some(sh.sh_addr),
-            _ => None,
+            ".plt" if plt_addr.is_none() => plt_addr = Some(sh.sh_addr),
+            ".plt.sec" if plt_sec_addr.is_none() => plt_sec_addr = Some(sh.sh_addr),
+            _ => {}
         }
-    }).collect();
+    }
 
-    if plt_sections.is_empty() {
+    if plt_addr.is_none() && plt_sec_addr.is_none() {
         return map;
     }
 
-    // Use the first .plt section as the primary PLT base for address computation
-    let plt_addr = plt_sections[0];
-
-    // Map each pltreloc to a PLT stub address
-    // PLT[0] is the resolver stub (header), first import starts after it
-    for (i, reloc) in elf.pltrelocs.iter().enumerate() {
-        let stub_addr = plt_addr + plt_header_size + i as u64 * plt_entry_size;
+    // Helper: insert an import for a pltreloc entry
+    let mut insert_import = |addr: u64, reloc: &goblin::elf::reloc::Reloc| {
         if let Some(sym) = elf.dynsyms.get(reloc.r_sym) {
             if let Some(name) = elf.dynstrtab.get_at(sym.st_name) {
                 if !name.is_empty() {
-                    map.insert(stub_addr, (String::new(), name.to_string()));
+                    map.insert(addr, (String::new(), name.to_string()));
                 }
             }
+        }
+    };
+
+    // Map .plt entries: PLT[0] is resolver (header), imports start after
+    if let Some(base) = plt_addr {
+        for (i, reloc) in elf.pltrelocs.iter().enumerate() {
+            let stub_addr = base + plt_header_size + i as u64 * plt_entry_size;
+            insert_import(stub_addr, &reloc);
+        }
+    }
+
+    // Map .plt.sec entries: no header, entries start at offset 0, same entry size
+    if let Some(base) = plt_sec_addr {
+        for (i, reloc) in elf.pltrelocs.iter().enumerate() {
+            let stub_addr = base + i as u64 * plt_entry_size;
+            insert_import(stub_addr, &reloc);
         }
     }
 
