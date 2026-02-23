@@ -2,6 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+pub mod apt;
 pub mod archive;
 pub mod debuginfod;
 pub mod microsoft;
@@ -549,6 +550,110 @@ pub async fn fetch_binary_snap(
 
     let path = cache.store_binary(&key, &binary_data)?;
     Ok(path)
+}
+
+/// Fetch a Linux binary from an Ubuntu APT .deb package, checking cache first.
+///
+/// Uses the same `buildid-{id}` cache key format as debuginfod/FTP/snap so that
+/// binaries cached by any source are found by all. The .deb archive itself is
+/// also cached so that extracting a second binary from the same package does not
+/// require re-downloading.
+pub async fn fetch_binary_apt(
+    client: &Client,
+    cache: &Cache,
+    code_file: &str,
+    code_id: &str,
+    locator: &apt::AptLocator,
+    source_package: Option<&str>,
+) -> Result<PathBuf> {
+    let build_id = code_id.to_lowercase();
+
+    // Use same cache key as debuginfod/FTP/snap
+    let key = BinaryCacheKey {
+        code_file: code_file.to_string(),
+        code_id: format!("buildid-{build_id}"),
+        filename: code_file.to_string(),
+    };
+
+    // Check cache for extracted binary
+    match cache.get_binary(&key) {
+        CacheResult::Hit(path) => {
+            info!("cache hit: {code_file} (buildid-{build_id})");
+            return Ok(path);
+        }
+        CacheResult::NegativeHit | CacheResult::Miss => {
+            debug!("cache miss (apt): {code_file} (buildid-{build_id})");
+        }
+    }
+
+    // Resolve package name and download URL from Packages.xz index
+    let candidates = apt::resolve_package(client, cache, locator, source_package).await?;
+
+    // Try each candidate .deb until we find one containing the target binary
+    // with the correct build ID
+    for (package_name, deb_url) in &candidates {
+        // Check if .deb is already cached
+        let (deb_filename, deb_cache_id) = apt::deb_cache_key(deb_url, locator);
+        let deb_key = BinaryCacheKey {
+            code_file: deb_filename.clone(),
+            code_id: deb_cache_id,
+            filename: deb_filename,
+        };
+
+        let deb_data = match cache.get_binary(&deb_key) {
+            CacheResult::Hit(path) => {
+                info!("using cached .deb: {} ({})", package_name, path.display());
+                std::fs::read(&path)
+                    .with_context(|| format!("reading cached .deb: {}", path.display()))?
+            }
+            _ => {
+                match apt::download_deb(client, deb_url).await {
+                    FetchResult::Ok(data) => {
+                        // Cache the .deb
+                        cache.store_binary(&deb_key, &data)?;
+                        data
+                    }
+                    FetchResult::NotFound => {
+                        debug!("deb not found: {deb_url}");
+                        continue;
+                    }
+                    FetchResult::Error(e) => {
+                        warn!("deb download error for {package_name}: {e}");
+                        continue;
+                    }
+                }
+            }
+        };
+
+        // Try extracting the target binary
+        match apt::extract_from_deb(&deb_data, code_file) {
+            Ok(binary_data) => {
+                // Verify build ID
+                match archive::verify_binary_id(&binary_data, &build_id) {
+                    Ok(()) => {
+                        info!("build ID verified ({build_id}) from package {package_name}");
+                        let path = cache.store_binary(&key, &binary_data)?;
+                        return Ok(path);
+                    }
+                    Err(e) => {
+                        info!("build ID mismatch in {package_name}: {e}");
+                        continue;
+                    }
+                }
+            }
+            Err(e) => {
+                debug!("{code_file} not found in {package_name}: {e}");
+                continue;
+            }
+        }
+    }
+
+    bail!(
+        "binary not found in APT packages for {} ({}): tried {} candidate(s)",
+        code_file,
+        locator.release,
+        candidates.len()
+    )
 }
 
 /// Heuristic: file name looks like a Windows binary (PE).

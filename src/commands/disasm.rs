@@ -222,6 +222,68 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         }
     };
 
+    // If binary still not found and Linux, try APT
+    let bin_result = match bin_result {
+        Ok(path) => Ok(path),
+        Err(e) => {
+            let is_linux = sym_file.as_ref()
+                .map(|sym| sym.module.os.eq_ignore_ascii_case("linux"))
+                .unwrap_or_else(|| looks_like_elf(&args.debug_file, effective_code_id));
+            if is_linux && args.apt.is_some() {
+                if let Some(code_id) = effective_code_id {
+                    let distro = match &args.distro {
+                        Some(d) => d.clone(),
+                        None => {
+                            warn!("--apt requires --distro (Ubuntu release codename)");
+                            return Err(e);
+                        }
+                    };
+                    let arch = sym_file.as_ref()
+                        .and_then(|sym| fetch::apt::apt_architecture(&sym.module.arch));
+                    if let Some(arch) = arch {
+                        let apt_package = args.apt.as_deref()
+                            .and_then(|s| if s.is_empty() { None } else { Some(s) })
+                            .map(|s| s.to_string());
+                        let auto_source = if apt_package.is_none() {
+                            sym_file.as_ref().and_then(fetch::apt::detect_apt_source_package)
+                        } else {
+                            None
+                        };
+                        let locator = fetch::apt::AptLocator {
+                            package: apt_package,
+                            release: distro,
+                            architecture: arch.to_string(),
+                        };
+                        let archive_client = fetch::build_archive_http_client(config)?;
+                        let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                        match fetch::fetch_binary_apt(
+                            &archive_client,
+                            &cache,
+                            code_file,
+                            code_id,
+                            &locator,
+                            auto_source.as_deref(),
+                        )
+                        .await
+                        {
+                            Ok(path) => Ok(path),
+                            Err(apt_err) => {
+                                warn!("APT fallback failed: {apt_err:#}");
+                                Err(e)
+                            }
+                        }
+                    } else {
+                        Err(e)
+                    }
+                } else {
+                    Err(e)
+                }
+            } else {
+                Err(e)
+            }
+        }
+    };
+
     // If binary still not found, try FTP archive fallback (Linux + macOS)
     let bin_result = match bin_result {
         Ok(path) => Ok(path),

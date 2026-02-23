@@ -39,6 +39,7 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 pdb = "0.8"
 msvc-demangler = "0.10"
 moz-cli-version-check = "0.2"
+zstd = "0.13"
 
 [profile.release]
 strip = true

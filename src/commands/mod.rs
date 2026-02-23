@@ -47,6 +47,8 @@ CRASH REPORT FIELD MAPPING:
   (from release info)    --channel           release|beta|esr|nightly|aurora|default
   (from release info)    --build-id          14-digit timestamp (nightly only)
   (snap source paths)    --snap              Snap package name (auto-detected)
+  (apt source paths)     --apt               APT binary package name (auto-detected)
+  (from release info)    --distro            Ubuntu release codename (e.g., noble)
   (from product name)    --product           firefox|thunderbird|fenix|focus (default: firefox)
 
 BINARY FETCH CHAIN:
@@ -58,7 +60,8 @@ BINARY FETCH CHAIN:
     4. debuginfod servers (Linux ELF only, requires build ID from
        --code-id or INFO CODE_ID in .sym file)
     5. Snap Store (Linux, when snap detected from sym file or --snap flag)
-    6. Mozilla FTP archive (--version + --channel required):
+    6. Ubuntu APT archive (Linux, --apt + --distro required)
+    7. Mozilla FTP archive (--version + --channel required):
        - Linux: downloads .tar.xz from /pub/firefox/releases/
        - macOS: downloads .pkg from /pub/firefox/releases/
        - Android: downloads .apk from /pub/fenix/releases/ or /pub/focus/releases/
@@ -78,7 +81,8 @@ BINARY FETCH CHAIN:
 
   Step 5 auto-detects the snap name from source file paths in the .sym
   file (e.g. /build/gnome-42-2204-sdk/parts/...), or use --snap to
-  specify it explicitly. Providing --version and --channel enables step 6
+  specify it explicitly. Step 6 requires --apt and --distro (see APT
+  section below). Providing --version and --channel enables step 7
   as a last resort. The .sym file is always fetched from Tecken using
   --debug-file and --debug-id.
 
@@ -158,6 +162,33 @@ PDB SUPPORT (--pdb):
       source line annotations or inline frames (PUBLIC symbols carry
       only an address and name). Call targets within the same module
       ARE resolved from other PUBLIC symbol names.
+
+UBUNTU APT PACKAGES (--apt):
+
+  For Ubuntu system libraries installed via apt (libxml2, mesa, libdrm,
+  libffi, etc.), symdis can fetch .deb packages from archive.ubuntu.com
+  and extract the target binary. This covers libraries that are NOT in
+  snap runtimes and NOT in debuginfod.
+
+  Required flags:
+    --apt [PACKAGE]   Enable APT backend. Optional explicit binary package
+                      name (e.g., --apt libxml2). When omitted, the source
+                      package name is auto-detected from .sym file source
+                      paths (e.g., /build/libxml2-2gYHdD/libxml2-2.9.13/...).
+    --distro RELEASE  Ubuntu release codename (e.g., noble, jammy, focal).
+
+  How it works:
+    1. Downloads the Packages.xz index from archive.ubuntu.com (cached)
+    2. Finds the matching .deb package (by Package: or Source: field)
+    3. Downloads the .deb, extracts the binary from data.tar.{zst,xz,gz}
+    4. Verifies the ELF build ID matches
+
+  When auto-detecting (--apt without a package name), all binary packages
+  from the same source are tried until one contains the target binary with
+  the correct build ID.
+
+  Architecture note: amd64/i386 packages come from archive.ubuntu.com;
+  arm64/armhf packages come from ports.ubuntu.com/ubuntu-ports.
 
 FENIX (FIREFOX FOR ANDROID):
 
@@ -244,6 +275,22 @@ EXAMPLES:
       --code-file libglib-2.0.so.0 \
       --code-id 4ac2f78e021ba6b54f56bea31dcf2b1e19c7f3bc \
       --offset 0x625f6
+
+  # Ubuntu APT library (auto-detected source package from sym file):
+  symdis disasm \
+      --debug-file libgobject-2.0.so.0 \
+      --debug-id D5C5BC91262349F50FA62ACC824CB87C0 \
+      --code-id 91bcc5d52326f5490fa62acc824cb87c700d0f8a \
+      --apt --distro noble \
+      --function g_type_check_instance_cast
+
+  # Ubuntu APT library (explicit package name):
+  symdis disasm \
+      --debug-file libgobject-2.0.so.0 \
+      --debug-id D5C5BC91262349F50FA62ACC824CB87C0 \
+      --code-id 91bcc5d52326f5490fa62acc824cb87c700d0f8a \
+      --apt libglib2.0-0t64 --distro noble \
+      --function g_type_check_instance_cast
 
   # Thunderbird module -- specify --product for non-Firefox products:
   symdis disasm \
@@ -390,6 +437,11 @@ TIPS:
     resolved to their import names (e.g., "libSystem.B.dylib!_malloc").
     This covers the standard calling convention for imported functions
     on macOS.
+  - For Ubuntu system libraries (libxml2, mesa, libdrm, libffi, etc.),
+    use --apt --distro <codename> to fetch binaries from APT packages.
+    The source package name is auto-detected from .sym source paths
+    (e.g., /build/libxml2-2gYHdD/...). Use --apt <package> to specify
+    the binary package name explicitly when auto-detection fails.
   - ARM32 Thumb-2 mode is auto-detected from ELF symbol metadata
     (mapping symbols $t/$a and function symbol Thumb bit). Most
     ARM32 binaries (including Fenix armeabi-v7a) use Thumb-2
@@ -443,6 +495,8 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   (from release info)    --channel       release|beta|esr|nightly|aurora|default
   (from release info)    --build-id      14-digit timestamp (nightly only)
   (snap source paths)    --snap          Snap package name (explicit only)
+  (apt source paths)     --apt           APT binary package name (explicit only)
+  (from release info)    --distro        Ubuntu release codename (e.g., noble)
   (from product name)    --product       firefox|thunderbird|fenix|focus (default: firefox)
 
   Pre-fetches the .sym file and native binary into the local cache so
@@ -451,7 +505,8 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   provide --code-file and --code-id to maximize binary fetch success.
 
   Binary fetch chain: cache → Tecken → Microsoft (Windows) → debuginfod
-  (Linux) → Snap Store (Linux, --snap) → FTP archive (--version + --channel).
+  (Linux) → Snap Store (Linux, --snap) → APT (Linux, --apt + --distro)
+  → FTP archive (--version + --channel).
 
   For Linux modules, the full ELF build ID for debuginfod is extracted
   from the INFO CODE_ID record in the .sym file when --code-id is not
@@ -466,8 +521,9 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   "Linux"). Binary fetch downloads the APK from Mozilla's FTP server
   and extracts the native library from lib/{abi}/ inside the APK.
 
-  Note: snap auto-detection from sym file source paths is only available
-  in the disasm command. For fetch, use --snap explicitly.
+  Note: snap and APT auto-detection from sym file source paths is only
+  available in the disasm command. For fetch, use --snap or --apt
+  <package> explicitly.
 
 EXAMPLES:
 
@@ -510,6 +566,13 @@ EXAMPLES:
       --code-file libglib-2.0.so.0 \
       --code-id 4ac2f78e021ba6b54f56bea31dcf2b1e19c7f3bc \
       --snap gnome-42-2204-sdk
+
+  # Pre-fetch an Ubuntu APT library:
+  symdis fetch \
+      --debug-file libgobject-2.0.so.0 \
+      --debug-id D5C5BC91262349F50FA62ACC824CB87C0 \
+      --code-id 91bcc5d52326f5490fa62acc824cb87c700d0f8a \
+      --apt libglib2.0-0t64 --distro noble
 
   # Pre-fetch including PDB file:
   symdis fetch \
@@ -708,6 +771,16 @@ pub struct DisasmArgs {
     #[arg(long)]
     pub snap: Option<String>,
 
+    /// Enable APT backend for Ubuntu system libraries. Optionally specify
+    /// the binary package name; if omitted, the source package name is
+    /// auto-detected from sym file source paths.
+    #[arg(long, num_args = 0..=1, default_missing_value = "")]
+    pub apt: Option<String>,
+
+    /// Ubuntu release codename (e.g., noble, jammy). Required with --apt.
+    #[arg(long)]
+    pub distro: Option<String>,
+
     /// Mozilla product: firefox (default), thunderbird, fenix, or focus.
     /// For Android crashes, you MUST specify --product fenix or --product focus.
     /// It cannot be auto-detected (Android .sym files report OS as "Linux").
@@ -823,6 +896,16 @@ pub struct FetchArgs {
     /// Snap package name (not auto-detected; use --snap explicitly for fetch)
     #[arg(long)]
     pub snap: Option<String>,
+
+    /// Enable APT backend for Ubuntu system libraries. Optionally specify
+    /// the binary package name; if omitted, requires source package name from
+    /// sym file source paths.
+    #[arg(long, num_args = 0..=1, default_missing_value = "")]
+    pub apt: Option<String>,
+
+    /// Ubuntu release codename (e.g., noble, jammy). Required with --apt.
+    #[arg(long)]
+    pub distro: Option<String>,
 
     /// Mozilla product: firefox (default), thunderbird, fenix, or focus.
     /// For Android crashes, you MUST specify --product fenix or --product focus.
