@@ -137,25 +137,37 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         }
     };
 
-    // If binary fetch failed and sym file indicates Linux, try debuginfod
+    // Effective code_id: prefer CLI --code-id, fall back to INFO CODE_ID from sym file.
+    // This is important for debuginfod lookups where the full ELF build ID (40 chars)
+    // is needed but the debug_id only preserves 32 chars (16 bytes of the GUID).
+    let sym_code_id = sym_file.as_ref().and_then(|s| s.code_id.as_deref());
+    let effective_code_id = args.code_id.as_deref().or(sym_code_id);
+
+    // If binary fetch failed and sym file indicates Linux, try debuginfod.
+    // Requires a real code_id (from --code-id or INFO CODE_ID in .sym) because
+    // the debug_id only preserves 16 of 20 build ID bytes.
     let bin_result = match bin_result {
         Ok(path) => Ok(path),
         Err(e) => {
             let is_linux = sym_file.as_ref()
                 .map(|sym| sym.module.os.eq_ignore_ascii_case("linux"))
-                .unwrap_or_else(|| looks_like_elf(&args.debug_file, args.code_id.as_deref()));
+                .unwrap_or_else(|| looks_like_elf(&args.debug_file, effective_code_id));
             if is_linux {
-                let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                match fetch::fetch_binary_debuginfod(&client, &cache, config, code_file, args.code_id.as_deref(), &args.debug_id).await {
-                    Ok(path) => Ok(path),
-                    Err(_) => {
-                        let msg = e.to_string();
-                        if msg.contains("\nTried: ") {
-                            Err(anyhow::anyhow!("{msg}, debuginfod"))
-                        } else {
-                            Err(e)
+                if let Some(code_id) = effective_code_id {
+                    let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                    match fetch::fetch_binary_debuginfod(&client, &cache, config, code_file, code_id).await {
+                        Ok(path) => Ok(path),
+                        Err(_) => {
+                            let msg = e.to_string();
+                            if msg.contains("\nTried: ") {
+                                Err(anyhow::anyhow!("{msg}, debuginfod"))
+                            } else {
+                                Err(e)
+                            }
                         }
                     }
+                } else {
+                    Err(e)
                 }
             } else {
                 Err(e)
@@ -169,34 +181,37 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         Err(e) => {
             let is_linux = sym_file.as_ref()
                 .map(|sym| sym.module.os.eq_ignore_ascii_case("linux"))
-                .unwrap_or_else(|| looks_like_elf(&args.debug_file, args.code_id.as_deref()));
+                .unwrap_or_else(|| looks_like_elf(&args.debug_file, effective_code_id));
             if is_linux {
-                let snap_name = args.snap.clone()
-                    .or_else(|| sym_file.as_ref().and_then(fetch::snap::detect_snap_name));
-                let arch = sym_file.as_ref()
-                    .and_then(|sym| fetch::snap::snap_architecture(&sym.module.arch));
-                if let (Some(snap_name), Some(arch)) = (snap_name, arch) {
-                    let locator = fetch::snap::SnapLocator {
-                        snap_name,
-                        architecture: arch.to_string(),
-                    };
-                    let archive_client = fetch::build_archive_http_client(config)?;
-                    let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                    match fetch::fetch_binary_snap(
-                        &archive_client,
-                        &cache,
-                        code_file,
-                        args.code_id.as_deref(),
-                        &args.debug_id,
-                        &locator,
-                    )
-                    .await
-                    {
-                        Ok(path) => Ok(path),
-                        Err(snap_err) => {
-                            warn!("Snap Store fallback failed: {snap_err:#}");
-                            Err(e)
+                if let Some(code_id) = effective_code_id {
+                    let snap_name = args.snap.clone()
+                        .or_else(|| sym_file.as_ref().and_then(fetch::snap::detect_snap_name));
+                    let arch = sym_file.as_ref()
+                        .and_then(|sym| fetch::snap::snap_architecture(&sym.module.arch));
+                    if let (Some(snap_name), Some(arch)) = (snap_name, arch) {
+                        let locator = fetch::snap::SnapLocator {
+                            snap_name,
+                            architecture: arch.to_string(),
+                        };
+                        let archive_client = fetch::build_archive_http_client(config)?;
+                        let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                        match fetch::fetch_binary_snap(
+                            &archive_client,
+                            &cache,
+                            code_file,
+                            code_id,
+                            &locator,
+                        )
+                        .await
+                        {
+                            Ok(path) => Ok(path),
+                            Err(snap_err) => {
+                                warn!("Snap Store fallback failed: {snap_err:#}");
+                                Err(e)
+                            }
                         }
+                    } else {
+                        Err(e)
                     }
                 } else {
                     Err(e)
@@ -213,25 +228,29 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         Err(e) => {
             let (os, arch_str) = sym_file.as_ref()
                 .map(|s| (s.module.os.as_str(), s.module.arch.as_str()))
-                .unwrap_or_else(|| infer_platform_from_code_id(args.code_id.as_deref()));
+                .unwrap_or_else(|| infer_platform_from_code_id(effective_code_id));
             if let (Some(version), Some(channel)) = (&args.version, &args.channel) {
                 match fetch::archive::resolve_product_platform(&args.product, os, arch_str) {
                     Ok(Some((product, platform))) => {
-                        let archive_client = fetch::build_archive_http_client(config)?;
-                        let locator = fetch::archive::ArchiveLocator {
-                            product,
-                            version: version.clone(),
-                            channel: channel.clone(),
-                            platform,
-                            build_id: args.build_id.clone(),
-                        };
-                        let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                        match fetch::fetch_binary_ftp(&archive_client, &cache, config, code_file, args.code_id.as_deref(), &args.debug_id, &locator).await {
-                            Ok(path) => Ok(path),
-                            Err(ftp_err) => {
-                                warn!("FTP archive fallback failed: {ftp_err:#}");
-                                Err(e)
+                        if let Some(code_id) = effective_code_id {
+                            let archive_client = fetch::build_archive_http_client(config)?;
+                            let locator = fetch::archive::ArchiveLocator {
+                                product,
+                                version: version.clone(),
+                                channel: channel.clone(),
+                                platform,
+                                build_id: args.build_id.clone(),
+                            };
+                            let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                            match fetch::fetch_binary_ftp(&archive_client, &cache, config, code_file, code_id, &locator).await {
+                                Ok(path) => Ok(path),
+                                Err(ftp_err) => {
+                                    warn!("FTP archive fallback failed: {ftp_err:#}");
+                                    Err(e)
+                                }
                             }
+                        } else {
+                            Err(e)
                         }
                     }
                     Ok(None) => Err(e),
@@ -864,14 +883,15 @@ fn check_binary_identity(
         ));
     }
 
-    // Derive expected ID from debug_id (handles both ELF build ID and Mach-O UUID)
-    if let Ok(expected) = crate::symbols::id_convert::debug_id_to_build_id(debug_id) {
-        if actual_id.to_lowercase().starts_with(&expected) {
+    // Convert actual build ID to a standard Breakpad debug ID (33 chars)
+    // and compare directly.
+    if let Ok(actual_as_debug_id) = crate::symbols::id_convert::build_id_to_debug_id(&actual_id) {
+        if actual_as_debug_id.eq_ignore_ascii_case(debug_id) {
             return None;
         }
         return Some(format!(
-            "Binary identity mismatch: expected {}, got {} -- disassembly may be from a different build",
-            expected, actual_id
+            "Binary identity mismatch: expected debug ID {}, got {} -- disassembly may be from a different build",
+            debug_id, actual_as_debug_id
         ));
     }
 

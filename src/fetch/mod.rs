@@ -292,21 +292,20 @@ pub async fn fetch_binary(
 
 /// Fetch a Linux binary via debuginfod, checking cache first.
 ///
-/// If `code_id` is provided, it is used directly as the build ID (for ELF
-/// binaries, the code ID IS the build ID). Otherwise, the build ID is derived
-/// from the debug ID by reversing the GUID byte-swapping.
+/// The `code_id` is used directly as the build ID (for ELF binaries, the code
+/// ID IS the build ID). Callers must provide a real code_id — either from the
+/// `--code-id` CLI flag or from the `INFO CODE_ID` record in the `.sym` file.
+/// Deriving a build ID from the debug ID is not attempted because the Breakpad
+/// debug ID only preserves 16 of the 20 bytes in a standard SHA-1 build ID,
+/// and debuginfod requires an exact match.
 pub async fn fetch_binary_debuginfod(
     client: &Client,
     cache: &Cache,
     config: &Config,
     code_file: &str,
-    code_id: Option<&str>,
-    debug_id: &str,
+    code_id: &str,
 ) -> Result<PathBuf> {
-    let build_id = match code_id {
-        Some(id) => id.to_lowercase(),
-        None => crate::symbols::id_convert::debug_id_to_build_id(debug_id)?,
-    };
+    let build_id = code_id.to_lowercase();
 
     // Use build_id as the cache code_id to avoid collisions with code_id-based lookups
     let key = BinaryCacheKey {
@@ -384,14 +383,10 @@ pub async fn fetch_binary_ftp(
     cache: &Cache,
     config: &Config,
     code_file: &str,
-    code_id: Option<&str>,
-    debug_id: &str,
+    code_id: &str,
     locator: &archive::ArchiveLocator,
 ) -> Result<PathBuf> {
-    let build_id = match code_id {
-        Some(id) => id.to_lowercase(),
-        None => crate::symbols::id_convert::debug_id_to_build_id(debug_id)?,
-    };
+    let build_id = code_id.to_lowercase();
 
     // Use same cache key as debuginfod
     let key = BinaryCacheKey {
@@ -466,14 +461,10 @@ pub async fn fetch_binary_snap(
     client: &Client,
     cache: &Cache,
     code_file: &str,
-    code_id: Option<&str>,
-    debug_id: &str,
+    code_id: &str,
     locator: &snap::SnapLocator,
 ) -> Result<PathBuf> {
-    let build_id = match code_id {
-        Some(id) => id.to_lowercase(),
-        None => crate::symbols::id_convert::debug_id_to_build_id(debug_id)?,
-    };
+    let build_id = code_id.to_lowercase();
 
     // Use same cache key as debuginfod/FTP
     let key = BinaryCacheKey {

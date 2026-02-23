@@ -49,25 +49,34 @@ pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
         Err(_) => None,
     };
 
-    // If binary fetch failed and sym file indicates Linux, try debuginfod
+    // Effective code_id: prefer CLI --code-id, fall back to INFO CODE_ID from sym file.
+    let sym_code_id = sym_summary.as_ref().and_then(|s| s.code_id.as_deref());
+    let effective_code_id = args.code_id.as_deref().or(sym_code_id);
+
+    // If binary fetch failed and sym file indicates Linux, try debuginfod.
+    // Requires a real code_id (from --code-id or INFO CODE_ID in .sym).
     let bin_result = match bin_result {
         Ok(path) => Ok(path),
         Err(e) => {
             let is_linux = sym_summary.as_ref()
                 .map(|s| s.module.os.eq_ignore_ascii_case("linux"))
-                .unwrap_or_else(|| looks_like_elf(&args.debug_file, args.code_id.as_deref()));
+                .unwrap_or_else(|| looks_like_elf(&args.debug_file, effective_code_id));
             if is_linux {
-                let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                match fetch::fetch_binary_debuginfod(&client, &cache, config, code_file, args.code_id.as_deref(), &args.debug_id).await {
-                    Ok(path) => Ok(path),
-                    Err(_) => {
-                        let msg = e.to_string();
-                        if msg.contains("\nTried: ") {
-                            Err(anyhow::anyhow!("{msg}, debuginfod"))
-                        } else {
-                            Err(e)
+                if let Some(code_id) = effective_code_id {
+                    let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                    match fetch::fetch_binary_debuginfod(&client, &cache, config, code_file, code_id).await {
+                        Ok(path) => Ok(path),
+                        Err(_) => {
+                            let msg = e.to_string();
+                            if msg.contains("\nTried: ") {
+                                Err(anyhow::anyhow!("{msg}, debuginfod"))
+                            } else {
+                                Err(e)
+                            }
                         }
                     }
+                } else {
+                    Err(e)
                 }
             } else {
                 Err(e)
@@ -81,25 +90,29 @@ pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
         Err(e) => {
             let (os, arch_str) = sym_summary.as_ref()
                 .map(|s| (s.module.os.as_str(), s.module.arch.as_str()))
-                .unwrap_or_else(|| infer_platform_from_code_id(args.code_id.as_deref()));
+                .unwrap_or_else(|| infer_platform_from_code_id(effective_code_id));
             if let (Some(version), Some(channel)) = (&args.version, &args.channel) {
                 match fetch::archive::resolve_product_platform(&args.product, os, arch_str) {
                     Ok(Some((product, platform))) => {
-                        let archive_client = fetch::build_archive_http_client(config)?;
-                        let locator = fetch::archive::ArchiveLocator {
-                            product,
-                            version: version.clone(),
-                            channel: channel.clone(),
-                            platform,
-                            build_id: args.build_id.clone(),
-                        };
-                        let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
-                        match fetch::fetch_binary_ftp(&archive_client, &cache, config, code_file, args.code_id.as_deref(), &args.debug_id, &locator).await {
-                            Ok(path) => Ok(path),
-                            Err(ftp_err) => {
-                                warn!("FTP archive fallback failed: {ftp_err:#}");
-                                Err(e)
+                        if let Some(code_id) = effective_code_id {
+                            let archive_client = fetch::build_archive_http_client(config)?;
+                            let locator = fetch::archive::ArchiveLocator {
+                                product,
+                                version: version.clone(),
+                                channel: channel.clone(),
+                                platform,
+                                build_id: args.build_id.clone(),
+                            };
+                            let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                            match fetch::fetch_binary_ftp(&archive_client, &cache, config, code_file, code_id, &locator).await {
+                                Ok(path) => Ok(path),
+                                Err(ftp_err) => {
+                                    warn!("FTP archive fallback failed: {ftp_err:#}");
+                                    Err(e)
+                                }
                             }
+                        } else {
+                            Err(e)
                         }
                     }
                     Ok(None) => Err(e),

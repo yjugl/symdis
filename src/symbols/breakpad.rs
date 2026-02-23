@@ -14,6 +14,8 @@ pub struct SymFile {
     pub functions: Vec<FuncRecord>,
     pub publics: Vec<PublicRecord>,
     pub inline_origins: Vec<String>,
+    /// Full code ID from `INFO CODE_ID` record (e.g. the full 40-char ELF build ID).
+    pub code_id: Option<String>,
     /// Map from function name to index in `functions` for fast lookup.
     name_index: HashMap<String, Vec<usize>>,
     /// Map from PUBLIC symbol name to index in `publics` for fast lookup.
@@ -89,6 +91,8 @@ pub struct SymFileSummary {
     pub module: ModuleRecord,
     pub function_count: usize,
     pub public_count: usize,
+    /// Full code ID from `INFO CODE_ID` record (e.g. the full 40-char ELF build ID).
+    pub code_id: Option<String>,
 }
 
 impl SymFileSummary {
@@ -98,6 +102,7 @@ impl SymFileSummary {
         let mut module: Option<ModuleRecord> = None;
         let mut function_count: usize = 0;
         let mut public_count: usize = 0;
+        let mut code_id: Option<String> = None;
 
         for line in reader.lines() {
             let line = line?;
@@ -111,11 +116,13 @@ impl SymFileSummary {
                 function_count += 1;
             } else if line.starts_with("PUBLIC ") {
                 public_count += 1;
+            } else if let Some(rest) = line.strip_prefix("INFO CODE_ID ") {
+                code_id = Some(rest.trim().to_lowercase());
             }
         }
 
         let module = module.ok_or_else(|| anyhow::anyhow!("no MODULE record found"))?;
-        Ok(Self { module, function_count, public_count })
+        Ok(Self { module, function_count, public_count, code_id })
     }
 }
 
@@ -128,6 +135,7 @@ impl SymFile {
         let mut publics: Vec<PublicRecord> = Vec::new();
         let mut inline_origins: Vec<String> = Vec::new();
         let mut current_func: Option<FuncRecord> = None;
+        let mut code_id: Option<String> = None;
 
         for (line_num, line) in reader.lines().enumerate() {
             let line = line.with_context(|| format!("reading line {}", line_num + 1))?;
@@ -157,8 +165,10 @@ impl SymFile {
                 }
             } else if line.starts_with("STACK ") {
                 // Skip STACK records
+            } else if let Some(rest) = line.strip_prefix("INFO CODE_ID ") {
+                code_id = Some(rest.trim().to_lowercase());
             } else if line.starts_with("INFO ") {
-                // Skip INFO records
+                // Skip other INFO records
             } else if current_func.is_some() {
                 // This should be a line record (no prefix, part of current FUNC)
                 if let Some(ref mut func) = current_func {
@@ -205,6 +215,7 @@ impl SymFile {
             functions,
             publics,
             inline_origins,
+            code_id,
             name_index,
             public_name_index,
         })
@@ -253,6 +264,7 @@ impl SymFile {
             functions,
             publics,
             inline_origins,
+            code_id: None,
             name_index,
             public_name_index,
         }
@@ -718,5 +730,50 @@ PUBLIC 4000 0 _AnotherPublic
         assert_eq!(summary.module.debug_id, "44E4EC8C2F41492B9369D6B9A059577C2");
         assert_eq!(summary.function_count, 2);
         assert_eq!(summary.public_count, 2);
+        // No INFO CODE_ID in test data
+        assert!(summary.code_id.is_none());
+    }
+
+    #[test]
+    fn test_parse_info_code_id() {
+        let data = "\
+MODULE Linux x86_64 D5C5BC91262349F50FA62ACC824CB87C0 libgobject-2.0.so.0
+INFO CODE_ID 91BCC5D52326F5490FA62ACC824CB87C700D0F8A
+INFO GENERATOR mozilla/dump_syms 2.3.6
+FILE 0 /usr/src/gobject/gtype.c
+FUNC 1000 80 0 g_type_check_instance_cast
+1000 40 4170 0
+1040 40 4180 0
+PUBLIC 2000 0 g_signal_emit
+";
+        let sym = SymFile::parse(Cursor::new(data)).unwrap();
+        assert_eq!(
+            sym.code_id.as_deref(),
+            Some("91bcc5d52326f5490fa62acc824cb87c700d0f8a")
+        );
+    }
+
+    #[test]
+    fn test_summary_scan_info_code_id() {
+        let data = "\
+MODULE Linux x86_64 D5C5BC91262349F50FA62ACC824CB87C0 libgobject-2.0.so.0
+INFO CODE_ID 91BCC5D52326F5490FA62ACC824CB87C700D0F8A
+FILE 0 /usr/src/gobject/gtype.c
+FUNC 1000 80 0 g_type_check_instance_cast
+PUBLIC 2000 0 g_signal_emit
+";
+        let summary = SymFileSummary::scan(Cursor::new(data)).unwrap();
+        assert_eq!(
+            summary.code_id.as_deref(),
+            Some("91bcc5d52326f5490fa62acc824cb87c700d0f8a")
+        );
+        assert_eq!(summary.function_count, 1);
+        assert_eq!(summary.public_count, 1);
+    }
+
+    #[test]
+    fn test_parse_no_info_code_id() {
+        let sym = SymFile::parse(Cursor::new(make_test_sym())).unwrap();
+        assert!(sym.code_id.is_none());
     }
 }

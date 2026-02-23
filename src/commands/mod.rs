@@ -55,7 +55,8 @@ BINARY FETCH CHAIN:
     1. Local cache (instant)
     2. Mozilla Tecken symbol server (code-file + code-id)
     3. Microsoft symbol server (Windows .dll/.exe/.sys only)
-    4. debuginfod servers (Linux ELF only, build ID from debug ID)
+    4. debuginfod servers (Linux ELF only, requires build ID from
+       --code-id or INFO CODE_ID in .sym file)
     5. Snap Store (Linux, when snap detected from sym file or --snap flag)
     6. Mozilla FTP archive (--version + --channel required):
        - Linux: downloads .tar.xz from /pub/firefox/releases/
@@ -68,6 +69,12 @@ BINARY FETCH CHAIN:
   is much less likely to succeed, and you will only get sym-only output
   (function metadata without disassembly). With them, you get full
   annotated disassembly (source lines, call targets, inline frames).
+
+  For Linux modules, if --code-id is not provided, the full ELF build ID
+  is automatically extracted from the INFO CODE_ID record in the .sym file
+  (when available on Tecken). Debuginfod requires an exact build ID match,
+  so either --code-id or INFO CODE_ID is needed for steps 4-6 to work.
+  Passing --code-id explicitly always takes precedence.
 
   Step 5 auto-detects the snap name from source file paths in the .sym
   file (e.g. /build/gnome-42-2204-sdk/parts/...), or use --snap to
@@ -215,11 +222,11 @@ EXAMPLES:
   # Linux module -- with FTP archive fallback:
   symdis disasm \
       --debug-file libxul.so \
-      --debug-id 669D6B010E4BF04FF9B3F43CCF735A340 \
+      --debug-id 0200CE7B29CF2F761BB067BC519155A00 \
       --code-file libxul.so \
-      --code-id 016b9d664b0e4ff0f9b3f43ccf735a3482db0fd6 \
+      --code-id 7bce0002cf29762f1bb067bc519155a0cb3f4a31 \
       --version 147.0.3 --channel release \
-      --offset 0x4616fda --highlight-offset 0x4616fda
+      --offset 0x31bd35a --highlight-offset 0x31bd35a
 
   # macOS module -- fat/universal binary from PKG archive:
   symdis disasm \
@@ -446,6 +453,10 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   Binary fetch chain: cache → Tecken → Microsoft (Windows) → debuginfod
   (Linux) → Snap Store (Linux, --snap) → FTP archive (--version + --channel).
 
+  For Linux modules, the full ELF build ID for debuginfod is extracted
+  from the INFO CODE_ID record in the .sym file when --code-id is not
+  provided.
+
   With --pdb, also fetches the PDB file from Tecken or Microsoft Symbol
   Server (Windows modules only, debug-file must end in .pdb). The PDB
   is cached separately from the .sym file.
@@ -469,9 +480,9 @@ EXAMPLES:
   # Pre-fetch a Linux module with FTP archive fallback:
   symdis fetch \
       --debug-file libxul.so \
-      --debug-id 669D6B010E4BF04FF9B3F43CCF735A340 \
+      --debug-id 0200CE7B29CF2F761BB067BC519155A00 \
       --code-file libxul.so \
-      --code-id 016b9d664b0e4ff0f9b3f43ccf735a3482db0fd6 \
+      --code-id 7bce0002cf29762f1bb067bc519155a0cb3f4a31 \
       --version 147.0.3 --channel release
 
   # Pre-fetch a Fenix (Android) module:
@@ -548,9 +559,9 @@ EXAMPLES:
   # Check a Linux module with FTP archive fallback:
   symdis info \
       --debug-file libxul.so \
-      --debug-id 669D6B010E4BF04FF9B3F43CCF735A340 \
+      --debug-id 0200CE7B29CF2F761BB067BC519155A00 \
       --code-file libxul.so \
-      --code-id 016b9d664b0e4ff0f9b3f43ccf735a3482db0fd6 \
+      --code-id 7bce0002cf29762f1bb067bc519155a0cb3f4a31 \
       --version 147.0.3 --channel release
 
   # JSON output:
