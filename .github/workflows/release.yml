@@ -21,12 +21,16 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
+            archive_ext: tar.gz
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
+            archive_ext: zip
           - target: x86_64-apple-darwin
             runner: macos-latest
+            archive_ext: tar.gz
           - target: aarch64-apple-darwin
             runner: macos-latest
+            archive_ext: tar.gz
 
     steps:
       - uses: actions/checkout@v4
@@ -48,16 +52,15 @@ jobs:
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../symdis-${{ matrix.target }}.tar.gz symdis.exe
-          cd ../../..
+          Compress-Archive -Path target/${{ matrix.target }}/release/symdis.exe -DestinationPath symdis-${{ matrix.target }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: symdis-${{ matrix.target }}
-          path: symdis-${{ matrix.target }}.tar.gz
+          path: symdis-${{ matrix.target }}.${{ matrix.archive_ext }}
 
   release:
     name: Create Release
@@ -72,5 +75,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: symdis-*.tar.gz
+          files: |
+            symdis-*.tar.gz
+            symdis-*.zip
           generate_release_notes: true
