@@ -49,6 +49,7 @@ CRASH REPORT FIELD MAPPING:
   (snap source paths)    --snap              Snap package name (auto-detected)
   (apt source paths)     --apt               APT binary package name (auto-detected)
   lsb_release.codename   --distro            E.g. "noble", "bookworm", "kali-rolling"
+  (arch linux)           --pacman            Pacman package name (auto-detected via PROVIDES)
   (from product name)    --product           firefox|thunderbird|fenix|focus (default: firefox)
 
 BINARY FETCH CHAIN:
@@ -61,7 +62,8 @@ BINARY FETCH CHAIN:
        --code-id or INFO CODE_ID in .sym file)
     5. Snap Store (Linux, when snap detected from sym file or --snap flag)
     6. APT archive (Linux, --apt + --distro required; supports Ubuntu + Debian)
-    7. Mozilla FTP archive (--version + --channel required):
+    7. Pacman packages (Linux x86_64, --pacman; Arch Linux + derivatives)
+    8. Mozilla FTP archive (--version + --channel required):
        - Linux: downloads .tar.xz from /pub/firefox/releases/
        - macOS: downloads .pkg from /pub/firefox/releases/
        - Android: downloads .apk from /pub/fenix/releases/ or /pub/focus/releases/
@@ -76,15 +78,16 @@ BINARY FETCH CHAIN:
   For Linux modules, if --code-id is not provided, the full ELF build ID
   is automatically extracted from the INFO CODE_ID record in the .sym file
   (when available on Tecken). Debuginfod requires an exact build ID match,
-  so either --code-id or INFO CODE_ID is needed for steps 4-6 to work.
+  so either --code-id or INFO CODE_ID is needed for steps 4-7 to work.
   Passing --code-id explicitly always takes precedence.
 
   Step 5 auto-detects the snap name from source file paths in the .sym
   file (e.g. /build/gnome-42-2204-sdk/parts/...), or use --snap to
   specify it explicitly. Step 6 requires --apt and --distro (see APT
-  section below). Providing --version and --channel enables step 7
-  as a last resort. The .sym file is always fetched from Tecken using
-  --debug-file and --debug-id.
+  section below). Step 7 requires --pacman (see PACMAN section below).
+  Providing --version and --channel enables step 8 as a last resort.
+  The .sym file is always fetched from Tecken using --debug-file and
+  --debug-id.
 
 PDB SUPPORT (--pdb):
 
@@ -251,6 +254,76 @@ APT PACKAGES (--apt, DEBIAN/UBUNTU):
   Architecture note (Ubuntu only): amd64/i386 packages come from
   archive.ubuntu.com; arm64/armhf from ports.ubuntu.com/ubuntu-ports.
 
+PACMAN PACKAGES (--pacman, ARCH LINUX):
+
+  For system libraries on Arch Linux and derivatives (CachyOS, Manjaro,
+  EndeavourOS, etc.), symdis can fetch .pkg.tar.zst packages from pacman
+  repositories and extract the target binary. Currently x86_64 only
+  (Arch Linux ARM is a separate project).
+
+  Required flags:
+    --pacman [PACKAGE]  Enable pacman backend. Optional explicit package
+                        name (e.g., --pacman glib2). When omitted, the
+                        package is auto-detected (see below).
+
+  Optional flags:
+    --mirror URL        Override the default Arch mirror
+                        (https://geo.mirror.pkgbuild.com). Use this for
+                        derivatives like Manjaro or CachyOS that use
+                        different repositories.
+
+  HOW TO RECOGNIZE AN ARCH LINUX CRASH REPORT:
+
+    - lsb_release.id: "Arch" (or "CachyOS", "ManjaroLinux", "EndeavourOS")
+    - lsb_release.codename: "rolling" (Arch has no release codenames)
+    - No lsb_release.codename or lsb_release.id: check os_pretty_version
+      for "Arch Linux" or derivative names
+
+    Key indicator: Arch crashes will NOT match any --distro codename
+    (no "noble", "bookworm", etc.) because Arch is rolling release.
+
+  PACKAGE AUTO-DETECTION:
+
+    In most cases, just use --pacman without a package name:
+      symdis disasm ... --pacman --function g_main_context_iteration
+
+    Auto-detection uses three matching strategies in order:
+      1. PROVIDES matching: matches the binary's soname (e.g.,
+         libglib-2.0.so.0) against PROVIDES entries in the repo database
+         (e.g., libglib-2.0.so=0-64). Works for most libraries including
+         glib2, cairo, pango, gtk3, dbus, wayland, fontconfig, freetype2,
+         libffi, libpulse, libstdc++, and many others.
+      2. Name-based fallback: derives a package name from the binary
+         filename (e.g., libX11.so.6 → libx11, libdrm.so.2 → libdrm).
+         Works when the package name matches the library name.
+      3. If both fail, an error with a suggested --pacman <name> hint.
+
+    Known edge case requiring explicit naming:
+      libc.so.6  → --pacman glibc  (package name doesn't match library)
+
+    Most other libraries auto-detect correctly with --pacman alone.
+
+  How it works:
+    1. Downloads the repo database (.db.tar.gz, ~3-8 MB; cached) from
+       core, extra, and multilib repositories
+    2. Matches package by PROVIDES soname or derived package name
+    3. Downloads the .pkg.tar.zst package, decompresses with zstd
+    4. Extracts the binary from the tar archive
+    5. Verifies the ELF build ID matches
+
+  IMPORTANT: Arch is rolling release, so the binary in the repo is always
+  the LATEST version. If the crash is from an older package version, the
+  build ID will not match and binary fetch will fail (you still get
+  sym-only output). This is inherent to Arch — old packages are not kept.
+
+  NOTE: Arch debuginfod only indexes -debug packages — it does NOT serve
+  executables. This means the pacman backend is the only way to fetch
+  binaries for Arch Linux crashes.
+
+  For derivatives with custom mirrors:
+    --pacman --mirror https://mirror.cachyos.org/repo/x86_64/cachyos
+    --pacman --mirror https://repo.manjaro.org/stable/extra/x86_64
+
 FENIX (FIREFOX FOR ANDROID):
 
   For Android/Fenix crashes, you MUST pass --product fenix explicitly.
@@ -369,6 +442,22 @@ EXAMPLES:
       --apt libglib2.0-0t64 --distro kali-rolling \
       --mirror https://http.kali.org/kali \
       --components main \
+      --function g_main_context_iteration
+
+  # Arch Linux pacman library (auto-detected via PROVIDES matching):
+  symdis disasm \
+      --debug-file libglib-2.0.so.0 \
+      --debug-id 1B6047E8A0498E33A9C34903A2F9D12F0 \
+      --code-id e847601b49a0338ea9c34903a2f9d12fcb011e98 \
+      --pacman \
+      --function g_main_context_iteration
+
+  # Arch Linux pacman library (explicit package name):
+  symdis disasm \
+      --debug-file libglib-2.0.so.0 \
+      --debug-id 1B6047E8A0498E33A9C34903A2F9D12F0 \
+      --code-id e847601b49a0338ea9c34903a2f9d12fcb011e98 \
+      --pacman glib2 \
       --function g_main_context_iteration
 
   # Thunderbird module -- specify --product for non-Firefox products:
@@ -524,6 +613,14 @@ TIPS:
     Use --apt <package> to specify the binary package name explicitly
     when auto-detection fails. For other Debian derivatives (Kali, MX,
     Raspberry Pi OS), use --mirror to point to the custom repository.
+  - For Arch Linux and derivatives (CachyOS, Manjaro, EndeavourOS),
+    use --pacman to fetch binaries from pacman packages. The package
+    is usually auto-detected (PROVIDES matching + name fallback).
+    Use --pacman <pkg> to specify explicitly when auto-detect fails
+    (mainly libc.so.6 → --pacman glibc). Use --mirror for derivative
+    repos that use different mirrors. Arch is rolling release: only
+    the latest package version is available, so older crashes may get
+    sym-only output (build ID mismatch).
   - ARM32 Thumb-2 mode is auto-detected from ELF symbol metadata
     (mapping symbols $t/$a and function symbol Thumb bit). Most
     ARM32 binaries (including Fenix armeabi-v7a) use Thumb-2
@@ -579,6 +676,7 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   (snap source paths)    --snap          Snap package name (explicit only)
   (apt source paths)     --apt           APT binary package name (explicit only)
   (from release info)    --distro        Release codename (e.g., noble, bookworm)
+  (arch linux)           --pacman        Pacman package name (explicit or auto-detect)
   (from product name)    --product       firefox|thunderbird|fenix|focus (default: firefox)
 
   Pre-fetches the .sym file and native binary into the local cache so
@@ -588,7 +686,8 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 
   Binary fetch chain: cache → Tecken → Microsoft (Windows) → debuginfod
   (Linux) → Snap Store (Linux, --snap) → APT (Linux, --apt + --distro;
-  supports Ubuntu + Debian) → FTP archive (--version + --channel).
+  supports Ubuntu + Debian) → pacman (Linux x86_64, --pacman; Arch Linux)
+  → FTP archive (--version + --channel).
 
   For Linux modules, the full ELF build ID for debuginfod is extracted
   from the INFO CODE_ID record in the .sym file when --code-id is not
@@ -604,8 +703,8 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   and extracts the native library from lib/{abi}/ inside the APK.
 
   Note: snap and APT auto-detection from sym file source paths is only
-  available in the disasm command. For fetch, use --snap or --apt
-  <package> explicitly.
+  available in the disasm command. For fetch, use --snap, --apt
+  <package>, or --pacman [package] explicitly.
 
 EXAMPLES:
 
@@ -662,6 +761,13 @@ EXAMPLES:
       --debug-id 958EC2424AF21D728E8E159F42DBC5410 \
       --code-id 42c28e95f24a721d8e8e159f42dbc541f0ff353d \
       --apt libglib2.0-0 --distro bookworm
+
+  # Pre-fetch an Arch Linux pacman library:
+  symdis fetch \
+      --debug-file libglib-2.0.so.0 \
+      --debug-id 1B6047E8A0498E33A9C34903A2F9D12F0 \
+      --code-id e847601b49a0338ea9c34903a2f9d12fcb011e98 \
+      --pacman
 
   # Pre-fetch including PDB file:
   symdis fetch \
@@ -880,6 +986,12 @@ pub struct DisasmArgs {
     #[arg(long)]
     pub components: Option<String>,
 
+    /// Enable pacman backend for Arch Linux packages. Optionally specify
+    /// the package name; if omitted, auto-detects via PROVIDES matching.
+    /// Use --mirror to override the default Arch mirror.
+    #[arg(long, num_args = 0..=1, default_missing_value = "")]
+    pub pacman: Option<String>,
+
     /// Mozilla product: firefox (default), thunderbird, fenix, or focus.
     /// For Android crashes, you MUST specify --product fenix or --product focus.
     /// It cannot be auto-detected (Android .sym files report OS as "Linux").
@@ -1015,6 +1127,12 @@ pub struct FetchArgs {
     /// Only used with --mirror. Default: "main".
     #[arg(long)]
     pub components: Option<String>,
+
+    /// Enable pacman backend for Arch Linux packages. Optionally specify
+    /// the package name; if omitted, requires PROVIDES matching against
+    /// the binary's soname (no auto-detection from sym file in fetch).
+    #[arg(long, num_args = 0..=1, default_missing_value = "")]
+    pub pacman: Option<String>,
 
     /// Mozilla product: firefox (default), thunderbird, fenix, or focus.
     /// For Android crashes, you MUST specify --product fenix or --product focus.

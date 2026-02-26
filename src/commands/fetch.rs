@@ -226,6 +226,60 @@ pub async fn run(args: &FetchArgs, config: &Config) -> Result<()> {
         }
     };
 
+    // If binary still not found and --pacman specified, try pacman
+    let bin_result = match bin_result {
+        Ok(path) => Ok(path),
+        Err(e) => {
+            let is_linux = sym_summary
+                .as_ref()
+                .map(|s| s.module.os.eq_ignore_ascii_case("linux"))
+                .unwrap_or_else(|| looks_like_elf(&args.debug_file, effective_code_id));
+            if is_linux && args.pacman.is_some() {
+                if let Some(code_id) = effective_code_id {
+                    let arch = sym_summary
+                        .as_ref()
+                        .map(|s| s.module.arch.as_str())
+                        .unwrap_or("x86_64");
+                    let pacman_package = args
+                        .pacman
+                        .as_deref()
+                        .and_then(|s| if s.is_empty() { None } else { Some(s) })
+                        .map(|s| s.to_string());
+                    match fetch::pacman::build_locator(pacman_package, args.mirror.as_deref(), arch)
+                    {
+                        Ok(locator) => {
+                            let archive_client = fetch::build_archive_http_client(config)?;
+                            let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                            match fetch::fetch_binary_pacman(
+                                &archive_client,
+                                &cache,
+                                code_file,
+                                code_id,
+                                &locator,
+                            )
+                            .await
+                            {
+                                Ok(path) => Ok(path),
+                                Err(pacman_err) => {
+                                    warn!("pacman fallback failed: {pacman_err:#}");
+                                    Err(e)
+                                }
+                            }
+                        }
+                        Err(locator_err) => {
+                            warn!("pacman: {locator_err}");
+                            Err(e)
+                        }
+                    }
+                } else {
+                    Err(e)
+                }
+            } else {
+                Err(e)
+            }
+        }
+    };
+
     // If binary still not found, try FTP archive fallback (Linux + macOS)
     let bin_result = match bin_result {
         Ok(path) => Ok(path),

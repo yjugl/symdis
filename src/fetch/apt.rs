@@ -734,7 +734,7 @@ fn decompress_deb_data(data: &[u8]) -> Result<Vec<u8>> {
 /// Handles symlinks: in .deb packages, shared libraries like `libfoo.so.0` are
 /// often symlinks to the versioned file `libfoo.so.0.8000.0`. When the target
 /// name matches a symlink, we follow the link to extract the real file.
-fn extract_from_tar(tar_data: &[u8], target_name: &str) -> Result<Vec<u8>> {
+pub(crate) fn extract_from_tar(tar_data: &[u8], target_name: &str) -> Result<Vec<u8>> {
     // First pass: look for exact filename match (regular file or symlink)
     let mut archive = tar::Archive::new(tar_data);
     let mut symlink_target: Option<String> = None;
@@ -826,7 +826,7 @@ pub fn deb_cache_key(deb_url: &str, locator: &AptLocator) -> (String, String) {
 
 /// Extract hostname from a URL for cache key uniqueness.
 /// "https://archive.ubuntu.com/ubuntu/..." → "archive.ubuntu.com"
-fn extract_hostname(url: &str) -> &str {
+pub(crate) fn extract_hostname(url: &str) -> &str {
     let without_scheme = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))

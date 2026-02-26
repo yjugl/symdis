@@ -6,6 +6,7 @@ pub mod apt;
 pub mod archive;
 pub mod debuginfod;
 pub mod microsoft;
+pub mod pacman;
 pub mod snap;
 pub mod tecken;
 
@@ -696,6 +697,56 @@ pub async fn fetch_binary_apt(
         locator.release,
         candidates.len()
     )
+}
+
+/// Fetch a Linux binary from an Arch Linux pacman package, checking cache first.
+///
+/// Uses the same `buildid-{id}` cache key format as debuginfod/FTP/snap/apt so
+/// that binaries cached by any source are found by all. The .pkg.tar.zst archive
+/// itself is also cached so that extracting a second binary from the same package
+/// does not require re-downloading.
+pub async fn fetch_binary_pacman(
+    client: &Client,
+    cache: &Cache,
+    code_file: &str,
+    code_id: &str,
+    locator: &pacman::PacmanLocator,
+) -> Result<PathBuf> {
+    let build_id = code_id.to_lowercase();
+
+    // Use same cache key as debuginfod/FTP/snap/apt
+    let key = BinaryCacheKey {
+        code_file: code_file.to_string(),
+        code_id: format!("buildid-{build_id}"),
+        filename: code_file.to_string(),
+    };
+
+    // Check cache for extracted binary
+    match cache.get_binary(&key) {
+        CacheResult::Hit(path) => {
+            info!("cache hit: {code_file} (buildid-{build_id})");
+            return Ok(path);
+        }
+        CacheResult::NegativeHit | CacheResult::Miss => {
+            debug!("cache miss (pacman): {code_file} (buildid-{build_id})");
+        }
+    }
+
+    // Resolve package from repo database
+    let (_pkg_name, pkg_url, pkg_filename) =
+        pacman::resolve_package(client, cache, locator, code_file).await?;
+
+    // Download and extract binary
+    let binary_data =
+        pacman::download_and_extract(client, cache, &pkg_url, &pkg_filename, code_file, locator)
+            .await?;
+
+    // Verify build ID
+    archive::verify_binary_id(&binary_data, &build_id)?;
+    info!("build ID verified ({build_id})");
+
+    let path = cache.store_binary(&key, &binary_data)?;
+    Ok(path)
 }
 
 /// Heuristic: file name looks like a Windows binary (PE).
