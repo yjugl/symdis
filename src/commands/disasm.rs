@@ -263,7 +263,9 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                     let distro = match &args.distro {
                         Some(d) => d.clone(),
                         None => {
-                            warn!("--apt requires --distro (Ubuntu release codename)");
+                            warn!(
+                                "--apt requires --distro (release codename, e.g., noble, bookworm)"
+                            );
                             return Err(e);
                         }
                     };
@@ -283,10 +285,25 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                         } else {
                             None
                         };
+                        let repo_config = if let Some(ref mirror) = args.mirror {
+                            fetch::apt::custom_repo_config(mirror, args.components.as_deref())
+                        } else {
+                            match fetch::apt::resolve_repo_config(&distro) {
+                                Some(c) => c,
+                                None => {
+                                    warn!(
+                                        "unknown release codename '{}': use --mirror to specify a custom APT repository",
+                                        distro
+                                    );
+                                    return Err(e);
+                                }
+                            }
+                        };
                         let locator = fetch::apt::AptLocator {
                             package: apt_package,
                             release: distro,
                             architecture: arch.to_string(),
+                            config: repo_config,
                         };
                         let archive_client = fetch::build_archive_http_client(config)?;
                         let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);

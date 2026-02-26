@@ -48,7 +48,7 @@ CRASH REPORT FIELD MAPPING:
   (from release info)    --build-id          14-digit timestamp (nightly only)
   (snap source paths)    --snap              Snap package name (auto-detected)
   (apt source paths)     --apt               APT binary package name (auto-detected)
-  (from release info)    --distro            Ubuntu release codename (e.g., noble)
+  lsb_release.codename   --distro            E.g. "noble", "bookworm", "kali-rolling"
   (from product name)    --product           firefox|thunderbird|fenix|focus (default: firefox)
 
 BINARY FETCH CHAIN:
@@ -60,7 +60,7 @@ BINARY FETCH CHAIN:
     4. debuginfod servers (Linux ELF only, requires build ID from
        --code-id or INFO CODE_ID in .sym file)
     5. Snap Store (Linux, when snap detected from sym file or --snap flag)
-    6. Ubuntu APT archive (Linux, --apt + --distro required)
+    6. APT archive (Linux, --apt + --distro required; supports Ubuntu + Debian)
     7. Mozilla FTP archive (--version + --channel required):
        - Linux: downloads .tar.xz from /pub/firefox/releases/
        - macOS: downloads .pkg from /pub/firefox/releases/
@@ -89,10 +89,12 @@ BINARY FETCH CHAIN:
 PDB SUPPORT (--pdb):
 
   For Windows modules (debug-file ends in .pdb), symdis can fetch and
-  parse the original PDB file from Microsoft's symbol server or Tecken.
-  PDB fetch chain: cache → Tecken (uncompressed or CAB) → Microsoft
-  Symbol Server (uncompressed or CAB). Extended timeout (10 min) is used
-  because PDB files can be very large (xul.pdb ~1-2 GB as CAB).
+  parse the original PDB file from symbol servers or Tecken.
+  PDB fetch chain: cache → Tecken (uncompressed or CAB) → Microsoft →
+  Intel → AMD → NVIDIA (all use symsrv protocol, uncompressed or CAB).
+  Extended timeout (10 min) is used because PDB files can be very large
+  (xul.pdb ~1-2 GB as CAB). GPU driver PDBs (nvoglv64.pdb, amdxc64.pdb,
+  etc.) are fetched from vendor servers automatically.
 
   Behavior without --pdb (default):
     1. Fetch .sym file from Tecken (fast, lightweight)
@@ -163,11 +165,12 @@ PDB SUPPORT (--pdb):
       only an address and name). Call targets within the same module
       ARE resolved from other PUBLIC symbol names.
 
-UBUNTU APT PACKAGES (--apt):
+APT PACKAGES (--apt, DEBIAN/UBUNTU):
 
-  For Ubuntu system libraries installed via apt (libxml2, mesa, libdrm,
-  libffi, etc.), symdis can fetch .deb packages from archive.ubuntu.com
-  and extract the target binary. This covers libraries that are NOT in
+  For system libraries installed via apt (libxml2, mesa, libdrm, libffi,
+  etc.), symdis can fetch .deb packages from APT repositories and extract
+  the target binary. Supports Ubuntu, Debian, and derivatives (Kali,
+  Parrot, MX, etc. via --mirror). This covers libraries that are NOT in
   snap runtimes and NOT in debuginfod.
 
   Required flags:
@@ -175,10 +178,68 @@ UBUNTU APT PACKAGES (--apt):
                       name (e.g., --apt libxml2). When omitted, the source
                       package name is auto-detected from .sym file source
                       paths (e.g., /build/libxml2-2gYHdD/libxml2-2.9.13/...).
-    --distro RELEASE  Ubuntu release codename (e.g., noble, jammy, focal).
+    --distro RELEASE  Release codename (e.g., noble, bookworm, sid).
+
+  Optional flags:
+    --mirror URL      Custom APT mirror URL (for Raspberry Pi OS, Kali,
+                      or any Debian-based distribution with custom repos).
+    --components LIST Comma-separated component list (default: "main").
+                      Only used with --mirror.
+
+  DETERMINING --distro FROM THE CRASH REPORT:
+
+    Use the lsb_release.codename field from the crash report JSON —
+    pass it directly as --distro. Examples from real crash reports:
+
+      lsb_release.id   lsb_release.codename   --mirror needed?
+      ----------------  ---------------------  ----------------
+      Ubuntu            noble                  no
+      debian (Debian)   bookworm, trixie       no
+      Pop               noble                  no (Ubuntu-based)
+      antiX             bookworm               no (Debian-based)
+      debian (RPi OS)   bookworm               no (Debian-based)
+      kali              kali-rolling           yes (see below)
+      debian (Parrot)   echo                   yes (see below)
+
+    For Kali:  --mirror https://http.kali.org/kali --components main
+    For Parrot: --mirror https://deb.parrot.sh/parrot
+                --components main,contrib,non-free
+
+    Derivatives like antiX, MX Linux, Raspberry Pi OS, and Pop!_OS
+    report their Debian/Ubuntu base codename in lsb_release.codename,
+    so --distro works directly with no --mirror needed (their system
+    libraries come from the upstream Debian/Ubuntu archive).
+
+  DETERMINING --apt PACKAGE NAME:
+
+    In most cases, omit the package name and let auto-detection work:
+      symdis disasm ... --apt --distro noble
+
+    Auto-detection reads the .sym file's source paths looking for
+    patterns like /build/<source>-<hash>/<source>-<version>/... or
+    /usr/src/<source>-<version>/... and searches by source package name.
+
+    When auto-detection fails (sym paths lack /build/ or /usr/src/
+    prefixes), provide the binary package name explicitly:
+      symdis disasm ... --apt libglib2.0-0 --distro bookworm
+
+    To find the binary package name from the .so filename:
+      1. The package usually matches the library name with dots and
+         hyphens rearranged. Common pattern:
+           libfoo-X.Y.so.Z → libfooX.Y-Z   (e.g., libglib-2.0.so.0 → libglib2.0-0)
+           libfoo.so.N     → libfooN        (e.g., libxml2.so.2 → libxml2)
+           libfoo.so.N     → libfooN-0      (e.g., libdrm.so.2 → libdrm2)
+      2. Ubuntu noble (24.04) renamed many packages with a "t64" suffix
+         for the 64-bit time_t transition:
+           libglib2.0-0 (bookworm) → libglib2.0-0t64 (noble)
+      3. If the first guess fails, symdis prints the available package
+         names it found in the index — check the error output.
+      4. Try --apt without a package name first. If the sym file has
+         source paths, auto-detection avoids this guessing entirely.
 
   How it works:
-    1. Downloads the Packages.xz index from archive.ubuntu.com (cached)
+    1. Downloads the Packages index from the archive mirror (tries .xz,
+       falls back to .gz; cached)
     2. Finds the matching .deb package (by Package: or Source: field)
     3. Downloads the .deb, extracts the binary from data.tar.{zst,xz,gz}
     4. Verifies the ELF build ID matches
@@ -187,8 +248,8 @@ UBUNTU APT PACKAGES (--apt):
   from the same source are tried until one contains the target binary with
   the correct build ID.
 
-  Architecture note: amd64/i386 packages come from archive.ubuntu.com;
-  arm64/armhf packages come from ports.ubuntu.com/ubuntu-ports.
+  Architecture note (Ubuntu only): amd64/i386 packages come from
+  archive.ubuntu.com; arm64/armhf from ports.ubuntu.com/ubuntu-ports.
 
 FENIX (FIREFOX FOR ANDROID):
 
@@ -291,6 +352,24 @@ EXAMPLES:
       --code-id 91bcc5d52326f5490fa62acc824cb87c700d0f8a \
       --apt libglib2.0-0t64 --distro noble \
       --function g_type_check_instance_cast
+
+  # Debian APT library (bookworm):
+  symdis disasm \
+      --debug-file libglib-2.0.so.0 \
+      --debug-id 958EC2424AF21D728E8E159F42DBC5410 \
+      --code-id 42c28e95f24a721d8e8e159f42dbc541f0ff353d \
+      --apt libglib2.0-0 --distro bookworm \
+      --function g_main_context_iteration
+
+  # Custom APT mirror (Kali Linux):
+  symdis disasm \
+      --debug-file libglib-2.0.so.0 \
+      --debug-id D3C5EF14D63AF5AEB9C706A44E7AB2350 \
+      --code-id 14efc5d33ad6aef5b9c706a44e7ab235f2358243 \
+      --apt libglib2.0-0t64 --distro kali-rolling \
+      --mirror https://http.kali.org/kali \
+      --components main \
+      --function g_main_context_iteration
 
   # Thunderbird module -- specify --product for non-Firefox products:
   symdis disasm \
@@ -437,11 +516,14 @@ TIPS:
     resolved to their import names (e.g., "libSystem.B.dylib!_malloc").
     This covers the standard calling convention for imported functions
     on macOS.
-  - For Ubuntu system libraries (libxml2, mesa, libdrm, libffi, etc.),
-    use --apt --distro <codename> to fetch binaries from APT packages.
-    The source package name is auto-detected from .sym source paths
-    (e.g., /build/libxml2-2gYHdD/...). Use --apt <package> to specify
-    the binary package name explicitly when auto-detection fails.
+  - For system libraries (libxml2, mesa, libdrm, libffi, etc.) on
+    Debian/Ubuntu, use --apt --distro <codename> to fetch binaries from
+    APT packages. Supports Ubuntu (noble, jammy, ...) and Debian
+    (bookworm, bullseye, ...) codenames. The source package name is
+    auto-detected from .sym source paths (e.g., /build/libxml2-2gYHdD/...).
+    Use --apt <package> to specify the binary package name explicitly
+    when auto-detection fails. For other Debian derivatives (Kali, MX,
+    Raspberry Pi OS), use --mirror to point to the custom repository.
   - ARM32 Thumb-2 mode is auto-detected from ELF symbol metadata
     (mapping symbols $t/$a and function symbol Thumb bit). Most
     ARM32 binaries (including Fenix armeabi-v7a) use Thumb-2
@@ -496,7 +578,7 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   (from release info)    --build-id      14-digit timestamp (nightly only)
   (snap source paths)    --snap          Snap package name (explicit only)
   (apt source paths)     --apt           APT binary package name (explicit only)
-  (from release info)    --distro        Ubuntu release codename (e.g., noble)
+  (from release info)    --distro        Release codename (e.g., noble, bookworm)
   (from product name)    --product       firefox|thunderbird|fenix|focus (default: firefox)
 
   Pre-fetches the .sym file and native binary into the local cache so
@@ -505,8 +587,8 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   provide --code-file and --code-id to maximize binary fetch success.
 
   Binary fetch chain: cache → Tecken → Microsoft (Windows) → debuginfod
-  (Linux) → Snap Store (Linux, --snap) → APT (Linux, --apt + --distro)
-  → FTP archive (--version + --channel).
+  (Linux) → Snap Store (Linux, --snap) → APT (Linux, --apt + --distro;
+  supports Ubuntu + Debian) → FTP archive (--version + --channel).
 
   For Linux modules, the full ELF build ID for debuginfod is extracted
   from the INFO CODE_ID record in the .sym file when --code-id is not
@@ -573,6 +655,13 @@ EXAMPLES:
       --debug-id D5C5BC91262349F50FA62ACC824CB87C0 \
       --code-id 91bcc5d52326f5490fa62acc824cb87c700d0f8a \
       --apt libglib2.0-0t64 --distro noble
+
+  # Pre-fetch a Debian APT library:
+  symdis fetch \
+      --debug-file libglib-2.0.so.0 \
+      --debug-id 958EC2424AF21D728E8E159F42DBC5410 \
+      --code-id 42c28e95f24a721d8e8e159f42dbc541f0ff353d \
+      --apt libglib2.0-0 --distro bookworm
 
   # Pre-fetch including PDB file:
   symdis fetch \
@@ -771,15 +860,25 @@ pub struct DisasmArgs {
     #[arg(long)]
     pub snap: Option<String>,
 
-    /// Enable APT backend for Ubuntu system libraries. Optionally specify
+    /// Enable APT backend for system libraries. Optionally specify
     /// the binary package name; if omitted, the source package name is
     /// auto-detected from sym file source paths.
     #[arg(long, num_args = 0..=1, default_missing_value = "")]
     pub apt: Option<String>,
 
-    /// Ubuntu release codename (e.g., noble, jammy). Required with --apt.
+    /// Distribution release codename (e.g., noble, bookworm). Required with --apt.
     #[arg(long)]
     pub distro: Option<String>,
+
+    /// Override APT mirror URL (e.g., https://archive.raspberrypi.com/debian).
+    /// When set, --distro must still be provided for the release codename.
+    #[arg(long)]
+    pub mirror: Option<String>,
+
+    /// Override APT components (comma-separated, e.g., "main,contrib").
+    /// Only used with --mirror. Default: "main".
+    #[arg(long)]
+    pub components: Option<String>,
 
     /// Mozilla product: firefox (default), thunderbird, fenix, or focus.
     /// For Android crashes, you MUST specify --product fenix or --product focus.
@@ -897,15 +996,25 @@ pub struct FetchArgs {
     #[arg(long)]
     pub snap: Option<String>,
 
-    /// Enable APT backend for Ubuntu system libraries. Optionally specify
+    /// Enable APT backend for system libraries. Optionally specify
     /// the binary package name; if omitted, requires source package name from
     /// sym file source paths.
     #[arg(long, num_args = 0..=1, default_missing_value = "")]
     pub apt: Option<String>,
 
-    /// Ubuntu release codename (e.g., noble, jammy). Required with --apt.
+    /// Distribution release codename (e.g., noble, bookworm). Required with --apt.
     #[arg(long)]
     pub distro: Option<String>,
+
+    /// Override APT mirror URL (e.g., https://archive.raspberrypi.com/debian).
+    /// When set, --distro must still be provided for the release codename.
+    #[arg(long)]
+    pub mirror: Option<String>,
+
+    /// Override APT components (comma-separated, e.g., "main,contrib").
+    /// Only used with --mirror. Default: "main".
+    #[arg(long)]
+    pub components: Option<String>,
 
     /// Mozilla product: firefox (default), thunderbird, fenix, or focus.
     /// For Android crashes, you MUST specify --product fenix or --product focus.

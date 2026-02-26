@@ -115,11 +115,15 @@ pub async fn fetch_sym_file(
     )
 }
 
-/// Fetch a PDB file, checking cache first, then trying Tecken and Microsoft.
+/// Fetch a PDB file, checking cache first, then trying Tecken and symbol servers.
 /// Only applicable when debug_file ends in .pdb.
 ///
 /// Uses an extended timeout (archive_timeout_seconds) because PDB files can
 /// be very large (e.g. xul.pdb ~2GB).
+///
+/// Fetch chain: Tecken (index 0) → all remaining symbol servers (indices 1..),
+/// which use the same symsrv protocol as Microsoft's symbol server. This covers
+/// Microsoft, Intel, AMD, NVIDIA, and any user-configured vendor servers.
 pub async fn fetch_pdb_file(
     _client: &Client,
     cache: &Cache,
@@ -155,12 +159,16 @@ pub async fn fetch_pdb_file(
     // The standard `client` has a 30s timeout which is insufficient.
     let pdb_client = build_archive_http_client(config)?;
 
+    let mut tried = Vec::new();
+
     // Try Tecken first (has PDBs for Mozilla modules AND Microsoft modules it has processed)
     let tecken_url = config
         .symbol_servers
         .first()
         .map(|s| s.as_str())
         .unwrap_or(tecken::DEFAULT_TECKEN_BASE);
+
+    tried.push(server_display_name(tecken_url));
 
     match tecken::fetch_pdb(&pdb_client, tecken_url, debug_file, debug_id).await {
         FetchResult::Ok(data) => {
@@ -173,29 +181,28 @@ pub async fn fetch_pdb_file(
         }
         FetchResult::NotFound => {}
         FetchResult::Error(e) => {
-            warn!("Tecken PDB fetch error: {e}");
+            warn!("{} PDB fetch error: {e}", tried.last().unwrap());
         }
     }
 
-    // Try Microsoft Symbol Server
-    let ms_url = config
-        .symbol_servers
-        .get(1)
-        .map(|s| s.as_str())
-        .unwrap_or(microsoft::DEFAULT_MS_SYMBOL_SERVER);
+    // Try all remaining symbol servers (same symsrv protocol: name/id/name)
+    for server_url in config.symbol_servers.iter().skip(1) {
+        let name = server_display_name(server_url);
+        tried.push(name.clone());
 
-    match microsoft::fetch_pdb(&pdb_client, ms_url, debug_file, debug_id).await {
-        FetchResult::Ok(data) => {
-            if is_html_response(&data) {
-                warn!("Microsoft returned HTML instead of PDB for {debug_file}/{debug_id}");
-            } else {
-                let path = cache.store_pdb(&key, &data)?;
-                return Ok(path);
+        match microsoft::fetch_pdb(&pdb_client, server_url, debug_file, debug_id).await {
+            FetchResult::Ok(data) => {
+                if is_html_response(&data) {
+                    warn!("{name} returned HTML instead of PDB for {debug_file}/{debug_id}");
+                } else {
+                    let path = cache.store_pdb(&key, &data)?;
+                    return Ok(path);
+                }
             }
-        }
-        FetchResult::NotFound => {}
-        FetchResult::Error(e) => {
-            warn!("Microsoft PDB fetch error: {e}");
+            FetchResult::NotFound => {}
+            FetchResult::Error(e) => {
+                warn!("{name} PDB fetch error: {e}");
+            }
         }
     }
 
@@ -203,8 +210,26 @@ pub async fn fetch_pdb_file(
     cache.store_pdb_miss(&key)?;
     bail!(
         "PDB file not found: {debug_file}/{debug_id}\n\
-         Tried: Mozilla Tecken, Microsoft Symbol Server"
+         Tried: {}",
+        tried.join(", ")
     )
+}
+
+/// Map a symbol server URL to a human-readable display name for error messages.
+fn server_display_name(url: &str) -> String {
+    if url.contains("symbols.mozilla.org") {
+        "Mozilla Tecken".to_string()
+    } else if url.contains("msdl.microsoft.com") {
+        "Microsoft Symbol Server".to_string()
+    } else if url.contains("intel.com") {
+        "Intel Symbol Server".to_string()
+    } else if url.contains("amd.com") {
+        "AMD Symbol Server".to_string()
+    } else if url.contains("nvidia.com") {
+        "NVIDIA Symbol Server".to_string()
+    } else {
+        url.to_string()
+    }
 }
 
 /// Fetch a native binary, checking cache first, then trying symbol servers.

@@ -13,20 +13,102 @@ use crate::symbols::breakpad::SymFile;
 
 use super::FetchResult;
 
-const ARCHIVE_BASE: &str = "https://archive.ubuntu.com/ubuntu";
-const PORTS_ARCHIVE_BASE: &str = "https://ports.ubuntu.com/ubuntu-ports";
+/// Resolved APT repository configuration.
+pub struct AptRepoConfig {
+    /// Main archive base URL (e.g., "https://archive.ubuntu.com/ubuntu").
+    pub archive_base: String,
+    /// Ports archive base URL for arm64/armhf (None = same as archive_base).
+    pub ports_base: Option<String>,
+    /// Separate security base URL (e.g., Debian uses deb.debian.org/debian-security).
+    /// When None, security packages are found via pocket suffixes (Ubuntu style).
+    pub security_base: Option<String>,
+    /// Repository components to search (e.g., ["main", "universe"]).
+    pub components: Vec<String>,
+    /// Pocket suffixes to search (e.g., ["", "-updates", "-security"]).
+    pub pocket_suffixes: Vec<String>,
+}
 
-/// Components to search in order.
-const COMPONENTS: &[&str] = &["main", "universe"];
-
-/// Parameters needed to locate a package in the Ubuntu APT archive.
+/// Parameters needed to locate a package in an APT archive.
 pub struct AptLocator {
     /// Explicit binary package name, or None to auto-detect from source package.
     pub package: Option<String>,
-    /// Ubuntu release codename (e.g., "noble", "jammy").
+    /// Distribution release codename (e.g., "noble", "bookworm").
     pub release: String,
     /// Debian architecture (e.g., "amd64", "arm64").
     pub architecture: String,
+    /// Repository configuration (mirrors, components, pockets).
+    pub config: AptRepoConfig,
+}
+
+/// Resolve repository configuration from a known release codename.
+///
+/// Returns `None` for unknown codenames — the caller should use `--mirror`
+/// to provide a custom repository URL.
+pub fn resolve_repo_config(release: &str) -> Option<AptRepoConfig> {
+    // Ubuntu codenames
+    const UBUNTU_RELEASES: &[&str] = &[
+        "noble", "mantic", "lunar", "kinetic", "jammy", "impish", "hirsute", "groovy", "focal",
+        "eoan", "disco", "cosmic", "bionic", "artful", "zesty", "yakkety", "xenial",
+    ];
+
+    // Debian codenames (including testing/unstable aliases)
+    const DEBIAN_RELEASES: &[&str] = &[
+        "forky", "trixie", "bookworm", "bullseye", "buster", "stretch", "sid", "testing",
+    ];
+
+    if UBUNTU_RELEASES.contains(&release) {
+        return Some(AptRepoConfig {
+            archive_base: "https://archive.ubuntu.com/ubuntu".to_string(),
+            ports_base: Some("https://ports.ubuntu.com/ubuntu-ports".to_string()),
+            security_base: None,
+            components: vec!["main".to_string(), "universe".to_string()],
+            pocket_suffixes: vec![
+                "".to_string(),
+                "-updates".to_string(),
+                "-security".to_string(),
+            ],
+        });
+    }
+
+    if DEBIAN_RELEASES.contains(&release) {
+        return Some(AptRepoConfig {
+            archive_base: "https://deb.debian.org/debian".to_string(),
+            ports_base: None,
+            security_base: Some("https://deb.debian.org/debian-security".to_string()),
+            components: vec![
+                "main".to_string(),
+                "contrib".to_string(),
+                "non-free".to_string(),
+                "non-free-firmware".to_string(),
+            ],
+            pocket_suffixes: vec!["".to_string(), "-updates".to_string()],
+        });
+    }
+
+    None
+}
+
+/// Build a custom `AptRepoConfig` from a user-provided mirror URL and optional components.
+pub fn custom_repo_config(mirror: &str, components: Option<&str>) -> AptRepoConfig {
+    let components = match components {
+        Some(list) => list
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        None => vec!["main".to_string()],
+    };
+    AptRepoConfig {
+        archive_base: mirror.trim_end_matches('/').to_string(),
+        ports_base: None,
+        security_base: None,
+        components,
+        pocket_suffixes: vec![
+            "".to_string(),
+            "-updates".to_string(),
+            "-security".to_string(),
+        ],
+    }
 }
 
 /// Map a Breakpad .sym architecture string to a Debian architecture name.
@@ -165,8 +247,8 @@ fn longest_common_prefix_at_dash<'a>(a: &'a str, b: &str) -> Option<&'a str> {
 
 /// Resolve a package to its download URL by searching Packages.xz indices.
 ///
-/// Returns `(package_name, download_path)` where download_path is relative
-/// to the archive root (e.g., "pool/main/l/libxml2/libxml2_2.9.14+dfsg-1.3build3_amd64.deb").
+/// Returns `(package_name, download_url)` where download_url is the full URL
+/// to the .deb file.
 pub async fn resolve_package(
     client: &Client,
     cache: &Cache,
@@ -177,36 +259,53 @@ pub async fn resolve_package(
     let search_name = explicit_package.or(source_package).ok_or_else(|| {
         anyhow::anyhow!(
             "cannot determine package name: use --apt <package_name> or ensure \
-             the sym file contains Ubuntu build paths"
+             the sym file contains APT build paths"
         )
     })?;
 
-    // Determine archive base URL based on architecture
-    // ports.ubuntu.com for arm64/armhf/etc, archive.ubuntu.com for amd64/i386
+    // Determine archive base URL based on architecture.
+    // If ports_base is configured (Ubuntu), use it for non-amd64/i386 architectures.
     let archive_base = if locator.architecture == "amd64" || locator.architecture == "i386" {
-        ARCHIVE_BASE
+        &locator.config.archive_base
     } else {
-        PORTS_ARCHIVE_BASE
+        locator
+            .config
+            .ports_base
+            .as_deref()
+            .unwrap_or(&locator.config.archive_base)
     };
 
-    // Search the base release, -updates, and -security pockets.
-    // Updated packages (security fixes, SRUs) live in -updates/-security,
+    // Build pocket list from config suffixes.
+    // Updated packages (security fixes, SRUs) live in pockets like -updates/-security,
     // not the base release. We collect candidates from ALL pockets so that
     // build ID verification can find the correct version.
-    let pockets = [
-        locator.release.clone(),
-        format!("{}-updates", locator.release),
-        format!("{}-security", locator.release),
-    ];
+    let mut pockets: Vec<(String, String)> = locator
+        .config
+        .pocket_suffixes
+        .iter()
+        .map(|suffix| {
+            let pocket = format!("{}{suffix}", locator.release);
+            (pocket, archive_base.to_string())
+        })
+        .collect();
+
+    // If a separate security_base is configured (Debian style), add
+    // {release}-security against the security mirror.
+    if let Some(ref security_base) = locator.config.security_base {
+        pockets.push((
+            format!("{}-security", locator.release),
+            security_base.clone(),
+        ));
+    }
 
     let mut all_candidates = Vec::new();
 
-    for pocket in &pockets {
-        for component in COMPONENTS {
+    for (pocket, base_url) in &pockets {
+        for component in &locator.config.components {
             let packages_data = fetch_packages_index(
                 client,
                 cache,
-                archive_base,
+                base_url,
                 pocket,
                 component,
                 &locator.architecture,
@@ -216,7 +315,7 @@ pub async fn resolve_package(
             let packages_data = match packages_data {
                 Ok(data) => data,
                 Err(e) => {
-                    debug!("failed to fetch Packages.xz for {pocket}/{component}: {e}");
+                    debug!("failed to fetch Packages index for {pocket}/{component}: {e}");
                     continue;
                 }
             };
@@ -230,7 +329,7 @@ pub async fn resolve_package(
             };
 
             for (name, path) in candidates {
-                all_candidates.push((name.to_string(), format!("{archive_base}/{path}")));
+                all_candidates.push((name.to_string(), format!("{base_url}/{path}")));
             }
         }
     }
@@ -246,7 +345,9 @@ pub async fn resolve_package(
     Ok(all_candidates)
 }
 
-/// Fetch and decompress a Packages.xz index file, with caching.
+/// Fetch and decompress a Packages index file, with caching.
+/// Tries Packages.xz first, falling back to Packages.gz (some repos like Kali
+/// only provide .gz).
 async fn fetch_packages_index(
     client: &Client,
     cache: &Cache,
@@ -255,9 +356,12 @@ async fn fetch_packages_index(
     component: &str,
     architecture: &str,
 ) -> Result<Vec<u8>> {
-    // Cache key: Packages.xz/<release>-<component>-<arch>/Packages.xz
+    // Cache key includes hostname to avoid collisions between different mirrors.
+    // Use a format-agnostic cache key so a cached .gz result is reused even if
+    // .xz becomes available later (the decompressed content is identical).
+    let hostname = extract_hostname(archive_base);
     let cache_filename = "Packages.xz".to_string();
-    let cache_id = format!("{release}-{component}-{architecture}");
+    let cache_id = format!("{hostname}-{release}-{component}-{architecture}");
     let key = BinaryCacheKey {
         code_file: cache_filename.clone(),
         code_id: cache_id,
@@ -269,47 +373,75 @@ async fn fetch_packages_index(
         CacheResult::Hit(path) => {
             debug!("using cached Packages index: {}", path.display());
             let compressed = std::fs::read(&path)
-                .with_context(|| format!("reading cached Packages.xz: {}", path.display()))?;
-            return decompress_xz(&compressed);
+                .with_context(|| format!("reading cached Packages index: {}", path.display()))?;
+            // Detect format from magic bytes: xz starts with 0xFD 0x37 0x7A 0x58 0x5A
+            let decompressed = if compressed.starts_with(&[0xFD, 0x37, 0x7A, 0x58, 0x5A]) {
+                decompress_xz(&compressed)?
+            } else {
+                decompress_gz(&compressed)?
+            };
+            return Ok(decompressed);
         }
         CacheResult::NegativeHit | CacheResult::Miss => {
             debug!("Packages index cache miss: {release}/{component}/{architecture}");
         }
     }
 
-    let url =
-        format!("{archive_base}/dists/{release}/{component}/binary-{architecture}/Packages.xz");
-    info!("downloading APT index: {url}");
+    let base_path =
+        format!("{archive_base}/dists/{release}/{component}/binary-{architecture}/Packages");
 
-    let response = client
-        .get(&url)
-        .send()
-        .await
-        .context("downloading Packages.xz")?;
-
-    let status = response.status();
-    if status == reqwest::StatusCode::NOT_FOUND {
-        bail!("Packages.xz not found: {url}");
-    }
-    if !status.is_success() {
-        bail!("Packages.xz download failed: HTTP {status}");
-    }
-
-    let compressed = response
-        .bytes()
-        .await
-        .context("reading Packages.xz response")?
-        .to_vec();
+    // Try .xz first, then fall back to .gz
+    let (compressed, format_name) = match fetch_index_url(client, &format!("{base_path}.xz")).await
+    {
+        Ok(data) => (data, "xz"),
+        Err(_) => {
+            debug!("Packages.xz not available, trying Packages.gz");
+            let data = fetch_index_url(client, &format!("{base_path}.gz"))
+                .await
+                .with_context(|| {
+                    format!(
+                        "Packages index not found (tried .xz and .gz): {archive_base}/dists/{release}/{component}"
+                    )
+                })?;
+            (data, "gz")
+        }
+    };
 
     info!(
-        "downloaded Packages.xz ({:.1} KB compressed)",
+        "downloaded Packages.{format_name} ({:.1} KB compressed)",
         compressed.len() as f64 / 1024.0
     );
 
     // Cache the compressed index
     cache.store_binary(&key, &compressed)?;
 
-    decompress_xz(&compressed)
+    if format_name == "xz" {
+        decompress_xz(&compressed)
+    } else {
+        decompress_gz(&compressed)
+    }
+}
+
+/// Fetch a single URL, returning bytes on success or error on 404/failure.
+async fn fetch_index_url(client: &Client, url: &str) -> Result<Vec<u8>> {
+    info!("downloading APT index: {url}");
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .context("downloading APT index")?;
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        bail!("not found: {url}");
+    }
+    if !status.is_success() {
+        bail!("download failed: HTTP {status}");
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .context("reading APT index response")?;
+    Ok(bytes.to_vec())
 }
 
 /// Decompress xz-compressed data.
@@ -319,6 +451,16 @@ fn decompress_xz(data: &[u8]) -> Result<Vec<u8>> {
     decoder
         .read_to_end(&mut buf)
         .context("decompressing Packages.xz")?;
+    Ok(buf)
+}
+
+/// Decompress gzip-compressed data.
+fn decompress_gz(data: &[u8]) -> Result<Vec<u8>> {
+    let mut decoder = flate2::read::GzDecoder::new(data);
+    let mut buf = Vec::new();
+    decoder
+        .read_to_end(&mut buf)
+        .context("decompressing Packages.gz")?;
     Ok(buf)
 }
 
@@ -666,9 +808,10 @@ fn extract_from_tar(tar_data: &[u8], target_name: &str) -> Result<Vec<u8>> {
 ///
 /// Uses the actual .deb filename from the URL (which includes version) to avoid
 /// cache collisions between different versions of the same package across
-/// pockets (e.g., noble vs noble-updates).
+/// pockets (e.g., noble vs noble-updates). Includes the mirror hostname to
+/// avoid collisions between different repositories.
 ///
-/// Layout: `<deb_filename> / <release>-<arch> / <deb_filename>`
+/// Layout: `<deb_filename> / <hostname>-<release>-<arch> / <deb_filename>`
 pub fn deb_cache_key(deb_url: &str, locator: &AptLocator) -> (String, String) {
     // Extract filename from URL: ".../libglib2.0-0t64_2.80.0-6ubuntu3.8_amd64.deb"
     let filename = deb_url
@@ -676,8 +819,19 @@ pub fn deb_cache_key(deb_url: &str, locator: &AptLocator) -> (String, String) {
         .next()
         .unwrap_or("package.deb")
         .to_string();
-    let cache_id = format!("{}-{}", locator.release, locator.architecture);
+    let hostname = extract_hostname(deb_url);
+    let cache_id = format!("{}-{}-{}", hostname, locator.release, locator.architecture);
     (filename, cache_id)
+}
+
+/// Extract hostname from a URL for cache key uniqueness.
+/// "https://archive.ubuntu.com/ubuntu/..." → "archive.ubuntu.com"
+fn extract_hostname(url: &str) -> &str {
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    without_scheme.split('/').next().unwrap_or("unknown")
 }
 
 #[cfg(test)]
@@ -1019,11 +1173,26 @@ Filename: pool/main/m/mesa/mesa-common-dev_24.0.5-1_amd64.deb
             package: Some("libxml2".to_string()),
             release: "noble".to_string(),
             architecture: "amd64".to_string(),
+            config: resolve_repo_config("noble").unwrap(),
         };
         let url = "https://archive.ubuntu.com/ubuntu/pool/main/libx/libxml2/libxml2_2.9.14+dfsg-1.3build3_amd64.deb";
         let (filename, cache_id) = deb_cache_key(url, &locator);
         assert_eq!(filename, "libxml2_2.9.14+dfsg-1.3build3_amd64.deb");
-        assert_eq!(cache_id, "noble-amd64");
+        assert_eq!(cache_id, "archive.ubuntu.com-noble-amd64");
+    }
+
+    #[test]
+    fn test_deb_cache_key_debian() {
+        let locator = AptLocator {
+            package: Some("libxml2".to_string()),
+            release: "bookworm".to_string(),
+            architecture: "amd64".to_string(),
+            config: resolve_repo_config("bookworm").unwrap(),
+        };
+        let url = "https://deb.debian.org/debian/pool/main/libx/libxml2/libxml2_2.9.14_amd64.deb";
+        let (filename, cache_id) = deb_cache_key(url, &locator);
+        assert_eq!(filename, "libxml2_2.9.14_amd64.deb");
+        assert_eq!(cache_id, "deb.debian.org-bookworm-amd64");
     }
 
     #[test]
@@ -1057,5 +1226,73 @@ Filename: pool/main/b/bar/libbar_2.0_amd64.deb
     fn test_packages_iter_empty() {
         let stanzas: Vec<_> = PackagesIter::new("").collect();
         assert_eq!(stanzas.len(), 0);
+    }
+
+    #[test]
+    fn test_resolve_repo_config_ubuntu() {
+        let config = resolve_repo_config("noble").unwrap();
+        assert!(config.archive_base.contains("archive.ubuntu.com"));
+        assert!(config.ports_base.is_some());
+        assert_eq!(config.components, vec!["main", "universe"]);
+        assert_eq!(config.pocket_suffixes.len(), 3);
+        assert!(config.security_base.is_none());
+    }
+
+    #[test]
+    fn test_resolve_repo_config_debian() {
+        let config = resolve_repo_config("bookworm").unwrap();
+        assert!(config.archive_base.contains("deb.debian.org/debian"));
+        assert!(config.ports_base.is_none());
+        assert_eq!(
+            config.components,
+            vec!["main", "contrib", "non-free", "non-free-firmware"]
+        );
+        assert_eq!(config.pocket_suffixes, vec!["", "-updates"]);
+        assert!(config.security_base.is_some());
+        assert!(config.security_base.unwrap().contains("debian-security"));
+    }
+
+    #[test]
+    fn test_resolve_repo_config_unknown() {
+        assert!(resolve_repo_config("unknown_distro").is_none());
+    }
+
+    #[test]
+    fn test_custom_repo_config() {
+        let config = custom_repo_config(
+            "https://archive.raspberrypi.com/debian",
+            Some("main,contrib"),
+        );
+        assert_eq!(
+            config.archive_base,
+            "https://archive.raspberrypi.com/debian"
+        );
+        assert_eq!(config.components, vec!["main", "contrib"]);
+        assert!(config.ports_base.is_none());
+        assert!(config.security_base.is_none());
+    }
+
+    #[test]
+    fn test_custom_repo_config_defaults() {
+        let config = custom_repo_config("https://example.com/repo/", None);
+        assert_eq!(config.archive_base, "https://example.com/repo");
+        assert_eq!(config.components, vec!["main"]);
+    }
+
+    #[test]
+    fn test_extract_hostname() {
+        assert_eq!(
+            extract_hostname("https://archive.ubuntu.com/ubuntu"),
+            "archive.ubuntu.com"
+        );
+        assert_eq!(
+            extract_hostname("https://deb.debian.org/debian"),
+            "deb.debian.org"
+        );
+        assert_eq!(
+            extract_hostname("http://ports.ubuntu.com/ubuntu-ports"),
+            "ports.ubuntu.com"
+        );
+        assert_eq!(extract_hostname("no-scheme"), "no-scheme");
     }
 }

@@ -88,6 +88,9 @@ impl Default for Config {
             symbol_servers: vec![
                 "https://symbols.mozilla.org/".to_string(),
                 "https://msdl.microsoft.com/download/symbols".to_string(),
+                "https://software.intel.com/sites/downloads/symbols".to_string(),
+                "https://download.amd.com/dir/bin".to_string(),
+                "https://driver-symbols.nvidia.com".to_string(),
             ],
             debuginfod_urls: vec![
                 "https://debuginfod.fedoraproject.org/".to_string(),
@@ -96,6 +99,7 @@ impl Default for Config {
                 "https://debuginfod.archlinux.org/".to_string(),
                 "https://debuginfod.elfutils.org/".to_string(),
                 "https://debuginfod.centos.org/".to_string(),
+                "https://debuginfod.opensuse.org/".to_string(),
             ],
             timeout_seconds: 30,
             archive_timeout_seconds: 600,
@@ -373,8 +377,8 @@ mod tests {
         assert_eq!(config.format, OutputFormat::Text);
         assert!(!config.no_demangle);
         assert!(!config.offline);
-        assert_eq!(config.symbol_servers.len(), 2);
-        assert_eq!(config.debuginfod_urls.len(), 6);
+        assert_eq!(config.symbol_servers.len(), 5);
+        assert_eq!(config.debuginfod_urls.len(), 7);
         assert!(config.user_agent.starts_with("symdis/"));
     }
 
@@ -432,7 +436,7 @@ timeout_seconds = 120
         assert_eq!(config.timeout_seconds, 120);
         assert_eq!(config.syntax, Syntax::Intel);
         assert_eq!(config.max_instructions, 2000);
-        assert_eq!(config.symbol_servers.len(), 2);
+        assert_eq!(config.symbol_servers.len(), 5);
     }
 
     #[test]
