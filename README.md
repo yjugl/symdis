@@ -1,15 +1,18 @@
 # symdis
 
-A CLI tool for disassembling functions from Mozilla crash reports. Given a module identifier and either a function name or an offset, `symdis` fetches the binary and symbol information from public servers, disassembles the target function, and annotates it with source lines, call targets, and inline frames.
+A CLI tool for disassembling functions from crash reports. Given a module identifier and either a function name or an offset, `symdis` fetches the binary and symbol information from public servers, disassembles the target function, and annotates it with source lines, call targets, and inline frames.
+
+Supports **Windows** (PE), **Linux** (ELF), **macOS** (Mach-O), and **Android** modules. Not limited to Mozilla — works with any module from a crash report, including Microsoft system DLLs, Windows kernel drivers, GPU drivers, Linux system libraries, and macOS frameworks. The tool itself runs on Windows, Linux, and macOS.
 
 Designed primarily for use by AI agents analyzing [Socorro/Crash Stats](https://crash-stats.mozilla.org/) crash reports, but also useful for manual crash triage and reverse engineering.
 
 ## Features
 
-- **Fetch symbols and binaries** from Mozilla's [Tecken](https://symbols.mozilla.org/) symbol server, Microsoft's public symbol server, [debuginfod](https://sourceware.org/elfutils/Debuginfod.html) servers, the [Snap Store](https://snapcraft.io/) (Ubuntu snaps), and Mozilla's FTP archive — with automatic CAB decompression, `.tar.xz` extraction, `.pkg` (XAR/cpio) extraction, and `.apk` (ZIP) extraction
-- **Not limited to Mozilla modules**: Mozilla's crash infrastructure generates `.sym` files from Microsoft PDBs for all modules seen in crash stacks, so Windows system DLLs (ntdll, kernel32, kernelbase, etc.) are fully supported. Other third-party modules may also have symbols available
-- **PDB support**: fetch and parse PDB files directly from Microsoft's symbol server or Tecken (`--pdb` flag); auto-fallback when `.sym` is unavailable for Windows modules; inline frames, srcsrv VCS paths, MSVC-demangled function signatures
-- **Windows, Linux, macOS, and Android** module support: PE (via section table), ELF (via PT_LOAD segments), and Mach-O (including fat/universal binaries) binary formats; Android support for Fenix (Firefox for Android) and Focus (Firefox Focus) via APK extraction; Windows kernel drivers (`.sys` files) supported with PDB auto-fallback
+- **Fetch symbols and binaries** from Mozilla's [Tecken](https://symbols.mozilla.org/) symbol server, Microsoft/Intel/AMD/NVIDIA symbol servers, [debuginfod](https://sourceware.org/elfutils/Debuginfod.html) servers, the [Snap Store](https://snapcraft.io/) (Ubuntu snaps), APT repositories (Debian/Ubuntu), pacman repositories (Arch Linux), and Mozilla's FTP archive — with automatic CAB decompression, `.tar.xz` extraction, `.pkg` (XAR/cpio) extraction, `.deb` extraction, `.pkg.tar.zst` extraction, and `.apk` (ZIP) extraction
+- **Not limited to Mozilla modules**: works with any module from a crash report. On Windows: system DLLs (ntdll, kernel32, kernelbase), kernel drivers (win32kfull.sys, tcpip.sys), GPU drivers — PDB fetched automatically when `.sym` is unavailable. On Linux: system libraries via debuginfod, Snap Store, APT, or pacman. On macOS: framework binaries from FTP archives
+- **PDB support** (automatic): PDB is fetched and parsed automatically when `.sym` is unavailable for Windows modules. PDB fetch chain: Tecken → Microsoft → Intel → AMD → NVIDIA. Includes inline frames, srcsrv VCS paths, MSVC-demangled function signatures, and C++ type information for `field-layout`. Use `--pdb` to skip the `.sym` attempt when you know it's unavailable (saves one round-trip)
+- **C++ type information**: the `field-layout` command extracts class/struct/union field layouts from PDB type data (TPI stream) — identify which field is at a given byte offset in a crash. Works with Mozilla PDBs (535K+ types) and some Microsoft public PDBs (ntdll.pdb has hundreds of types including `_RTL_CRITICAL_SECTION`, `_PEB`, `_TEB`)
+- **Cross-platform module analysis**: PE/Windows (via section table), ELF/Linux (via PT_LOAD segments), Mach-O/macOS (including fat/universal binaries), and Android (Fenix + Focus via APK extraction). symdis itself runs on Windows, Linux, and macOS — it analyzes crash dumps from any platform regardless of where it runs
 - **Find functions** by exact name, substring match (`--fuzzy`), or by RVA/offset; searches FUNC records, PUBLIC symbols (with demangling), and binary exports
 - **Disassemble** x86, x86-64, ARM32, and AArch64 code via [Capstone](https://www.capstone-engine.org/); ARM32 Thumb-2 mode auto-detected from ELF symbol metadata
 - **Annotate** instructions with source file/line, resolved call targets (FUNC/PUBLIC/IAT/PLT/GOT/dylib imports), and inline function boundaries
@@ -172,8 +175,9 @@ Output is abbreviated — the tool prints all instructions in the function.
 |---|---|
 | `disasm` | Disassemble a function from a module |
 | `lookup` | Resolve an offset to a symbol, or a name to an address |
-| `info` | Show module metadata |
+| `info` | Show module metadata and PDB type info availability |
 | `fetch` | Pre-fetch symbols and binary for a module |
+| `field-layout` | Show C++ class/struct field layout from PDB type info |
 | `cache` | Manage the local cache (`path`, `size`, `clear`, `list`) |
 
 Run `symdis <command> --help` for full documentation, crash report field mappings, and more examples.
@@ -197,6 +201,14 @@ symdis disasm \
     --code-file win32kfull.sys --code-id 73E41EF8412000 \
     --function xxxResolveDesktop
 
+# Ubuntu system library (APT backend, auto-detected source package):
+symdis disasm \
+    --debug-file libgobject-2.0.so.0 \
+    --debug-id D5C5BC91262349F50FA62ACC824CB87C0 \
+    --code-id 91bcc5d52326f5490fa62acc824cb87c700d0f8a \
+    --apt --distro noble \
+    --function g_type_check_instance_cast
+
 # Fenix (Firefox for Android) — MUST use --product fenix:
 symdis disasm \
     --debug-file libxul.so \
@@ -207,7 +219,7 @@ symdis disasm \
     --version 147.0.3 --channel release \
     --offset 0x03fc39d4 --highlight-offset 0x03fc39d4
 
-# Use PDB for richer symbol data (Windows modules only):
+# Skip .sym lookup, go straight to PDB (saves one round-trip):
 symdis disasm \
     --debug-file ntdll.pdb \
     --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
@@ -235,7 +247,7 @@ symdis lookup \
 
 ### info
 
-Shows module metadata: OS, architecture, function count, and whether sym/binary files are available.
+Shows module metadata: OS, architecture, function count, sym/binary availability, and PDB type info availability. Use `--pdb` to fetch the PDB and check if `field-layout` will work.
 
 ```bash
 # Check module metadata and sym/binary availability:
@@ -244,12 +256,12 @@ symdis info \
     --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
     --code-file xul.dll --code-id 68d1a3cd87be000
 
-# JSON output:
+# Check a non-Mozilla module and probe PDB type info:
 symdis info \
-    --debug-file xul.pdb \
-    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
-    --code-file xul.dll --code-id 68d1a3cd87be000 \
-    --format json
+    --debug-file ntdll.pdb \
+    --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
+    --code-file ntdll.dll --code-id 5b6dddee267000 \
+    --pdb
 ```
 
 ### fetch
@@ -271,12 +283,36 @@ symdis fetch \
     --code-id 016b9d664b0e4ff0f9b3f43ccf735a3482db0fd6 \
     --version 147.0.3 --channel release
 
-# Pre-fetch including PDB file:
+# Pre-fetch PDB + binary (skips .sym, also checks type info for field-layout):
 symdis fetch \
     --debug-file ntdll.pdb \
     --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
     --code-file ntdll.dll --code-id 5b6dddee267000 \
     --pdb
+```
+
+### field-layout
+
+Extracts C++ class/struct/union field layouts from PDB type information (TPI stream). Use `--offset` to identify which field is at a given byte offset in a crash.
+
+```bash
+# Show layout of a Mozilla type:
+symdis field-layout \
+    --debug-file xul.pdb \
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --type nsFrameLoader
+
+# Find which field is at offset 0x4c:
+symdis field-layout \
+    --debug-file xul.pdb \
+    --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+    --type nsFrameLoader --offset 0x4c
+
+# Windows system type from ntdll.pdb:
+symdis field-layout \
+    --debug-file ntdll.pdb \
+    --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
+    --type _RTL_CRITICAL_SECTION
 ```
 
 ### cache
@@ -367,7 +403,7 @@ The cache uses WinDbg-compatible flat layout (`<file>/<id>/<file>`) so it can be
 symdis processes only **publicly available data**:
 
 - **Inputs**: Module identifiers (debug file, debug ID, code file, code ID), function names, and offsets — all from the public portions of crash reports on [Crash Stats](https://crash-stats.mozilla.org/).
-- **Downloads**: Symbol files and binaries from public symbol servers (Mozilla Tecken, Microsoft, debuginfod) and public archives (Mozilla FTP, Snap Store).
+- **Downloads**: Symbol files and binaries from public symbol servers (Mozilla Tecken, Microsoft, Intel, AMD, NVIDIA, debuginfod) and public archives (Mozilla FTP, Snap Store, APT, pacman).
 - **Does NOT process**: Minidumps, memory contents, crash annotations, user comments, URLs, email addresses, or any other [protected data](https://crash-stats.mozilla.org/documentation/protected_data_access/).
 
 When using symdis — whether manually or through an AI agent — only provide data from **publicly accessible crash report fields** (stack traces, module lists, release information). Do not pass [protected crash report data](https://crash-stats.mozilla.org/documentation/protected_data_access/) (such as user comments, email addresses, or URLs from crash annotations) to symdis or to AI tools analyzing crash reports.

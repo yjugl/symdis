@@ -14,13 +14,15 @@ use crate::cache::Cache;
 use crate::config::{Config, OutputFormat};
 use crate::fetch;
 use crate::symbols::breakpad::SymFileSummary;
+use crate::symbols::tpi;
 
 pub async fn run(args: &FetchArgs, config: &Config) -> Result<()> {
     let cache = Cache::new(&config.cache_dir, config.miss_ttl_hours);
     let client = fetch::build_http_client(config)?;
 
-    // Fetch .sym file and binary concurrently
-    let sym_fut = fetch::fetch_sym_file(&client, &cache, config, &args.debug_file, &args.debug_id);
+    // When --pdb is set, skip .sym fetching (PDB replaces .sym, not the binary).
+    // Binary is still fetched — it's needed for disassembly and is usually small
+    // compared to the PDB.
     let bin_fut = async {
         if let (Some(code_file), Some(code_id)) = (&args.code_file, &args.code_id) {
             fetch::fetch_binary(&client, &cache, config, code_file, code_id).await
@@ -29,8 +31,16 @@ pub async fn run(args: &FetchArgs, config: &Config) -> Result<()> {
             fetch::fetch_binary(&client, &cache, config, &code_file, &args.debug_id).await
         }
     };
-
-    let (sym_result, bin_result) = tokio::join!(sym_fut, bin_fut);
+    let (sym_result, bin_result): (Result<_, anyhow::Error>, Result<_, anyhow::Error>) = if args.pdb
+    {
+        let bin_result = bin_fut.await;
+        (Err(anyhow::anyhow!("skipped: --pdb flag set")), bin_result)
+    } else {
+        let sym_fut =
+            fetch::fetch_sym_file(&client, &cache, config, &args.debug_file, &args.debug_id);
+        let (s, b) = tokio::join!(sym_fut, bin_fut);
+        (s, b)
+    };
 
     // Quick-scan .sym file for OS/arch (needed for debuginfod/FTP fallback)
     let sym_summary = match &sym_result {
@@ -339,24 +349,29 @@ pub async fn run(args: &FetchArgs, config: &Config) -> Result<()> {
         {
             Ok(path) => {
                 let size = std::fs::metadata(&path).map(|m| m.len()).ok();
-                FileStatus::Available { size }
+                let type_count = tpi::probe_type_info(&path).map(|s| s.type_count);
+                PdbFileStatus::Available { size, type_count }
             }
             Err(e) => {
                 warn!("PDB fetch failed: {e}");
-                FileStatus::NotFound
+                PdbFileStatus::NotFound
             }
         }
     } else {
-        FileStatus::Skipped
+        PdbFileStatus::Skipped
     };
 
     // Gather results
-    let sym_status = match &sym_result {
-        Ok(path) => {
-            let size = std::fs::metadata(path).map(|m| m.len()).ok();
-            FileStatus::Available { size }
+    let sym_status = if args.pdb {
+        FileStatus::Skipped
+    } else {
+        match &sym_result {
+            Ok(path) => {
+                let size = std::fs::metadata(path).map(|m| m.len()).ok();
+                FileStatus::Available { size }
+            }
+            Err(_) => FileStatus::NotFound,
         }
-        Err(_) => FileStatus::NotFound,
     };
 
     let bin_status = match &bin_result {
@@ -428,12 +443,21 @@ enum FileStatus {
     Skipped,
 }
 
+enum PdbFileStatus {
+    Available {
+        size: Option<u64>,
+        type_count: Option<usize>,
+    },
+    NotFound,
+    Skipped,
+}
+
 struct FetchResult {
     debug_file: String,
     debug_id: String,
     sym_status: FileStatus,
     bin_status: FileStatus,
-    pdb_status: FileStatus,
+    pdb_status: PdbFileStatus,
 }
 
 // --- Text formatting ---
@@ -470,16 +494,23 @@ fn format_fetch_text(result: &FetchResult) -> String {
     }
 
     match &result.pdb_status {
-        FileStatus::Available { size: Some(size) } => {
-            writeln!(out, "PDB file: ok ({})", format_size(*size)).unwrap();
+        PdbFileStatus::Available { size, type_count } => {
+            let size_str = match size {
+                Some(s) => format!(" ({})", format_size(*s)),
+                None => String::new(),
+            };
+            let type_str = match type_count {
+                Some(count) => {
+                    format!(", {} types — field-layout available", format_count(*count))
+                }
+                None => ", no type info".to_string(),
+            };
+            writeln!(out, "PDB file: ok{size_str}{type_str}").unwrap();
         }
-        FileStatus::Available { size: None } => {
-            writeln!(out, "PDB file: ok").unwrap();
-        }
-        FileStatus::NotFound => {
+        PdbFileStatus::NotFound => {
             writeln!(out, "PDB file: not found").unwrap();
         }
-        FileStatus::Skipped => {}
+        PdbFileStatus::Skipped => {}
     }
 
     out
@@ -502,16 +533,31 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+/// Format a count with thousands separators.
+fn format_count(n: usize) -> String {
+    let s = n.to_string();
+    let mut result = String::new();
+    for (i, c) in s.chars().rev().enumerate() {
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result.chars().rev().collect()
+}
+
 // --- JSON formatting ---
 
 #[derive(Serialize)]
 struct JsonFetchOutput {
     debug_file: String,
     debug_id: String,
-    symbol_file: JsonFileStatus,
-    binary_file: JsonFileStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pdb_file: Option<JsonFileStatus>,
+    symbol_file: Option<JsonFileStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binary_file: Option<JsonFileStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pdb_file: Option<JsonPdbStatus>,
 }
 
 #[derive(Serialize)]
@@ -521,23 +567,45 @@ struct JsonFileStatus {
     size: Option<u64>,
 }
 
+#[derive(Serialize)]
+struct JsonPdbStatus {
+    available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    has_type_info: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    type_count: Option<usize>,
+}
+
 fn format_fetch_json(result: &FetchResult) -> String {
-    let file_status_to_json = |status: &FileStatus| -> JsonFileStatus {
+    let file_status_to_json = |status: &FileStatus| -> Option<JsonFileStatus> {
         match status {
-            FileStatus::Available { size } => JsonFileStatus {
+            FileStatus::Available { size } => Some(JsonFileStatus {
                 available: true,
                 size: *size,
-            },
-            FileStatus::NotFound | FileStatus::Skipped => JsonFileStatus {
+            }),
+            FileStatus::NotFound => Some(JsonFileStatus {
                 available: false,
                 size: None,
-            },
+            }),
+            FileStatus::Skipped => None,
         }
     };
 
     let pdb_file = match &result.pdb_status {
-        FileStatus::Skipped => None,
-        status => Some(file_status_to_json(status)),
+        PdbFileStatus::Available { size, type_count } => Some(JsonPdbStatus {
+            available: true,
+            size: *size,
+            has_type_info: type_count.is_some(),
+            type_count: *type_count,
+        }),
+        PdbFileStatus::NotFound => Some(JsonPdbStatus {
+            available: false,
+            size: None,
+            has_type_info: false,
+            type_count: None,
+        }),
+        PdbFileStatus::Skipped => None,
     };
 
     let output = JsonFetchOutput {
@@ -572,7 +640,7 @@ mod tests {
             } else {
                 FileStatus::NotFound
             },
-            pdb_status: FileStatus::Skipped,
+            pdb_status: PdbFileStatus::Skipped,
         }
     }
 
@@ -642,5 +710,89 @@ mod tests {
         assert_eq!(derive_code_file("firefox.pdb"), "firefox.exe");
         assert_eq!(derive_code_file("libxul.so"), "libxul.so");
         assert_eq!(derive_code_file("XUL"), "XUL");
+    }
+
+    #[test]
+    fn test_fetch_text_pdb_mode() {
+        // --pdb skips sym but still shows binary
+        let result = FetchResult {
+            debug_file: "xul.pdb".to_string(),
+            debug_id: "44E4EC8C2F41492B9369D6B9A059577C2".to_string(),
+            sym_status: FileStatus::Skipped,
+            bin_status: FileStatus::Available {
+                size: Some(128_000_000),
+            },
+            pdb_status: PdbFileStatus::Available {
+                size: Some(1_500_000_000),
+                type_count: Some(535_967),
+            },
+        };
+        let output = format_fetch_text(&result);
+        assert!(output.contains("Fetched: xul.pdb"));
+        assert!(!output.contains("Symbol file"));
+        assert!(output.contains("Binary file: ok (122.1 MB)"));
+        assert!(output.contains("PDB file: ok (1.4 GB)"));
+        assert!(output.contains("535,967 types"));
+        assert!(output.contains("field-layout available"));
+    }
+
+    #[test]
+    fn test_fetch_json_pdb_mode() {
+        // --pdb skips sym but still shows binary
+        let result = FetchResult {
+            debug_file: "xul.pdb".to_string(),
+            debug_id: "44E4EC8C2F41492B9369D6B9A059577C2".to_string(),
+            sym_status: FileStatus::Skipped,
+            bin_status: FileStatus::Available {
+                size: Some(128_000_000),
+            },
+            pdb_status: PdbFileStatus::Available {
+                size: Some(1_500_000_000),
+                type_count: Some(535_967),
+            },
+        };
+        let json_str = format_fetch_json(&result);
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        // sym should be absent, binary should be present
+        assert!(v["symbol_file"].is_null());
+        assert!(v["binary_file"]["available"].as_bool().unwrap());
+        assert_eq!(v["binary_file"]["size"], 128_000_000);
+        // PDB should be present
+        assert!(v["pdb_file"]["available"].as_bool().unwrap());
+        assert_eq!(v["pdb_file"]["size"], 1_500_000_000u64);
+        assert!(v["pdb_file"]["has_type_info"].as_bool().unwrap());
+        assert_eq!(v["pdb_file"]["type_count"], 535_967);
+    }
+
+    #[test]
+    fn test_fetch_text_pdb_no_types() {
+        let result = FetchResult {
+            debug_file: "ntdll.pdb".to_string(),
+            debug_id: "ABC1230".to_string(),
+            sym_status: FileStatus::Skipped,
+            bin_status: FileStatus::NotFound,
+            pdb_status: PdbFileStatus::Available {
+                size: Some(2_097_152),
+                type_count: None,
+            },
+        };
+        let output = format_fetch_text(&result);
+        assert!(output.contains("PDB file: ok (2.0 MB), no type info"));
+        assert!(output.contains("Binary file: not found"));
+    }
+
+    #[test]
+    fn test_fetch_text_pdb_not_found() {
+        let result = FetchResult {
+            debug_file: "unknown.pdb".to_string(),
+            debug_id: "ABC1230".to_string(),
+            sym_status: FileStatus::Skipped,
+            bin_status: FileStatus::NotFound,
+            pdb_status: PdbFileStatus::NotFound,
+        };
+        let output = format_fetch_text(&result);
+        assert!(output.contains("PDB file: not found"));
+        assert!(!output.contains("Symbol file"));
+        assert!(output.contains("Binary file: not found"));
     }
 }

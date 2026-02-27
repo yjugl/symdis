@@ -5,6 +5,7 @@
 pub mod cache_cmd;
 pub mod disasm;
 pub mod fetch;
+pub mod field_layout;
 pub mod info;
 pub mod lookup;
 
@@ -15,19 +16,32 @@ use crate::config::Config;
 
 const DISASM_LONG_HELP: &str = r#"SYMBOL COVERAGE — NOT LIMITED TO MOZILLA MODULES:
 
-  Mozilla's crash infrastructure automatically downloads Microsoft PDBs for
-  ALL modules appearing in crash stacks and uploads .sym files generated from
-  them to the Tecken symbol server. This means symdis has symbol coverage for
-  many non-Mozilla modules, especially Microsoft-issued Windows system DLLs
-  such as ntdll.dll, kernel32.dll, kernelbase.dll, win32u.dll, and many
-  others. For these, full annotated disassembly is typically possible —
-  Tecken provides the .sym file (generated from the PDB), and the binary
-  is fetched from Microsoft's symbol server.
+  symdis supports Windows (PE), Linux (ELF), macOS (Mach-O), and Android
+  modules. It is NOT limited to Mozilla-issued modules — you should try it
+  on ANY module from a crash report:
 
-  AI agents: you SHOULD try symdis on any module from a crash report, not
-  just Mozilla-issued DLLs. Third-party modules may also sometimes have
-  .sym files on Tecken (when their vendors publish PDBs), so it is still
-  worth trying.
+  Windows: Mozilla's crash infrastructure downloads Microsoft PDBs for ALL
+  modules appearing in crash stacks and uploads .sym files to Tecken. This
+  means full annotated disassembly is typically possible for Microsoft
+  system DLLs (ntdll.dll, kernel32.dll, kernelbase.dll, win32u.dll, etc.).
+  Windows kernel drivers (.sys) and GPU drivers are also supported via PDB
+  auto-fallback from Microsoft/Intel/AMD/NVIDIA symbol servers.
+
+  Linux: system libraries (libglib, libxml2, mesa, libdrm, etc.) can be
+  fetched via debuginfod, Snap Store, APT packages (Debian/Ubuntu), or
+  pacman packages (Arch Linux). Mozilla modules are fetched from Tecken
+  and the FTP archive.
+
+  macOS: binaries are extracted from .pkg archives on Mozilla's FTP server.
+  Fat (universal) binaries are handled with automatic architecture selection.
+
+  Android: Fenix (Firefox for Android) and Focus (Firefox Focus) APKs are
+  fetched from Mozilla's FTP archive (--product fenix / --product focus).
+
+  AI agents: you SHOULD try symdis on any module from a crash report.
+  Third-party modules may also have .sym files on Tecken (when their
+  vendors publish PDBs), and Linux system libraries are reachable via
+  debuginfod/Snap/APT/pacman.
 
   Use 'symdis info' to quickly check if symbols are available for a module
   before attempting full disassembly.
@@ -89,10 +103,15 @@ BINARY FETCH CHAIN:
   The .sym file is always fetched from Tecken using --debug-file and
   --debug-id.
 
-PDB SUPPORT (--pdb):
+PDB SUPPORT (AUTOMATIC FOR WINDOWS MODULES):
 
   For Windows modules (debug-file ends in .pdb), symdis can fetch and
-  parse the original PDB file from symbol servers or Tecken.
+  parse the original PDB file from symbol servers or Tecken. PDB is
+  the primary symbol format for all non-Mozilla Windows modules —
+  including Microsoft system DLLs, kernel drivers, GPU drivers, and
+  third-party vendor modules — and is fetched AUTOMATICALLY when .sym
+  is unavailable (no --pdb flag required).
+
   PDB fetch chain: cache → Tecken (uncompressed or CAB) → Microsoft →
   Intel → AMD → NVIDIA (all use symsrv protocol, uncompressed or CAB).
   Extended timeout (10 min) is used because PDB files can be very large
@@ -102,18 +121,47 @@ PDB SUPPORT (--pdb):
   Behavior without --pdb (default):
     1. Fetch .sym file from Tecken (fast, lightweight)
     2. If .sym is unavailable, auto-fallback to PDB fetch+parse
+    This is the most common path for kernel drivers, third-party DLLs,
+    and other non-Mozilla modules — PDB is fetched automatically.
 
   Behavior with --pdb (explicit preference):
     1. Fetch PDB directly (skip .sym)
     2. If PDB is unavailable, fall back to .sym
+    Useful when you know .sym is unavailable and want to skip the
+    failed lookup (saves one round-trip), or when you need type info
+    for field-layout.
 
   The data source is reported as "binary+pdb" or "pdb" in output.
 
-  .sym vs PDB — WHEN IT MATTERS:
+  .sym vs PDB — WHEN TO USE WHICH:
 
-  For kernel drivers and other modules without .sym on Tecken, there is
-  no choice: --pdb is the only path to symbols. The comparison below
-  only applies to MOZILLA modules where BOTH .sym and PDB exist:
+  For most non-Mozilla Windows modules (kernel drivers, third-party
+  DLLs, GPU drivers, Microsoft system DLLs without .sym on Tecken),
+  there is NO choice — PDB is the only symbol source and is fetched
+  automatically. The guidance below only applies when BOTH formats
+  are available (primarily Mozilla modules).
+
+  PDB files contain MORE information than .sym files — specifically,
+  C++ type information (class/struct layouts, field offsets, sizes) that
+  enables the 'symdis field-layout' command. However, PDB files are
+  much larger and slower to fetch and parse.
+
+  RULE OF THUMB FOR AI AGENTS:
+    - For DISASSEMBLY (disasm, lookup): prefer .sym (default). It is
+      lightweight, fast, and has denser source line coverage. You do
+      NOT need --pdb for disassembly — auto-fallback fetches PDB
+      when .sym is unavailable.
+    - For TYPE INFORMATION (field-layout): PDB is REQUIRED. The .sym
+      format has no type data at all. Use 'symdis field-layout' to
+      look up struct field offsets, or 'symdis info --pdb' to check
+      if type info is available before running field-layout.
+    - JUST RUN THE COMMAND. Auto-fallback handles the common case:
+      symdis automatically tries PDB when .sym is unavailable. You
+      do not need to pre-check whether .sym exists.
+
+  The comparison below only applies to MOZILLA modules where both
+  .sym and PDB exist (for all other Windows modules, PDB is the
+  only and primary symbol source — no comparison needed):
 
     Feature                 .sym file             PDB (current)
     ----------------------  --------------------  --------------------
@@ -129,12 +177,18 @@ PDB SUPPORT (--pdb):
     Inline frame tracking   Yes (full)            Yes (from InlineSite
                                                   records + IPI stream)
     Call target names       Demangled             Demangled (MSVC ABI)
+    Type information        None                  Full (TPI stream —
+                                                  class/struct layouts,
+                                                  field offsets, sizes;
+                                                  enables field-layout)
     File size               Small (~1 MB)         Large (~100 MB-2 GB)
     Parse speed             Fast                  Slow
 
-  This is because Mozilla's sym generator (dump_syms) performs extensive
-  processing of PDB data: demangling, VCS path mapping, inline expansion.
-  The .sym file is a pre-processed, optimized representation.
+  For Mozilla modules, .sym is preferred for disassembly because
+  Mozilla's sym generator (dump_syms) pre-processes PDB data:
+  demangling, VCS path mapping, inline expansion. The .sym file is
+  a lightweight, optimized format. PDB's unique advantage is type
+  information, which .sym lacks entirely.
 
   Auto-fallback handles most cases — you do NOT need --pdb for:
     - WINDOWS KERNEL DRIVERS (.sys files like win32kfull.sys, ntfs.sys,
@@ -142,31 +196,35 @@ PDB SUPPORT (--pdb):
       kicks in and fetches the PDB automatically. Most kernel functions
       appear as PUBLIC symbols (address only, no size); symdis resolves
       exact function bounds from the PE .pdata section automatically.
+      Kernel driver disassembly is a first-class use case.
     - NON-MOZILLA Windows modules where no .sym exists on Tecken.
-      Third-party DLLs, game engines, driver components, and other
-      vendor modules — auto-fallback fetches the PDB when .sym is missing.
+      Third-party DLLs, game engines, driver components, GPU drivers,
+      and other vendor modules — auto-fallback fetches the PDB when
+      .sym is missing. This works across Microsoft, Intel, AMD, and
+      NVIDIA symbol servers.
 
   When --pdb IS useful (skip the .sym attempt, go straight to PDB):
     - When you KNOW there is no .sym on Tecken and want to skip the
       failed .sym lookup (saves one round-trip).
-    - Microsoft system DLLs: Tecken usually HAS .sym files for these
-      (ntdll, kernel32, etc.), so .sym is preferred by default. But --pdb
-      can be used if you want to cross-check or if a specific version's
-      .sym is missing.
+    - When you plan to run field-layout afterward — use 'symdis fetch
+      --pdb' to pre-cache the PDB, then run field-layout.
 
-  When NOT to use --pdb:
+  When NOT to use --pdb for disassembly:
     - Mozilla modules (xul.pdb, mozglue.pdb, etc.) where Tecken has a
-      .sym file. The .sym output is richer (denser line coverage,
-      consistently demangled function names).
+      .sym file. The .sym output has denser line coverage and
+      consistently demangled function names.
 
-  Remaining limitations:
-    - The pdb crate panics on some modules in large PDBs (e.g. xul.pdb);
-      these modules are caught and skipped silently, which may result in
-      sparser line coverage compared to .sym files.
-    - For kernel drivers and other PUBLIC-only modules, there are no
-      source line annotations or inline frames (PUBLIC symbols carry
-      only an address and name). Call targets within the same module
-      ARE resolved from other PUBLIC symbol names.
+  Notes on PDB-only modules (kernel drivers, vendor DLLs, etc.):
+    - PUBLIC symbols carry only an address and name (no source lines,
+      no inline frames). Disassembly shows raw instructions with call
+      target resolution but without source annotations.
+    - Call targets within the same module ARE resolved from other
+      PUBLIC symbol names.
+    - When the binary is available (fetched from Microsoft/vendor
+      servers), exact function bounds come from the PE .pdata section.
+    - The pdb crate panics on some modules in large PDBs (e.g.
+      xul.pdb); these are caught and skipped silently, which may
+      result in sparser line coverage compared to .sym files.
 
 APT PACKAGES (--apt, DEBIAN/UBUNTU):
 
@@ -526,7 +584,8 @@ EXAMPLES:
       --code-file win32kfull.sys --code-id 73E41EF8412000 \
       --function xxxResolveDesktop
 
-  # Use PDB for richer symbol data (Windows modules only):
+  # Skip .sym lookup and go straight to PDB (saves one round-trip
+  # when you know .sym is unavailable; also pre-caches PDB for field-layout):
   symdis disasm \
       --debug-file ntdll.pdb \
       --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
@@ -570,9 +629,10 @@ TIPS:
     because derive-from-PDB defaults to .dll. PDB is fetched
     automatically (no .sym exists for kernel drivers on Tecken).
   - --pdb skips the .sym lookup and goes straight to PDB. This saves
-    one round-trip when you know .sym is unavailable. For Mozilla
-    modules, the default .sym path gives better output (denser line
-    coverage, consistently demangled function names). For kernel
+    one round-trip when you know .sym is unavailable. For disassembly,
+    the default .sym path gives better output (denser line coverage,
+    consistent function names). For type information (field-layout),
+    PDB is required — .sym files have no type data. For kernel
     drivers and other non-Mozilla modules, auto-fallback already
     fetches PDB when .sym is missing, so --pdb is optional.
   - PUBLIC symbols are searched when --function doesn't match a FUNC
@@ -640,6 +700,10 @@ const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   to the containing function name, or a function name to its address and
   size. Useful for quick symbol lookups without full disassembly.
 
+  NOTE: For modules without .sym files (e.g., kernel drivers, non-Mozilla
+  Windows modules), use 'symdis disasm --function' or 'symdis disasm
+  --offset' instead — it auto-falls back to PDB when .sym is unavailable.
+
   When looking up by --function, the search order is:
     1. FUNC records (exact name match)
     2. PUBLIC symbols (exact raw name, then demangled name match)
@@ -693,9 +757,14 @@ const FETCH_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   from the INFO CODE_ID record in the .sym file when --code-id is not
   provided.
 
-  With --pdb, also fetches the PDB file from Tecken or Microsoft Symbol
-  Server (Windows modules only, debug-file must end in .pdb). The PDB
-  is cached separately from the .sym file.
+  With --pdb, skips .sym and fetches PDB + binary instead. The PDB
+  replaces the .sym (not the binary). PDB files are larger but contain
+  type information (class/struct layouts) that .sym files lack — this
+  enables 'symdis field-layout'. Sources for PDB: Tecken or
+  Microsoft/Intel/AMD/NVIDIA symbol servers (Windows modules only,
+  debug-file must end in .pdb). Reports type info availability for
+  field-layout. For disassembly only, .sym is preferred (lighter,
+  faster, denser line coverage).
 
   For Android crashes, --product fenix or --product focus is REQUIRED
   (it cannot be auto-detected because Android .sym files report OS as
@@ -769,7 +838,7 @@ EXAMPLES:
       --code-id e847601b49a0338ea9c34903a2f9d12fcb011e98 \
       --pacman
 
-  # Pre-fetch including PDB file:
+  # Fetch PDB + binary (skips .sym):
   symdis fetch \
       --debug-file ntdll.pdb \
       --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
@@ -798,7 +867,17 @@ const INFO_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   Shows module metadata from the .sym file: module name, debug ID, OS,
   architecture, function count, and whether the binary is available.
   Binary availability is checked using the same fetch chain as disasm
-  (Tecken → Microsoft → debuginfod → FTP archive).
+  (Tecken → Microsoft/Intel/AMD/NVIDIA → debuginfod → FTP archive).
+  Works with any Windows module — PDB is fetched automatically when
+  .sym is unavailable (kernel drivers, third-party DLLs, etc.).
+
+  With --pdb, skips .sym and fetches PDB + binary instead. PDB files
+  are heavier but contain type information (class/struct layouts) that
+  .sym files lack — use this to check if 'symdis field-layout' will
+  work for a module. Probes the TPI stream to report type info
+  availability. Without --pdb, type info is reported only if the PDB
+  is already in the local cache (no network cost). For disassembly
+  only, .sym is preferred (lighter, faster, denser line coverage).
 
 EXAMPLES:
 
@@ -822,6 +901,13 @@ EXAMPLES:
       --code-id 7bce0002cf29762f1bb067bc519155a0cb3f4a31 \
       --version 147.0.3 --channel release
 
+  # Fetch PDB + binary (skips .sym):
+  symdis info \
+      --debug-file ntdll.pdb \
+      --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
+      --code-file ntdll.dll --code-id 5b6dddee267000 \
+      --pdb
+
   # JSON output:
   symdis info \
       --debug-file xul.pdb \
@@ -833,29 +919,149 @@ TIPS:
 
   - Run 'symdis info' before 'symdis disasm' to check whether the sym
     file and binary are available before attempting full disassembly.
+  - For .pdb modules, use --pdb to fetch the PDB and check type info.
+    When "field-layout available" is shown, 'symdis field-layout' will
+    work for struct/class analysis. --pdb skips .sym fetch only. PDB is
+    heavier than .sym but is required for type information; for
+    disassembly, .sym is preferred (lighter, faster).
   - Provide --code-file and --code-id for accurate binary availability.
   - Use --version and --channel to check FTP archive fallback availability."#;
+
+const FIELD_LAYOUT_LONG_HELP: &str = r#"PDB TYPE LAYOUT — FIELD-LEVEL ANALYSIS:
+
+  Extracts the C++ class/struct/union field layout from PDB type information
+  (TPI stream). This is PDB-only — .sym files do not contain type info.
+  Type information is the key advantage PDB has over .sym files; for
+  disassembly, .sym is preferred (lighter, faster, denser line coverage).
+
+  Use this command to answer questions like "what field of nsFrameLoader is
+  at offset 0x98?" when analyzing crash dumps. Unlike Searchfox's
+  --field-layout (which only shows Linux x86_64 layouts), this uses the
+  actual PDB from the crashed build, so offsets match the exact platform
+  and build configuration.
+
+  REQUIREMENTS:
+
+    - The debug-file MUST be a .pdb file (e.g., xul.pdb, mozglue.pdb).
+    - The PDB must contain type information (TPI stream). Mozilla PDBs
+      (xul.pdb, mozglue.pdb) have full type data. Some Microsoft public
+      symbol PDBs also include type info — e.g., ntdll.pdb has hundreds
+      of types including _RTL_CRITICAL_SECTION, _PEB, _TEB, etc. Other
+      Microsoft PDBs (kernel32.pdb, kernelbase.pdb) may have fewer or no
+      types. Use 'symdis info' to check if a PDB has type information
+      before running field-layout.
+    - The --type argument is the C++ type name as it appears in PDB
+      (e.g., "nsFrameLoader", "mozilla::dom::Element", "nsCOMPtr<nsIURI>").
+
+  CRASH REPORT FIELD MAPPING:
+
+    Socorro JSON field     CLI flag        Notes
+    ---------------------  --------------  --------------------------------
+    module.debug_file      --debug-file    Required. Must be .pdb
+    module.debug_id        --debug-id      Required. 33-char hex string
+    (from crash analysis)  --type          C++ type name to look up
+    (from crash analysis)  --offset        Field offset from crash analysis
+
+  OFFSET MATCHING:
+
+    When --offset is provided, the output highlights the field that
+    contains that byte offset with ==>. This helps identify which
+    struct member was being accessed at a crash address.
+
+    The matching logic: find the field where
+      field.offset <= query < field.offset + field.size
+    If the offset falls in a base class region and no field matches,
+    the base class is highlighted instead.
+
+  FUZZY SEARCH:
+
+    With --fuzzy, --type performs substring matching on type names.
+    If exactly one type matches, its layout is shown. If multiple
+    match, they are listed (capped at 20) so you can refine.
+
+  OUTPUT:
+
+    Text output shows fields sorted by offset with type and name columns.
+    JSON output (--format json) includes structured query_match when
+    --offset is provided.
+
+EXAMPLES:
+
+  # Show layout of a Mozilla type from xul.pdb:
+  symdis field-layout \
+      --debug-file xul.pdb \
+      --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+      --type nsFrameLoader
+
+  # Find which field is at a specific offset:
+  symdis field-layout \
+      --debug-file xul.pdb \
+      --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+      --type nsFrameLoader --offset 0x4c
+
+  # Fuzzy search for a type name:
+  symdis field-layout \
+      --debug-file xul.pdb \
+      --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+      --type FrameLoader --fuzzy
+
+  # JSON output:
+  symdis --format json field-layout \
+      --debug-file xul.pdb \
+      --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
+      --type nsFrameLoader --offset 0x4c
+
+  # Windows system type from ntdll.pdb (Microsoft public PDB has some types):
+  symdis field-layout \
+      --debug-file ntdll.pdb \
+      --debug-id 08A413EE85E91D0377BA33DC3A2641941 \
+      --type _RTL_CRITICAL_SECTION
+
+TIPS:
+
+  - Use 'symdis info' first to check if a PDB has type information.
+    The output shows "field-layout available" with a type count when
+    TPI data is present, or "no type info (stripped/public PDB)" when
+    the TPI stream is empty.
+  - This command works with any PDB that has type info, not just
+    Mozilla PDBs. Some Microsoft public symbol PDBs include type
+    data — e.g., ntdll.pdb has hundreds of Windows kernel types
+    (_RTL_CRITICAL_SECTION, _PEB, _TEB, _HEAP, etc.). Third-party
+    vendor PDBs with full debug info also work.
+  - For Mozilla modules, the PDB is fetched from Tecken or symbol
+    servers (same fetch chain as --pdb in disasm). Large PDBs like
+    xul.pdb may take several minutes to download on first use.
+  - Type names in PDB are undemangled C++ names. Use the exact name
+    as MSVC knows it (e.g., "nsTArray<int>" not "nsTArray<int32_t>").
+    When in doubt, use --fuzzy for substring matching.
+  - Virtual function table pointers appear as <vfptr> fields at the
+    start of classes with virtual methods.
+  - Anonymous structs/unions are flattened by PDB — their fields
+    appear at the correct offsets but grouping is lost."#;
 
 #[derive(Parser)]
 #[command(
     name = "symdis",
     version,
     about = "Symbolic disassembler for Mozilla crash report analysis",
-    long_about = "Symbolic disassembler for Mozilla crash report analysis.\n\n\
-        Designed for AI agents analyzing Mozilla crash reports. Given a module's \
-        debug identifiers and a function name or offset from a crash report, \
-        symdis fetches symbols and binaries from Mozilla/Microsoft symbol \
-        servers and produces annotated disassembly with source lines, call \
-        targets, and inline frames.\n\n\
-        Works with ANY module in a crash report, not just Mozilla DLLs. \
-        Mozilla's crash infrastructure uploads .sym files to Tecken for all \
-        Microsoft modules seen in crash stacks (ntdll, kernel32, etc.).\n\n\
+    long_about = "Symbolic disassembler for crash report analysis.\n\n\
+        Designed for AI agents analyzing crash reports. Given a module's \
+        debug identifiers and a function name or offset, symdis fetches \
+        symbols and binaries from symbol servers (Mozilla Tecken, Microsoft, \
+        Intel, AMD, NVIDIA, debuginfod) and produces annotated disassembly \
+        with source lines, call targets, and inline frames.\n\n\
+        Supports Windows (PE), Linux (ELF), macOS (Mach-O), and Android \
+        modules. Not limited to Mozilla — works with any module from a \
+        crash report, including Microsoft system DLLs, Windows kernel \
+        drivers, GPU drivers, Linux system libraries, and macOS frameworks. \
+        PDB files are fetched automatically when .sym is unavailable.\n\n\
         Subcommands:\n  \
-        disasm   Disassemble a function (primary command)\n  \
-        lookup   Resolve offset → symbol or symbol → address (sym file only)\n  \
-        info     Show module metadata (sym file availability, function count)\n  \
-        fetch    Pre-fetch symbols and binary into cache\n  \
-        cache    Manage the local cache (path, size, clear, list)\n\n\
+        disasm        Disassemble a function (primary command)\n  \
+        lookup        Resolve offset → symbol or symbol → address (sym file only)\n  \
+        info          Show module metadata and PDB type info availability\n  \
+        fetch         Pre-fetch symbols and binary into cache\n  \
+        field-layout  Show C++ class/struct field layout from PDB type info\n  \
+        cache         Manage the local cache (path, size, clear, list)\n\n\
         Update check:\n  \
         On each run, symdis checks crates.io in the background for a newer\n  \
         version. If one is found, a notice is printed to stderr after the\n  \
@@ -899,10 +1105,13 @@ pub enum Command {
     Disasm(DisasmArgs),
     /// Resolve a module offset to a symbol name, or a symbol name to an address
     Lookup(LookupArgs),
-    /// Show module metadata
+    /// Show module metadata and PDB type info availability
     Info(InfoArgs),
     /// Pre-fetch symbols and binary for a module
     Fetch(FetchArgs),
+    /// Show C++ class/struct field layout from PDB type information
+    #[command(name = "field-layout")]
+    FieldLayout(FieldLayoutArgs),
     /// Manage the local cache
     Cache(CacheArgs),
 }
@@ -998,7 +1207,7 @@ pub struct DisasmArgs {
     #[arg(long, default_value = "firefox")]
     pub product: String,
 
-    /// Prefer PDB over .sym file for symbol data.
+    /// Prefer PDB over .sym file for symbol data (heavier but has type info).
     /// Only applicable to Windows modules (debug-file ends in .pdb).
     /// Without this flag, PDB is tried automatically when .sym is unavailable.
     #[arg(long)]
@@ -1071,6 +1280,12 @@ pub struct InfoArgs {
     /// It cannot be auto-detected (Android .sym files report OS as "Linux").
     #[arg(long, default_value = "firefox")]
     pub product: String,
+
+    /// Also fetch PDB file from symbol servers and probe for type information.
+    /// PDB is heavier than .sym but has type info for field-layout.
+    /// Only applicable to Windows modules (debug-file ends in .pdb).
+    #[arg(long)]
+    pub pdb: bool,
 }
 
 #[derive(Parser)]
@@ -1140,7 +1355,7 @@ pub struct FetchArgs {
     #[arg(long, default_value = "firefox")]
     pub product: String,
 
-    /// Also fetch PDB file from symbol servers.
+    /// Also fetch PDB file from symbol servers (heavier but has type info).
     /// Only applicable to Windows modules (debug-file ends in .pdb).
     #[arg(long)]
     pub pdb: bool,
@@ -1193,6 +1408,30 @@ pub enum CacheAction {
     },
 }
 
+#[derive(Parser)]
+#[command(after_long_help = FIELD_LAYOUT_LONG_HELP)]
+pub struct FieldLayoutArgs {
+    /// Debug file name (must be a .pdb file)
+    #[arg(long)]
+    pub debug_file: String,
+
+    /// Debug identifier (33-character hex string)
+    #[arg(long)]
+    pub debug_id: String,
+
+    /// C++ type name to look up
+    #[arg(long = "type")]
+    pub type_name: String,
+
+    /// Enable substring matching for --type
+    #[arg(long)]
+    pub fuzzy: bool,
+
+    /// Highlight the field at this byte offset (hex, with or without 0x prefix)
+    #[arg(long)]
+    pub offset: Option<String>,
+}
+
 pub async fn run(cli: Cli) -> Result<()> {
     let config = Config::resolve(&cli)?;
 
@@ -1211,6 +1450,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         Command::Info(ref args) => info::run(args, &config).await,
         Command::Fetch(ref args) => fetch::run(args, &config).await,
+        Command::FieldLayout(ref args) => field_layout::run(args, &config).await,
         Command::Cache(args) => cache_cmd::run(args, &config),
     }
 }

@@ -5,3 +5,4 @@
 pub mod breakpad;
 pub mod id_convert;
 pub mod pdb;
+pub mod tpi;

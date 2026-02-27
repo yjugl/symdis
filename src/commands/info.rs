@@ -10,17 +10,19 @@ use serde::Serialize;
 use tracing::warn;
 
 use super::InfoArgs;
-use crate::cache::Cache;
+use crate::cache::{Cache, CacheResult, PdbCacheKey};
 use crate::config::{Config, OutputFormat};
 use crate::fetch;
 use crate::symbols::breakpad::SymFileSummary;
+use crate::symbols::tpi;
 
 pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
     let cache = Cache::new(&config.cache_dir, config.miss_ttl_hours);
     let client = fetch::build_http_client(config)?;
 
-    // Fetch .sym file and binary concurrently
-    let sym_fut = fetch::fetch_sym_file(&client, &cache, config, &args.debug_file, &args.debug_id);
+    // When --pdb is set, skip .sym fetching (PDB replaces .sym, not the binary).
+    // Binary is still fetched — it's needed for disassembly and is usually small
+    // compared to the PDB.
     let bin_fut = async {
         if let (Some(code_file), Some(code_id)) = (&args.code_file, &args.code_id) {
             fetch::fetch_binary(&client, &cache, config, code_file, code_id).await
@@ -29,8 +31,16 @@ pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
             fetch::fetch_binary(&client, &cache, config, &code_file, &args.debug_id).await
         }
     };
-
-    let (sym_result, bin_result) = tokio::join!(sym_fut, bin_fut);
+    let (sym_result, bin_result): (Result<_, anyhow::Error>, Result<_, anyhow::Error>) = if args.pdb
+    {
+        let bin_result = bin_fut.await;
+        (Err(anyhow::anyhow!("skipped: --pdb flag set")), bin_result)
+    } else {
+        let sym_fut =
+            fetch::fetch_sym_file(&client, &cache, config, &args.debug_file, &args.debug_id);
+        let (s, b) = tokio::join!(sym_fut, bin_fut);
+        (s, b)
+    };
 
     // Scan .sym file for summary (MODULE record + counts) without full parse
     let sym_summary = match &sym_result {
@@ -142,6 +152,47 @@ pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
         }
     };
 
+    // If debug_file is a .pdb, check PDB availability and probe TPI for type info.
+    // With --pdb: fetch from network (same as `fetch --pdb`).
+    // Without --pdb: check local cache only (no network cost).
+    let pdb_status = if args.debug_file.to_ascii_lowercase().ends_with(".pdb") {
+        if args.pdb {
+            // Fetch PDB from symbol servers
+            match fetch::fetch_pdb_file(&client, &cache, config, &args.debug_file, &args.debug_id)
+                .await
+            {
+                Ok(pdb_path) => {
+                    let size = std::fs::metadata(&pdb_path).map(|m| m.len()).ok();
+                    let tpi_summary = tpi::probe_type_info(&pdb_path);
+                    PdbStatus::Available {
+                        size,
+                        type_count: tpi_summary.map(|s| s.type_count),
+                    }
+                }
+                Err(_) => PdbStatus::NotFound,
+            }
+        } else {
+            // Cache-only check
+            let pdb_key = PdbCacheKey {
+                debug_file: args.debug_file.clone(),
+                debug_id: args.debug_id.clone(),
+            };
+            match cache.get_pdb(&pdb_key) {
+                CacheResult::Hit(pdb_path) => {
+                    let size = std::fs::metadata(&pdb_path).map(|m| m.len()).ok();
+                    let tpi_summary = tpi::probe_type_info(&pdb_path);
+                    PdbStatus::Available {
+                        size,
+                        type_count: tpi_summary.map(|s| s.type_count),
+                    }
+                }
+                _ => PdbStatus::NotCached,
+            }
+        }
+    } else {
+        PdbStatus::NotApplicable
+    };
+
     // Gather info
     let mut info = ModuleMetadata {
         debug_file: args.debug_file.clone(),
@@ -152,6 +203,7 @@ pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
         arch: None,
         sym_status: FileStatus::NotFound,
         binary_status: FileStatus::NotFound,
+        pdb_status,
         function_count: None,
         public_count: None,
     };
@@ -165,13 +217,17 @@ pub async fn run(args: &InfoArgs, config: &Config) -> Result<()> {
     }
 
     // Sym file status
-    match &sym_result {
-        Ok(path) => {
-            let size = std::fs::metadata(path).map(|m| m.len()).ok();
-            info.sym_status = FileStatus::Available { size };
-        }
-        Err(_) => {
-            info.sym_status = FileStatus::NotFound;
+    if args.pdb {
+        info.sym_status = FileStatus::Skipped;
+    } else {
+        match &sym_result {
+            Ok(path) => {
+                let size = std::fs::metadata(path).map(|m| m.len()).ok();
+                info.sym_status = FileStatus::Available { size };
+            }
+            Err(_) => {
+                info.sym_status = FileStatus::NotFound;
+            }
         }
     }
 
@@ -236,6 +292,21 @@ fn derive_code_file(debug_file: &str) -> String {
 enum FileStatus {
     Available { size: Option<u64> },
     NotFound,
+    Skipped,
+}
+
+enum PdbStatus {
+    /// PDB found; type_count is Some if TPI has types, None if TPI is empty/stripped
+    Available {
+        size: Option<u64>,
+        type_count: Option<usize>,
+    },
+    /// PDB not found on any symbol server (with --pdb)
+    NotFound,
+    /// PDB not in local cache (without --pdb)
+    NotCached,
+    /// Not applicable (debug_file is not a .pdb)
+    NotApplicable,
 }
 
 struct ModuleMetadata {
@@ -247,6 +318,7 @@ struct ModuleMetadata {
     arch: Option<String>,
     sym_status: FileStatus,
     binary_status: FileStatus,
+    pdb_status: PdbStatus,
     function_count: Option<usize>,
     public_count: Option<usize>,
 }
@@ -283,6 +355,7 @@ fn format_info_text(info: &ModuleMetadata) -> String {
         FileStatus::NotFound => {
             writeln!(out, "Symbol file: not found").unwrap();
         }
+        FileStatus::Skipped => {}
     }
 
     match &info.binary_status {
@@ -295,6 +368,43 @@ fn format_info_text(info: &ModuleMetadata) -> String {
         FileStatus::NotFound => {
             writeln!(out, "Binary file: not found").unwrap();
         }
+        FileStatus::Skipped => {}
+    }
+
+    match &info.pdb_status {
+        PdbStatus::Available {
+            size: Some(size),
+            type_count,
+        } => {
+            let type_info = match type_count {
+                Some(count) => format!(", {} types — field-layout available", format_count(*count)),
+                None => ", no type info (stripped/public PDB)".to_string(),
+            };
+            writeln!(
+                out,
+                "PDB file: available ({}{})",
+                format_size(*size),
+                type_info
+            )
+            .unwrap();
+        }
+        PdbStatus::Available {
+            size: None,
+            type_count,
+        } => {
+            let type_info = match type_count {
+                Some(count) => format!(", {} types — field-layout available", format_count(*count)),
+                None => ", no type info (stripped/public PDB)".to_string(),
+            };
+            writeln!(out, "PDB file: available{}", type_info).unwrap();
+        }
+        PdbStatus::NotFound => {
+            writeln!(out, "PDB file: not found").unwrap();
+        }
+        PdbStatus::NotCached => {
+            writeln!(out, "PDB file: not cached (use --pdb to fetch)").unwrap();
+        }
+        PdbStatus::NotApplicable => {}
     }
 
     if let Some(count) = info.function_count {
@@ -351,8 +461,12 @@ struct JsonInfoOutput {
     os: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     arch: Option<String>,
-    symbol_file: JsonFileStatus,
-    binary_file: JsonFileStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    symbol_file: Option<JsonFileStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binary_file: Option<JsonFileStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pdb_file: Option<JsonPdbStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     function_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -366,7 +480,37 @@ struct JsonFileStatus {
     size: Option<u64>,
 }
 
+#[derive(Serialize)]
+struct JsonPdbStatus {
+    available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    /// Whether the PDB contains type information (TPI stream with class/struct/union definitions).
+    /// When true, `field-layout` command can extract field layouts from this PDB.
+    has_type_info: bool,
+    /// Number of named class/struct/union types with definitions.
+    /// Only present when has_type_info is true.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    type_count: Option<usize>,
+}
+
 fn format_info_json(info: &ModuleMetadata) -> String {
+    let pdb_file = match &info.pdb_status {
+        PdbStatus::Available { size, type_count } => Some(JsonPdbStatus {
+            available: true,
+            size: *size,
+            has_type_info: type_count.is_some(),
+            type_count: *type_count,
+        }),
+        PdbStatus::NotFound | PdbStatus::NotCached => Some(JsonPdbStatus {
+            available: false,
+            size: None,
+            has_type_info: false,
+            type_count: None,
+        }),
+        PdbStatus::NotApplicable => None,
+    };
+
     let output = JsonInfoOutput {
         debug_file: info.debug_file.clone(),
         debug_id: info.debug_id.clone(),
@@ -375,25 +519,28 @@ fn format_info_json(info: &ModuleMetadata) -> String {
         os: info.os.clone(),
         arch: info.arch.clone(),
         symbol_file: match &info.sym_status {
-            FileStatus::Available { size } => JsonFileStatus {
+            FileStatus::Available { size } => Some(JsonFileStatus {
                 available: true,
                 size: *size,
-            },
-            FileStatus::NotFound => JsonFileStatus {
+            }),
+            FileStatus::NotFound => Some(JsonFileStatus {
                 available: false,
                 size: None,
-            },
+            }),
+            FileStatus::Skipped => None,
         },
         binary_file: match &info.binary_status {
-            FileStatus::Available { size } => JsonFileStatus {
+            FileStatus::Available { size } => Some(JsonFileStatus {
                 available: true,
                 size: *size,
-            },
-            FileStatus::NotFound => JsonFileStatus {
+            }),
+            FileStatus::NotFound => Some(JsonFileStatus {
                 available: false,
                 size: None,
-            },
+            }),
+            FileStatus::Skipped => None,
         },
+        pdb_file,
         function_count: info.function_count,
         public_count: info.public_count,
     };
@@ -426,6 +573,7 @@ mod tests {
             } else {
                 FileStatus::NotFound
             },
+            pdb_status: PdbStatus::NotApplicable,
             function_count: if sym_available { Some(284301) } else { None },
             public_count: if sym_available { Some(12445) } else { None },
         }
@@ -524,5 +672,110 @@ mod tests {
         assert_eq!(derive_code_file("Firefox.pdb"), "Firefox.exe");
         assert_eq!(derive_code_file("libxul.so"), "libxul.so");
         assert_eq!(derive_code_file("XUL"), "XUL");
+    }
+
+    #[test]
+    fn test_info_text_pdb_with_types() {
+        let mut info = make_metadata(true, true);
+        info.pdb_status = PdbStatus::Available {
+            size: Some(1_500_000_000),
+            type_count: Some(42_567),
+        };
+        let output = format_info_text(&info);
+        assert!(
+            output.contains("PDB file: available (1.4 GB, 42,567 types — field-layout available)")
+        );
+    }
+
+    #[test]
+    fn test_info_text_pdb_no_types() {
+        let mut info = make_metadata(true, true);
+        info.pdb_status = PdbStatus::Available {
+            size: Some(2_097_152), // exactly 2.0 MB
+            type_count: None,
+        };
+        let output = format_info_text(&info);
+        assert!(output.contains("PDB file: available (2.0 MB, no type info (stripped/public PDB))"));
+    }
+
+    #[test]
+    fn test_info_text_pdb_not_found() {
+        let mut info = make_metadata(true, true);
+        info.pdb_status = PdbStatus::NotFound;
+        let output = format_info_text(&info);
+        assert!(output.contains("PDB file: not found"));
+    }
+
+    #[test]
+    fn test_info_text_pdb_not_cached() {
+        let mut info = make_metadata(true, true);
+        info.pdb_status = PdbStatus::NotCached;
+        let output = format_info_text(&info);
+        assert!(output.contains("PDB file: not cached (use --pdb to fetch)"));
+    }
+
+    #[test]
+    fn test_info_text_pdb_not_applicable() {
+        // Linux module — no PDB line should appear
+        let mut info = make_metadata(true, true);
+        info.debug_file = "libxul.so".to_string();
+        info.pdb_status = PdbStatus::NotApplicable;
+        let output = format_info_text(&info);
+        assert!(!output.contains("PDB"));
+    }
+
+    #[test]
+    fn test_info_json_pdb_with_types() {
+        let mut info = make_metadata(true, true);
+        info.pdb_status = PdbStatus::Available {
+            size: Some(1_500_000_000),
+            type_count: Some(42_567),
+        };
+        let json_str = format_info_json(&info);
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(v["pdb_file"]["available"].as_bool().unwrap());
+        assert_eq!(v["pdb_file"]["size"], 1_500_000_000u64);
+        assert!(v["pdb_file"]["has_type_info"].as_bool().unwrap());
+        assert_eq!(v["pdb_file"]["type_count"], 42_567);
+    }
+
+    #[test]
+    fn test_info_json_pdb_no_types() {
+        let mut info = make_metadata(true, true);
+        info.pdb_status = PdbStatus::Available {
+            size: Some(2_000_000),
+            type_count: None,
+        };
+        let json_str = format_info_json(&info);
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(v["pdb_file"]["available"].as_bool().unwrap());
+        assert!(!v["pdb_file"]["has_type_info"].as_bool().unwrap());
+        assert!(v["pdb_file"]["type_count"].is_null());
+    }
+
+    #[test]
+    fn test_info_json_pdb_not_found() {
+        let mut info = make_metadata(true, true);
+        info.pdb_status = PdbStatus::NotFound;
+        let json_str = format_info_json(&info);
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(!v["pdb_file"]["available"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn test_info_json_pdb_not_cached() {
+        let mut info = make_metadata(true, true);
+        info.pdb_status = PdbStatus::NotCached;
+        let json_str = format_info_json(&info);
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(!v["pdb_file"]["available"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn test_info_json_pdb_not_applicable() {
+        let info = make_metadata(true, true);
+        let json_str = format_info_json(&info);
+        let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(v["pdb_file"].is_null());
     }
 }
