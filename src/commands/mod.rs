@@ -14,7 +14,11 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::config::Config;
 
-const DISASM_LONG_HELP: &str = r#"QUICKSTART — USE --socorro-json (RECOMMENDED):
+const DISASM_BEFORE_HELP: &str = "\
+QUICKSTART: socorro-cli crash CRASH_ID --full | symdis disasm --socorro-json -
+For all flags, examples, and full documentation, run: symdis disasm --help";
+
+const DISASM_BEFORE_LONG_HELP: &str = r#"QUICKSTART — USE --socorro-json (RECOMMENDED):
 
   The easiest way to disassemble a crash is to pass the full socorro JSON.
   All module IDs, offsets, product, version, channel, distro, and backend
@@ -62,9 +66,9 @@ const DISASM_LONG_HELP: &str = r#"QUICKSTART — USE --socorro-json (RECOMMENDED
     - --pacman auto-enabled when lsb_release.id is Arch-like
     - --snap guessed from Ubuntu codename (gnome-42-2204-sdk, core22,
       gnome-46-2404-sdk, core24) when source-path detection doesn't
-      find a snap name
+      find a snap name"#;
 
-MANUAL FLAGS (FALLBACK):
+const DISASM_AFTER_LONG_HELP: &str = r#"MANUAL FLAGS (FALLBACK):
 
   --socorro-json can fail when the JSON is malformed, truncated, or missing
   required fields (e.g. no modules array, no crashing_thread). It also
@@ -1181,7 +1185,11 @@ pub enum Command {
 }
 
 #[derive(Parser)]
-#[command(after_long_help = DISASM_LONG_HELP)]
+#[command(
+    before_help = DISASM_BEFORE_HELP,
+    before_long_help = DISASM_BEFORE_LONG_HELP,
+    after_long_help = DISASM_AFTER_LONG_HELP
+)]
 pub struct DisasmArgs {
     /// Debug file name (e.g., xul.pdb, libxul.so)
     #[arg(long, required_unless_present = "socorro_json")]
