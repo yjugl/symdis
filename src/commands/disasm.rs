@@ -22,6 +22,7 @@ use crate::output::json;
 use crate::output::text::{
     self, DataSource, FunctionInfo, ModuleInfo, SymOnlyData, SymOnlyInline, SymOnlyLine,
 };
+use crate::socorro;
 use crate::symbols::breakpad::SymFile;
 use crate::symbols::pdb as pdb_parser;
 
@@ -38,13 +39,113 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     let cache = Cache::new(&config.cache_dir, config.miss_ttl_hours);
     let client = fetch::build_http_client(config)?;
 
-    let highlight_offset = args
-        .highlight_offset
+    // --socorro-json has two modes:
+    //   Frame mode (no --debug-file): disassemble the function at the selected frame.
+    //     --function/--offset are not allowed (the frame determines what to disassemble).
+    //   Module mode (--debug-file): disassemble a specific function in a specific module.
+    //     --function or --offset is required to identify the target function.
+    if args.socorro_json.is_some()
+        && args.debug_file.is_none()
+        && (args.function.is_some() || args.offset.is_some())
+    {
+        bail!(
+            "--function/--offset cannot be used with --socorro-json without --debug-file; \
+             either disassemble the crash frame as-is (omit --function/--offset), \
+             or specify the target module with --debug-file"
+        );
+    }
+
+    // Resolve effective values: socorro JSON fills defaults, CLI flags override.
+    let resolved = args
+        .socorro_json
+        .as_deref()
+        .map(|path| socorro::resolve_crash_frame(path, args.frame, args.debug_file.as_deref()))
+        .transpose()?;
+
+    // When --socorro-json is used, the resolved debug_file from the module is
+    // authoritative (e.g. "ntdll.pdb"), even if --debug-file was provided as
+    // a lookup key (e.g. "ntdll.dll"). Without --socorro-json, use --debug-file directly.
+    let debug_file = resolved
+        .as_ref()
+        .map(|r| r.debug_file.clone())
+        .or_else(|| args.debug_file.clone())
+        .context("--debug-file is required (or use --socorro-json)")?;
+    let debug_id = args
+        .debug_id
+        .clone()
+        .or_else(|| resolved.as_ref().map(|r| r.debug_id.clone()))
+        .context("--debug-id is required (or use --socorro-json)")?;
+    let code_file_resolved = args
+        .code_file
+        .clone()
+        .or_else(|| resolved.as_ref().and_then(|r| r.code_file.clone()));
+    let code_id_resolved = args
+        .code_id
+        .clone()
+        .or_else(|| resolved.as_ref().and_then(|r| r.code_id.clone()));
+    let offset_str = args
+        .offset
+        .clone()
+        .or_else(|| resolved.as_ref().and_then(|r| r.module_offset.clone()));
+    // When --socorro-json provides offset and no explicit --highlight-offset,
+    // auto-set highlight to crash offset (marks the faulting instruction).
+    let highlight_offset_str = args.highlight_offset.clone().or_else(|| {
+        if args.socorro_json.is_some() && args.offset.is_none() {
+            resolved.as_ref().and_then(|r| r.module_offset.clone())
+        } else {
+            None
+        }
+    });
+    let version = args
+        .version
+        .clone()
+        .or_else(|| resolved.as_ref().and_then(|r| r.version.clone()));
+    let channel = args
+        .channel
+        .clone()
+        .or_else(|| resolved.as_ref().and_then(|r| r.channel.clone()));
+    let build_id = args
+        .build_id
+        .clone()
+        .or_else(|| resolved.as_ref().and_then(|r| r.build_id.clone()));
+    let product = if args.product != "firefox" {
+        args.product.clone() // explicit CLI override
+    } else {
+        resolved
+            .as_ref()
+            .and_then(|r| r.product.clone())
+            .unwrap_or_else(|| args.product.clone())
+    };
+    let distro = args
+        .distro
+        .clone()
+        .or_else(|| resolved.as_ref().and_then(|r| r.distro.clone()));
+    // Auto-enable APT/pacman when socorro JSON indicates the distro
+    let apt = args.apt.clone().or_else(|| {
+        if resolved.as_ref().is_some_and(|r| r.enable_apt) {
+            Some(String::new()) // auto-detect package name
+        } else {
+            None
+        }
+    });
+    let pacman = args.pacman.clone().or_else(|| {
+        if resolved.as_ref().is_some_and(|r| r.enable_pacman) {
+            Some(String::new()) // auto-detect package name
+        } else {
+            None
+        }
+    });
+    let snap_guesses: Vec<String> = resolved
+        .as_ref()
+        .map(|r| r.snap_names.clone())
+        .unwrap_or_default();
+
+    let highlight_offset = highlight_offset_str
         .as_deref()
         .map(parse_offset)
         .transpose()?;
 
-    let is_pdb_module = args.debug_file.to_ascii_lowercase().ends_with(".pdb");
+    let is_pdb_module = debug_file.to_ascii_lowercase().ends_with(".pdb");
 
     // Fetch symbol data and binary concurrently.
     // When --pdb is set and debug_file is a .pdb, prefer PDB over .sym.
@@ -55,24 +156,24 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
             // Skip .sym when --pdb is explicitly requested; we'll fetch PDB instead
             Err(anyhow::anyhow!("skipped: --pdb flag set"))
         } else {
-            fetch::fetch_sym_file(&client, &cache, config, &args.debug_file, &args.debug_id).await
+            fetch::fetch_sym_file(&client, &cache, config, &debug_file, &debug_id).await
         }
     };
     let pdb_fut = async {
         if use_pdb_primary {
-            fetch::fetch_pdb_file(&client, &cache, config, &args.debug_file, &args.debug_id).await
+            fetch::fetch_pdb_file(&client, &cache, config, &debug_file, &debug_id).await
         } else {
             Err(anyhow::anyhow!("skipped: --pdb not set"))
         }
     };
     let bin_fut = async {
-        if let (Some(code_file), Some(code_id)) = (&args.code_file, &args.code_id) {
+        if let (Some(code_file), Some(code_id)) = (&code_file_resolved, &code_id_resolved) {
             fetch::fetch_binary(&client, &cache, config, code_file, code_id).await
         } else {
             // Without code_file/code_id, we can try using the debug_file as code_file
             // and debug_id as code_id (works for some cases like when Tecken proxies to MS)
-            let code_file = derive_code_file(&args.debug_file);
-            fetch::fetch_binary(&client, &cache, config, &code_file, &args.debug_id).await
+            let code_file = derive_code_file(&debug_file);
+            fetch::fetch_binary(&client, &cache, config, &code_file, &debug_id).await
         }
     };
 
@@ -85,7 +186,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     let sym_file = if use_pdb_primary {
         // --pdb mode: try PDB first, fall back to .sym
         match &pdb_result {
-            Ok(path) => match pdb_parser::parse_pdb(path, &args.debug_file, &args.debug_id) {
+            Ok(path) => match pdb_parser::parse_pdb(path, &debug_file, &debug_id) {
                 Ok(sym) => {
                     from_pdb = true;
                     Some(sym)
@@ -98,15 +199,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
             Err(e) => {
                 warn!("PDB file not available: {e}");
                 // Fall back to .sym
-                match fetch::fetch_sym_file(
-                    &client,
-                    &cache,
-                    config,
-                    &args.debug_file,
-                    &args.debug_id,
-                )
-                .await
-                {
+                match fetch::fetch_sym_file(&client, &cache, config, &debug_file, &debug_id).await {
                     Ok(path) => parse_sym_file(&path),
                     Err(e2) => {
                         warn!("sym file also not available: {e2}");
@@ -123,27 +216,19 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                 warn!("sym file not available: {e}");
                 // Auto-fallback: try PDB if this is a Windows module
                 if is_pdb_module {
-                    match fetch::fetch_pdb_file(
-                        &client,
-                        &cache,
-                        config,
-                        &args.debug_file,
-                        &args.debug_id,
-                    )
-                    .await
+                    match fetch::fetch_pdb_file(&client, &cache, config, &debug_file, &debug_id)
+                        .await
                     {
-                        Ok(path) => {
-                            match pdb_parser::parse_pdb(&path, &args.debug_file, &args.debug_id) {
-                                Ok(sym) => {
-                                    from_pdb = true;
-                                    Some(sym)
-                                }
-                                Err(e2) => {
-                                    warn!("failed to parse PDB file: {e2}");
-                                    None
-                                }
+                        Ok(path) => match pdb_parser::parse_pdb(&path, &debug_file, &debug_id) {
+                            Ok(sym) => {
+                                from_pdb = true;
+                                Some(sym)
                             }
-                        }
+                            Err(e2) => {
+                                warn!("failed to parse PDB file: {e2}");
+                                None
+                            }
+                        },
                         Err(e2) => {
                             warn!("PDB fallback also not available: {e2}");
                             None
@@ -160,7 +245,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     // This is important for debuginfod lookups where the full ELF build ID (40 chars)
     // is needed but the debug_id only preserves 32 chars (16 bytes of the GUID).
     let sym_code_id = sym_file.as_ref().and_then(|s| s.code_id.as_deref());
-    let effective_code_id = args.code_id.as_deref().or(sym_code_id);
+    let effective_code_id = code_id_resolved.as_deref().or(sym_code_id);
 
     // If binary fetch failed and sym file indicates Linux, try debuginfod.
     // Requires a real code_id (from --code-id or INFO CODE_ID in .sym) because
@@ -171,10 +256,10 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
             let is_linux = sym_file
                 .as_ref()
                 .map(|sym| sym.module.os.eq_ignore_ascii_case("linux"))
-                .unwrap_or_else(|| looks_like_elf(&args.debug_file, effective_code_id));
+                .unwrap_or_else(|| looks_like_elf(&debug_file, effective_code_id));
             if is_linux {
                 if let Some(code_id) = effective_code_id {
-                    let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                    let code_file = code_file_resolved.as_deref().unwrap_or(&debug_file);
                     match fetch::fetch_binary_debuginfod(
                         &client, &cache, config, code_file, code_id,
                     )
@@ -206,7 +291,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
             let is_linux = sym_file
                 .as_ref()
                 .map(|sym| sym.module.os.eq_ignore_ascii_case("linux"))
-                .unwrap_or_else(|| looks_like_elf(&args.debug_file, effective_code_id));
+                .unwrap_or_else(|| looks_like_elf(&debug_file, effective_code_id));
             if is_linux {
                 if let Some(code_id) = effective_code_id {
                     let snap_name = args
@@ -222,7 +307,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                             architecture: arch.to_string(),
                         };
                         let archive_client = fetch::build_archive_http_client(config)?;
-                        let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                        let code_file = code_file_resolved.as_deref().unwrap_or(&debug_file);
                         match fetch::fetch_binary_snap(
                             &archive_client,
                             &cache,
@@ -235,9 +320,63 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                             Ok(path) => Ok(path),
                             Err(snap_err) => {
                                 warn!("Snap Store fallback failed: {snap_err:#}");
-                                Err(e)
+                                // Try snap guesses from socorro JSON as fallback
+                                let mut guessed = Err(e);
+                                if !snap_guesses.is_empty() {
+                                    for guess in &snap_guesses {
+                                        let g_locator = fetch::snap::SnapLocator {
+                                            snap_name: guess.clone(),
+                                            architecture: arch.to_string(),
+                                        };
+                                        match fetch::fetch_binary_snap(
+                                            &archive_client,
+                                            &cache,
+                                            code_file,
+                                            code_id,
+                                            &g_locator,
+                                        )
+                                        .await
+                                        {
+                                            Ok(path) => {
+                                                guessed = Ok(path);
+                                                break;
+                                            }
+                                            Err(_) => continue,
+                                        }
+                                    }
+                                }
+                                guessed
                             }
                         }
+                    } else if let Some(arch) = arch {
+                        // No snap name detected, but try snap guesses from socorro JSON
+                        let mut guessed = Err(e);
+                        if !snap_guesses.is_empty() {
+                            let archive_client = fetch::build_archive_http_client(config)?;
+                            let code_file = code_file_resolved.as_deref().unwrap_or(&debug_file);
+                            for guess in &snap_guesses {
+                                let g_locator = fetch::snap::SnapLocator {
+                                    snap_name: guess.clone(),
+                                    architecture: arch.to_string(),
+                                };
+                                match fetch::fetch_binary_snap(
+                                    &archive_client,
+                                    &cache,
+                                    code_file,
+                                    code_id,
+                                    &g_locator,
+                                )
+                                .await
+                                {
+                                    Ok(path) => {
+                                        guessed = Ok(path);
+                                        break;
+                                    }
+                                    Err(_) => continue,
+                                }
+                            }
+                        }
+                        guessed
                     } else {
                         Err(e)
                     }
@@ -257,10 +396,10 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
             let is_linux = sym_file
                 .as_ref()
                 .map(|sym| sym.module.os.eq_ignore_ascii_case("linux"))
-                .unwrap_or_else(|| looks_like_elf(&args.debug_file, effective_code_id));
-            if is_linux && args.apt.is_some() {
+                .unwrap_or_else(|| looks_like_elf(&debug_file, effective_code_id));
+            if is_linux && apt.is_some() {
                 if let Some(code_id) = effective_code_id {
-                    let distro = match &args.distro {
+                    let distro_val = match &distro {
                         Some(d) => d.clone(),
                         None => {
                             warn!(
@@ -273,8 +412,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                         .as_ref()
                         .and_then(|sym| fetch::apt::apt_architecture(&sym.module.arch));
                     if let Some(arch) = arch {
-                        let apt_package = args
-                            .apt
+                        let apt_package = apt
                             .as_deref()
                             .and_then(|s| if s.is_empty() { None } else { Some(s) })
                             .map(|s| s.to_string());
@@ -288,12 +426,12 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                         let repo_config = if let Some(ref mirror) = args.mirror {
                             fetch::apt::custom_repo_config(mirror, args.components.as_deref())
                         } else {
-                            match fetch::apt::resolve_repo_config(&distro) {
+                            match fetch::apt::resolve_repo_config(&distro_val) {
                                 Some(c) => c,
                                 None => {
                                     warn!(
                                         "unknown release codename '{}': use --mirror to specify a custom APT repository",
-                                        distro
+                                        distro_val
                                     );
                                     return Err(e);
                                 }
@@ -301,12 +439,12 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                         };
                         let locator = fetch::apt::AptLocator {
                             package: apt_package,
-                            release: distro,
+                            release: distro_val,
                             architecture: arch.to_string(),
                             config: repo_config,
                         };
                         let archive_client = fetch::build_archive_http_client(config)?;
-                        let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                        let code_file = code_file_resolved.as_deref().unwrap_or(&debug_file);
                         match fetch::fetch_binary_apt(
                             &archive_client,
                             &cache,
@@ -342,15 +480,14 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
             let is_linux = sym_file
                 .as_ref()
                 .map(|sym| sym.module.os.eq_ignore_ascii_case("linux"))
-                .unwrap_or_else(|| looks_like_elf(&args.debug_file, effective_code_id));
-            if is_linux && args.pacman.is_some() {
+                .unwrap_or_else(|| looks_like_elf(&debug_file, effective_code_id));
+            if is_linux && pacman.is_some() {
                 if let Some(code_id) = effective_code_id {
                     let arch = sym_file
                         .as_ref()
                         .map(|sym| sym.module.arch.as_str())
                         .unwrap_or("x86_64");
-                    let pacman_package = args
-                        .pacman
+                    let pacman_package = pacman
                         .as_deref()
                         .and_then(|s| if s.is_empty() { None } else { Some(s) })
                         .map(|s| s.to_string());
@@ -358,7 +495,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                     {
                         Ok(locator) => {
                             let archive_client = fetch::build_archive_http_client(config)?;
-                            let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                            let code_file = code_file_resolved.as_deref().unwrap_or(&debug_file);
                             match fetch::fetch_binary_pacman(
                                 &archive_client,
                                 &cache,
@@ -397,19 +534,19 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                 .as_ref()
                 .map(|s| (s.module.os.as_str(), s.module.arch.as_str()))
                 .unwrap_or_else(|| infer_platform_from_code_id(effective_code_id));
-            if let (Some(version), Some(channel)) = (&args.version, &args.channel) {
-                match fetch::archive::resolve_product_platform(&args.product, os, arch_str) {
-                    Ok(Some((product, platform))) => {
+            if let (Some(ver), Some(chan)) = (&version, &channel) {
+                match fetch::archive::resolve_product_platform(&product, os, arch_str) {
+                    Ok(Some((resolved_product, platform))) => {
                         if let Some(code_id) = effective_code_id {
                             let archive_client = fetch::build_archive_http_client(config)?;
                             let locator = fetch::archive::ArchiveLocator {
-                                product,
-                                version: version.clone(),
-                                channel: channel.clone(),
+                                product: resolved_product,
+                                version: ver.clone(),
+                                channel: chan.clone(),
                                 platform,
-                                build_id: args.build_id.clone(),
+                                build_id: build_id.clone(),
                             };
-                            let code_file = args.code_file.as_deref().unwrap_or(&args.debug_file);
+                            let code_file = code_file_resolved.as_deref().unwrap_or(&debug_file);
                             match fetch::fetch_binary_ftp(
                                 &archive_client,
                                 &cache,
@@ -460,8 +597,13 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     let arch = determine_arch(&sym_file, binary_file.as_ref().map(|b| b.as_ref()))?;
 
     // Find the target function
-    let (func_name, func_addr, func_size) =
-        find_target(args, &sym_file, binary_file.as_ref().map(|b| b.as_ref()))?;
+    let (func_name, func_addr, func_size) = find_target(
+        args.function.as_deref(),
+        offset_str.as_deref(),
+        args.fuzzy,
+        &sym_file,
+        binary_file.as_ref().map(|b| b.as_ref()),
+    )?;
 
     // Handle empty functions (size 0)
     if func_size == 0 {
@@ -492,9 +634,9 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
 
     // Build module info for output
     let module_info = ModuleInfo {
-        debug_file: args.debug_file.clone(),
-        debug_id: args.debug_id.clone(),
-        code_file: args.code_file.clone(),
+        debug_file: debug_file.clone(),
+        debug_id: debug_id.clone(),
+        code_file: code_file_resolved.clone(),
         arch: arch.to_string(),
     };
 
@@ -511,7 +653,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     // showing disassembly from a different build.
     if let Some(ref bin) = binary_file {
         if let Some(msg) =
-            check_binary_identity(bin.as_ref(), args.code_id.as_deref(), &args.debug_id)
+            check_binary_identity(bin.as_ref(), code_id_resolved.as_deref(), &debug_id)
         {
             warn!("{msg}");
             binary_file = None;
@@ -644,14 +786,14 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
             OutputFormat::Text => {
                 bail!(
                     "neither symbol file nor binary available for {}/{}",
-                    args.debug_file,
-                    args.debug_id
+                    debug_file,
+                    debug_id
                 );
             }
             OutputFormat::Json => {
                 let msg = format!(
                     "neither symbol file nor binary available for {}/{}",
-                    args.debug_file, args.debug_id
+                    debug_file, debug_id
                 );
                 let output = json::format_json_error(&msg);
                 println!("{output}");
@@ -748,13 +890,15 @@ fn determine_arch(sym_file: &Option<SymFile>, binary: Option<&dyn BinaryFile>) -
 
 /// Find the target function by name or offset.
 fn find_target(
-    args: &DisasmArgs,
+    function: Option<&str>,
+    offset_str: Option<&str>,
+    fuzzy: bool,
     sym_file: &Option<SymFile>,
     binary: Option<&dyn BinaryFile>,
 ) -> Result<(String, u64, u64)> {
-    if let Some(ref name) = args.function {
-        find_by_name(name, args.fuzzy, sym_file, binary)
-    } else if let Some(ref offset_str) = args.offset {
+    if let Some(name) = function {
+        find_by_name(name, fuzzy, sym_file, binary)
+    } else if let Some(offset_str) = offset_str {
         let offset = parse_offset(offset_str)?;
         find_by_offset(offset, sym_file, binary)
     } else {

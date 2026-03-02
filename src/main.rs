@@ -10,6 +10,7 @@ mod demangle;
 mod disasm;
 mod fetch;
 mod output;
+mod socorro;
 mod symbols;
 
 use anyhow::Result;

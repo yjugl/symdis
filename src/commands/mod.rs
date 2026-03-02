@@ -14,7 +14,67 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::config::Config;
 
-const DISASM_LONG_HELP: &str = r#"SYMBOL COVERAGE — NOT LIMITED TO MOZILLA MODULES:
+const DISASM_LONG_HELP: &str = r#"QUICKSTART — USE --socorro-json (RECOMMENDED):
+
+  The easiest way to disassemble a crash is to pass the full socorro JSON.
+  All module IDs, offsets, product, version, channel, distro, and backend
+  flags (--apt, --pacman, --snap) are extracted automatically:
+
+    socorro-cli crash CRASH_ID --full | symdis disasm --socorro-json -
+
+  Or from a saved file:
+
+    symdis disasm --socorro-json /tmp/crash.json
+
+  --socorro-json has two modes:
+
+  1. FRAME MODE (default): disassemble the function at a specific frame.
+     The module, offset, and highlight are all taken from the frame.
+
+       # Crash frame (frame 0, default):
+       symdis disasm --socorro-json crash.json
+
+       # A different frame (e.g. the caller):
+       symdis disasm --socorro-json crash.json --frame 1
+
+  2. MODULE MODE: disassemble a specific function in a specific module.
+     Use --debug-file to name the module (its IDs are resolved from
+     json_dump.modules) and --function or --offset to pick the function.
+     This is frame-independent.
+
+       symdis disasm --socorro-json crash.json --debug-file libxul.so \
+           --function SnowWhiteKiller --fuzzy
+
+       symdis disasm --socorro-json crash.json --debug-file ntdll.pdb \
+           --function RtlFreeHeap
+
+  In both modes, product, version, channel, distro, and backend flags
+  are auto-extracted from the crash report.
+
+  Auto-extracted fields:
+    - --debug-file, --debug-id, --code-file, --code-id from the module
+    - --offset, --highlight-offset from the frame's module_offset (frame mode)
+    - --version, --channel, --build-id from the crash report
+    - --product from the crash report (Fenix -> fenix, Focus -> focus,
+      Thunderbird -> thunderbird)
+    - --distro from json_dump.lsb_release.codename
+    - --apt auto-enabled when distro matches a known APT codename
+    - --pacman auto-enabled when lsb_release.id is Arch-like
+    - --snap guessed from Ubuntu codename (gnome-42-2204-sdk, core22,
+      gnome-46-2404-sdk, core24) when source-path detection doesn't
+      find a snap name
+
+MANUAL FLAGS (FALLBACK):
+
+  --socorro-json can fail when the JSON is malformed, truncated, or missing
+  required fields (e.g. no modules array, no crashing_thread). It also
+  requires socorro-cli or another tool to fetch the full JSON.
+
+  When --socorro-json is not available (e.g. working from a partial crash
+  report, a stack trace, or individual module IDs), specify flags manually.
+  This requires extracting the right values yourself.
+
+SYMBOL COVERAGE — NOT LIMITED TO MOZILLA MODULES:
 
   symdis supports Windows (PE), Linux (ELF), macOS (Mach-O), and Android
   modules. It is NOT limited to Mozilla-issued modules — you should try it
@@ -46,7 +106,7 @@ const DISASM_LONG_HELP: &str = r#"SYMBOL COVERAGE — NOT LIMITED TO MOZILLA MOD
   Use 'symdis info' to quickly check if symbols are available for a module
   before attempting full disassembly.
 
-CRASH REPORT FIELD MAPPING:
+CRASH REPORT FIELD MAPPING (for manual flag use):
 
   Socorro JSON field     CLI flag            Notes
   ---------------------  ------------------  -------------------------------
@@ -433,7 +493,7 @@ GRACEFUL DEGRADATION:
                          but no disassembly
   neither            ->  Error
 
-EXAMPLES:
+EXAMPLES (manual flags — prefer --socorro-json when possible):
 
   # Windows module -- disassemble by offset, highlight crash address:
   symdis disasm \
@@ -601,9 +661,13 @@ EXAMPLES:
 
 TIPS:
 
-  - ALWAYS pass --code-file and --code-id from the crash report. Without
-    them you usually get sym-only output (no disassembly). With them you
-    get full annotated disassembly with source lines and call targets.
+  - PREFER --socorro-json over manual flags. It extracts all module IDs,
+    product, version, channel, distro, and backend flags automatically.
+    Manual flags are a fallback when the full socorro JSON is not available.
+  - When using manual flags, ALWAYS pass --code-file and --code-id from
+    the crash report. Without them you usually get sym-only output (no
+    disassembly). With them you get full annotated disassembly with source
+    lines and call targets. (--socorro-json handles this automatically.)
   - Use --format json for machine-parseable output.
   - Use --highlight-offset with the crash address (frame.module_offset)
     to mark the faulting instruction with ==> in text output or
@@ -1120,12 +1184,24 @@ pub enum Command {
 #[command(after_long_help = DISASM_LONG_HELP)]
 pub struct DisasmArgs {
     /// Debug file name (e.g., xul.pdb, libxul.so)
-    #[arg(long)]
-    pub debug_file: String,
+    #[arg(long, required_unless_present = "socorro_json")]
+    pub debug_file: Option<String>,
 
     /// Debug identifier (33-character hex string)
+    #[arg(long, required_unless_present = "socorro_json")]
+    pub debug_id: Option<String>,
+
+    /// Socorro crash report JSON file path, or "-" for stdin.
+    /// Auto-extracts debug-file, debug-id, code-file, code-id, offset,
+    /// version, channel, product, and distro from the crash report.
+    /// Explicit CLI flags override auto-extracted values.
     #[arg(long)]
-    pub debug_id: String,
+    pub socorro_json: Option<String>,
+
+    /// Frame index in the crashing thread (0 = top/crash frame).
+    /// Only used with --socorro-json.
+    #[arg(long, default_value = "0")]
+    pub frame: usize,
 
     /// Function name to disassemble
     #[arg(long, conflicts_with = "offset")]
@@ -1437,8 +1513,8 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         Command::Disasm(ref args) => {
-            if args.function.is_none() && args.offset.is_none() {
-                bail!("Either --function or --offset must be specified");
+            if args.function.is_none() && args.offset.is_none() && args.socorro_json.is_none() {
+                bail!("Either --function, --offset, or --socorro-json must be specified");
             }
             disasm::run(args, &config).await
         }
