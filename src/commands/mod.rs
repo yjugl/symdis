@@ -1516,6 +1516,113 @@ pub struct FieldLayoutArgs {
     pub offset: Option<String>,
 }
 
+/// Context for generating actionable hints when binary fetch fails.
+pub struct HintContext<'a> {
+    pub debug_file: &'a str,
+    pub is_linux: bool,
+    pub effective_code_id: Option<&'a str>,
+    pub code_file_provided: bool,
+    pub code_id_provided: bool,
+    pub version_provided: bool,
+    pub channel_provided: bool,
+    pub apt_enabled: bool,
+    pub pacman_enabled: bool,
+    pub snap_provided: bool,
+    pub product: &'a str,
+    pub is_socorro_mode: bool,
+    pub sym_arch: Option<&'a str>,
+}
+
+/// Generate actionable one-liner hints for binary fetch failures.
+///
+/// Each hint fires only when the corresponding flag wasn't already set and the
+/// hint is actionable. All hints are suppressed in `--socorro-json` mode
+/// (which auto-extracts most flags).
+pub fn generate_binary_fetch_hints(ctx: &HintContext) -> Vec<String> {
+    if ctx.is_socorro_mode {
+        return Vec::new();
+    }
+
+    let mut hints = Vec::new();
+
+    // Rule A: no --code-file AND no --code-id
+    if !ctx.code_file_provided && !ctx.code_id_provided {
+        hints.push(
+            "pass --code-file and --code-id from the crash report for better binary fetch results"
+                .to_string(),
+        );
+    }
+
+    // Rule B: Linux module, no --apt, no --pacman, no --snap
+    if ctx.is_linux && !ctx.apt_enabled && !ctx.pacman_enabled && !ctx.snap_provided {
+        hints.push(
+            "try --apt --distro <codename> (Debian/Ubuntu), --pacman (Arch Linux), \
+             or --snap <name> (Ubuntu snap). Package names are usually auto-detected \
+             but some need an explicit name (e.g. libc.so.6 needs --apt glibc or --pacman glibc)"
+                .to_string(),
+        );
+    }
+
+    // Rule C: no --version or no --channel
+    if !ctx.version_provided || !ctx.channel_provided {
+        hints.push(
+            "pass --version and --channel to try Mozilla FTP archive \
+             (also --build-id for nightly builds)"
+                .to_string(),
+        );
+    }
+
+    // Rule D: Linux + ARM/AArch64 .so + product is "firefox" (default)
+    if ctx.is_linux && ctx.product == "firefox" {
+        let is_arm = ctx.sym_arch.is_some_and(|a| {
+            a.eq_ignore_ascii_case("arm")
+                || a.eq_ignore_ascii_case("arm64")
+                || a.eq_ignore_ascii_case("aarch64")
+                || a.eq_ignore_ascii_case("armv7l")
+        });
+        if is_arm {
+            hints.push(
+                "for Android/Fenix crashes, add --product fenix or --product focus".to_string(),
+            );
+        }
+    }
+
+    // Rule E: .pdb debug file, no --code-file, derived code file is .dll
+    if !ctx.code_file_provided {
+        let lower = ctx.debug_file.to_ascii_lowercase();
+        if lower.ends_with(".pdb") {
+            let stem = &ctx.debug_file[..ctx.debug_file.len() - 4];
+            if !stem.eq_ignore_ascii_case("firefox") {
+                // Default heuristic derives .dll — hint about .sys
+                hints.push(format!(
+                    "for .sys kernel drivers, pass --code-file {}.sys explicitly \
+                     (the default heuristic derives .dll)",
+                    stem,
+                ));
+            }
+        }
+    }
+
+    // Rule G: version+channel provided but product is still "firefox" (default)
+    // Could be a Thunderbird crash where the FTP archive URL is wrong.
+    if ctx.version_provided && ctx.channel_provided && ctx.product == "firefox" {
+        hints.push(
+            "if this is a Thunderbird crash, add --product thunderbird".to_string(),
+        );
+    }
+
+    // Rule F: Linux module, no effective code_id
+    if ctx.is_linux && ctx.effective_code_id.is_none() {
+        hints.push(
+            "pass --code-id (full ELF build ID, 40 hex chars) to enable debuginfod \
+             and other Linux binary fetch sources"
+                .to_string(),
+        );
+    }
+
+    hints
+}
+
 pub async fn run(cli: Cli) -> Result<()> {
     let config = Config::resolve(&cli)?;
 
@@ -1536,5 +1643,202 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Fetch(ref args) => fetch::run(args, &config).await,
         Command::FieldLayout(ref args) => field_layout::run(args, &config).await,
         Command::Cache(args) => cache_cmd::run(args, &config),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_context<'a>() -> HintContext<'a> {
+        HintContext {
+            debug_file: "libxul.so",
+            is_linux: true,
+            effective_code_id: None,
+            code_file_provided: false,
+            code_id_provided: false,
+            version_provided: false,
+            channel_provided: false,
+            apt_enabled: false,
+            pacman_enabled: false,
+            snap_provided: false,
+            product: "firefox",
+            is_socorro_mode: false,
+            sym_arch: None,
+        }
+    }
+
+    #[test]
+    fn test_socorro_mode_suppresses_all_hints() {
+        let mut ctx = base_context();
+        ctx.is_socorro_mode = true;
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(hints.is_empty());
+    }
+
+    #[test]
+    fn test_rule_a_no_code_file_no_code_id() {
+        let ctx = base_context();
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(hints.iter().any(|h| h.contains("--code-file")));
+    }
+
+    #[test]
+    fn test_rule_a_suppressed_when_code_file_provided() {
+        let mut ctx = base_context();
+        ctx.code_file_provided = true;
+        ctx.code_id_provided = true;
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(!hints.iter().any(|h| h.contains("--code-file")));
+    }
+
+    #[test]
+    fn test_rule_b_linux_no_backends() {
+        let ctx = base_context();
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(hints.iter().any(|h| h.contains("--apt")));
+    }
+
+    #[test]
+    fn test_rule_b_suppressed_when_apt_enabled() {
+        let mut ctx = base_context();
+        ctx.apt_enabled = true;
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(!hints.iter().any(|h| h.contains("--apt")));
+    }
+
+    #[test]
+    fn test_rule_b_suppressed_for_windows() {
+        let mut ctx = base_context();
+        ctx.is_linux = false;
+        ctx.debug_file = "xul.pdb";
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(!hints.iter().any(|h| h.contains("--apt")));
+    }
+
+    #[test]
+    fn test_rule_c_no_version_no_channel() {
+        let ctx = base_context();
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(hints.iter().any(|h| h.contains("--version")));
+    }
+
+    #[test]
+    fn test_rule_c_suppressed_when_both_provided() {
+        let mut ctx = base_context();
+        ctx.version_provided = true;
+        ctx.channel_provided = true;
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(!hints.iter().any(|h| h.contains("--version")));
+    }
+
+    #[test]
+    fn test_rule_d_linux_arm_firefox() {
+        let mut ctx = base_context();
+        ctx.sym_arch = Some("arm");
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(hints.iter().any(|h| h.contains("--product fenix")));
+    }
+
+    #[test]
+    fn test_rule_d_suppressed_for_non_arm() {
+        let mut ctx = base_context();
+        ctx.sym_arch = Some("x86_64");
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(!hints.iter().any(|h| h.contains("--product fenix")));
+    }
+
+    #[test]
+    fn test_rule_d_suppressed_for_non_firefox_product() {
+        let mut ctx = base_context();
+        ctx.sym_arch = Some("arm64");
+        ctx.product = "fenix";
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(!hints.iter().any(|h| h.contains("--product fenix")));
+    }
+
+    #[test]
+    fn test_rule_e_pdb_no_code_file() {
+        let mut ctx = base_context();
+        ctx.is_linux = false;
+        ctx.debug_file = "ntoskrnl.pdb";
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(hints.iter().any(|h| h.contains(".sys")));
+    }
+
+    #[test]
+    fn test_rule_e_suppressed_when_code_file_provided() {
+        let mut ctx = base_context();
+        ctx.is_linux = false;
+        ctx.debug_file = "ntoskrnl.pdb";
+        ctx.code_file_provided = true;
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(!hints.iter().any(|h| h.contains(".sys")));
+    }
+
+    #[test]
+    fn test_rule_e_suppressed_for_firefox_pdb() {
+        let mut ctx = base_context();
+        ctx.is_linux = false;
+        ctx.debug_file = "firefox.pdb";
+        let hints = generate_binary_fetch_hints(&ctx);
+        // firefox.pdb derives .exe not .dll, so hint about .sys is not useful
+        assert!(!hints.iter().any(|h| h.contains(".sys")));
+    }
+
+    #[test]
+    fn test_rule_f_linux_no_code_id() {
+        let ctx = base_context();
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(hints.iter().any(|h| h.contains("debuginfod")));
+    }
+
+    #[test]
+    fn test_rule_f_suppressed_when_code_id_present() {
+        let mut ctx = base_context();
+        ctx.effective_code_id = Some("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2");
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(!hints.iter().any(|h| h.contains("debuginfod")));
+    }
+
+    #[test]
+    fn test_rule_g_version_channel_default_product() {
+        let mut ctx = base_context();
+        ctx.version_provided = true;
+        ctx.channel_provided = true;
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(hints.iter().any(|h| h.contains("--product thunderbird")));
+    }
+
+    #[test]
+    fn test_rule_g_suppressed_when_product_not_firefox() {
+        let mut ctx = base_context();
+        ctx.version_provided = true;
+        ctx.channel_provided = true;
+        ctx.product = "thunderbird";
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(!hints.iter().any(|h| h.contains("--product thunderbird")));
+    }
+
+    #[test]
+    fn test_rule_g_suppressed_when_no_version() {
+        let ctx = base_context();
+        // version_provided = false, channel_provided = false
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(!hints.iter().any(|h| h.contains("--product thunderbird")));
+    }
+
+    #[test]
+    fn test_all_flags_provided_no_hints() {
+        let mut ctx = base_context();
+        ctx.code_file_provided = true;
+        ctx.code_id_provided = true;
+        ctx.version_provided = true;
+        ctx.channel_provided = true;
+        ctx.apt_enabled = true;
+        ctx.product = "thunderbird"; // explicit product suppresses Rule G
+        ctx.effective_code_id = Some("a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2");
+        let hints = generate_binary_fetch_hints(&ctx);
+        assert!(hints.is_empty());
     }
 }

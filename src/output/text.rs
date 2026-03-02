@@ -50,6 +50,7 @@ pub fn format_text(
     instructions: &[AnnotatedInstruction],
     data_source: &DataSource,
     warnings: &[String],
+    hints: &[String],
 ) -> String {
     let mut out = String::new();
 
@@ -75,6 +76,9 @@ pub fn format_text(
 
     for w in warnings {
         writeln!(out, "; WARNING: {}", w).unwrap();
+    }
+    for h in hints {
+        writeln!(out, "; HINT: {}", h).unwrap();
     }
 
     if matches!(data_source, DataSource::SymOnly | DataSource::PdbOnly) {
@@ -189,6 +193,7 @@ pub fn format_sym_only(
     sym_data: Option<&SymOnlyData>,
     data_source: &DataSource,
     warnings: &[String],
+    hints: &[String],
 ) -> String {
     let mut out = String::new();
 
@@ -214,6 +219,9 @@ pub fn format_sym_only(
 
     for w in warnings {
         writeln!(out, "; WARNING: {}", w).unwrap();
+    }
+    for h in hints {
+        writeln!(out, "; HINT: {}", h).unwrap();
     }
 
     if let Some(data) = sym_data {
@@ -312,7 +320,7 @@ mod tests {
     fn test_sym_only_none_minimal() {
         let module = make_module_info();
         let function = make_function_info();
-        let output = format_sym_only(&module, &function, None, &DataSource::SymOnly, &[]);
+        let output = format_sym_only(&module, &function, None, &DataSource::SymOnly, &[], &[]);
 
         assert!(output.contains("; Data sources: sym"));
         assert!(output.contains("Function metadata only."));
@@ -357,6 +365,7 @@ mod tests {
             &function,
             Some(&sym_data),
             &DataSource::SymOnly,
+            &[],
             &[],
         );
 

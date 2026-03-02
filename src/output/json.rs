@@ -15,6 +15,8 @@ struct JsonDisasmOutput {
     instructions: Vec<JsonInstruction>,
     source: String,
     warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    hints: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -73,6 +75,8 @@ struct JsonSymOnlyOutput {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     source_files: Vec<String>,
     warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    hints: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -97,6 +101,8 @@ struct JsonSymOnlyInline {
 #[derive(Serialize)]
 struct JsonError {
     error: JsonErrorDetail,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    hints: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -166,6 +172,7 @@ pub fn format_json(
     instructions: &[AnnotatedInstruction],
     data_source: &DataSource,
     warnings: &[String],
+    hints: &[String],
 ) -> String {
     let output = JsonDisasmOutput {
         module: JsonModule::from_info(module),
@@ -176,6 +183,7 @@ pub fn format_json(
             .collect(),
         source: data_source.to_string(),
         warnings: warnings.to_vec(),
+        hints: hints.to_vec(),
     };
     serde_json::to_string_pretty(&output).expect("JSON serialization should not fail")
 }
@@ -190,6 +198,7 @@ pub fn format_json_sym_only(
     sym_data: Option<&SymOnlyData>,
     data_source: &DataSource,
     warnings: &[String],
+    hints: &[String],
 ) -> String {
     let (source_lines, inline_frames, source_files) = match sym_data {
         Some(data) => {
@@ -230,17 +239,19 @@ pub fn format_json_sym_only(
         inline_frames,
         source_files,
         warnings: warnings.to_vec(),
+        hints: hints.to_vec(),
     };
     serde_json::to_string_pretty(&output).expect("JSON serialization should not fail")
 }
 
 /// Format an error as JSON.
-pub fn format_json_error(message: &str) -> String {
+pub fn format_json_error(message: &str, hints: &[String]) -> String {
     let output = JsonError {
         error: JsonErrorDetail {
             code: "ERROR".to_string(),
             message: message.to_string(),
         },
+        hints: hints.to_vec(),
     };
     serde_json::to_string_pretty(&output).expect("JSON serialization should not fail")
 }
@@ -325,6 +336,7 @@ mod tests {
             &instructions,
             &DataSource::BinaryAndSym,
             &[],
+            &[],
         );
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
@@ -369,6 +381,7 @@ mod tests {
             &instructions,
             &DataSource::BinaryAndSym,
             &[],
+            &[],
         );
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
@@ -392,6 +405,7 @@ mod tests {
             &function,
             &instructions,
             &DataSource::BinaryAndSym,
+            &[],
             &[],
         );
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -439,6 +453,7 @@ mod tests {
             &instructions,
             &DataSource::BinaryOnly,
             &[],
+            &[],
         );
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
@@ -457,7 +472,8 @@ mod tests {
         let module = make_module_info();
         let function = make_function_info();
 
-        let json_str = format_json_sym_only(&module, &function, None, &DataSource::SymOnly, &[]);
+        let json_str =
+            format_json_sym_only(&module, &function, None, &DataSource::SymOnly, &[], &[]);
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         assert_eq!(v["source"], "sym");
@@ -508,6 +524,7 @@ mod tests {
             Some(&sym_data),
             &DataSource::SymOnly,
             &[],
+            &[],
         );
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
@@ -541,7 +558,7 @@ mod tests {
 
     #[test]
     fn test_json_error_format() {
-        let json_str = format_json_error("something went wrong");
+        let json_str = format_json_error("something went wrong", &[]);
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 
         assert_eq!(v["error"]["code"], "ERROR");

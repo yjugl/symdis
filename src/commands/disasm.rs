@@ -611,7 +611,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         match config.format {
             OutputFormat::Text => bail!("{msg}"),
             OutputFormat::Json => {
-                let output = json::format_json_error(&msg);
+                let output = json::format_json_error(&msg, &[]);
                 println!("{output}");
                 return Ok(());
             }
@@ -661,6 +661,32 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     }
 
     let mut warnings: Vec<String> = Vec::new();
+
+    // Generate hints when binary is not available
+    let hints = if binary_file.is_none() {
+        let is_linux = sym_file
+            .as_ref()
+            .map(|sym| sym.module.os.eq_ignore_ascii_case("linux"))
+            .unwrap_or_else(|| looks_like_elf(&debug_file, effective_code_id));
+        let sym_arch = sym_file.as_ref().map(|sym| sym.module.arch.as_str());
+        super::generate_binary_fetch_hints(&super::HintContext {
+            debug_file: &debug_file,
+            is_linux,
+            effective_code_id,
+            code_file_provided: code_file_resolved.is_some(),
+            code_id_provided: code_id_resolved.is_some(),
+            version_provided: version.is_some(),
+            channel_provided: channel.is_some(),
+            apt_enabled: apt.is_some(),
+            pacman_enabled: pacman.is_some(),
+            snap_provided: args.snap.is_some(),
+            product: &product,
+            is_socorro_mode: args.socorro_json.is_some(),
+            sym_arch,
+        })
+    } else {
+        Vec::new()
+    };
 
     // Disassemble if binary is available
     if let Some(ref bin) = binary_file {
@@ -737,6 +763,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                     &annotated,
                     &data_source,
                     &warnings,
+                    &hints,
                 );
                 print!("{output}");
             }
@@ -747,6 +774,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                     &annotated,
                     &data_source,
                     &warnings,
+                    &hints,
                 );
                 println!("{output}");
             }
@@ -767,6 +795,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                     sym_data.as_ref(),
                     &data_source,
                     &warnings,
+                    &hints,
                 );
                 print!("{output}");
             }
@@ -777,6 +806,7 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
                     sym_data.as_ref(),
                     &data_source,
                     &warnings,
+                    &hints,
                 );
                 println!("{output}");
             }
@@ -784,18 +814,21 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     } else {
         match config.format {
             OutputFormat::Text => {
-                bail!(
+                let mut msg = format!(
                     "neither symbol file nor binary available for {}/{}",
-                    debug_file,
-                    debug_id
+                    debug_file, debug_id
                 );
+                for h in &hints {
+                    msg.push_str(&format!("\nHINT: {h}"));
+                }
+                bail!("{msg}");
             }
             OutputFormat::Json => {
                 let msg = format!(
                     "neither symbol file nor binary available for {}/{}",
                     debug_file, debug_id
                 );
-                let output = json::format_json_error(&msg);
+                let output = json::format_json_error(&msg, &hints);
                 println!("{output}");
                 return Ok(());
             }

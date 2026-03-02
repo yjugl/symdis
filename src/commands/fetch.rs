@@ -382,12 +382,39 @@ pub async fn run(args: &FetchArgs, config: &Config) -> Result<()> {
         Err(_) => FileStatus::NotFound,
     };
 
+    // Generate hints when binary fetch failed
+    let hints = if matches!(bin_status, FileStatus::NotFound) {
+        let is_linux = sym_summary
+            .as_ref()
+            .map(|s| s.module.os.eq_ignore_ascii_case("linux"))
+            .unwrap_or_else(|| looks_like_elf(&args.debug_file, effective_code_id));
+        let sym_arch = sym_summary.as_ref().map(|s| s.module.arch.as_str());
+        super::generate_binary_fetch_hints(&super::HintContext {
+            debug_file: &args.debug_file,
+            is_linux,
+            effective_code_id,
+            code_file_provided: args.code_file.is_some(),
+            code_id_provided: args.code_id.is_some(),
+            version_provided: args.version.is_some(),
+            channel_provided: args.channel.is_some(),
+            apt_enabled: args.apt.is_some(),
+            pacman_enabled: args.pacman.is_some(),
+            snap_provided: args.snap.is_some(),
+            product: &args.product,
+            is_socorro_mode: false,
+            sym_arch,
+        })
+    } else {
+        Vec::new()
+    };
+
     let result = FetchResult {
         debug_file: args.debug_file.clone(),
         debug_id: args.debug_id.clone(),
         sym_status,
         bin_status,
         pdb_status,
+        hints,
     };
 
     match config.format {
@@ -458,6 +485,7 @@ struct FetchResult {
     sym_status: FileStatus,
     bin_status: FileStatus,
     pdb_status: PdbFileStatus,
+    hints: Vec<String>,
 }
 
 // --- Text formatting ---
@@ -513,6 +541,10 @@ fn format_fetch_text(result: &FetchResult) -> String {
         PdbFileStatus::Skipped => {}
     }
 
+    for h in &result.hints {
+        writeln!(out, "HINT: {h}").unwrap();
+    }
+
     out
 }
 
@@ -558,6 +590,8 @@ struct JsonFetchOutput {
     binary_file: Option<JsonFileStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pdb_file: Option<JsonPdbStatus>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    hints: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -614,6 +648,7 @@ fn format_fetch_json(result: &FetchResult) -> String {
         symbol_file: file_status_to_json(&result.sym_status),
         binary_file: file_status_to_json(&result.bin_status),
         pdb_file,
+        hints: result.hints.clone(),
     };
     serde_json::to_string_pretty(&output).expect("JSON serialization should not fail")
 }
@@ -641,6 +676,7 @@ mod tests {
                 FileStatus::NotFound
             },
             pdb_status: PdbFileStatus::Skipped,
+            hints: Vec::new(),
         }
     }
 
@@ -726,6 +762,7 @@ mod tests {
                 size: Some(1_500_000_000),
                 type_count: Some(535_967),
             },
+            hints: Vec::new(),
         };
         let output = format_fetch_text(&result);
         assert!(output.contains("Fetched: xul.pdb"));
@@ -750,6 +787,7 @@ mod tests {
                 size: Some(1_500_000_000),
                 type_count: Some(535_967),
             },
+            hints: Vec::new(),
         };
         let json_str = format_fetch_json(&result);
         let v: serde_json::Value = serde_json::from_str(&json_str).unwrap();
@@ -775,6 +813,7 @@ mod tests {
                 size: Some(2_097_152),
                 type_count: None,
             },
+            hints: Vec::new(),
         };
         let output = format_fetch_text(&result);
         assert!(output.contains("PDB file: ok (2.0 MB), no type info"));
@@ -789,6 +828,7 @@ mod tests {
             sym_status: FileStatus::Skipped,
             bin_status: FileStatus::NotFound,
             pdb_status: PdbFileStatus::NotFound,
+            hints: Vec::new(),
         };
         let output = format_fetch_text(&result);
         assert!(output.contains("PDB file: not found"));
