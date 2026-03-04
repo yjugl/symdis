@@ -40,7 +40,7 @@ pub fn demangle(name: &str) -> String {
 fn try_demangle(name: &str) -> Option<String> {
     // Try C++ (Itanium ABI) demangling first
     if let Ok(sym) = cpp_demangle::Symbol::new(name) {
-        if let Ok(demangled) = sym.demangle(&cpp_demangle::DemangleOptions::default()) {
+        if let Ok(demangled) = sym.demangle() {
             return Some(demangled);
         }
     }

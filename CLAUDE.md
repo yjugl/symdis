@@ -91,19 +91,19 @@ All commands are fully implemented and the project is ready for real-life testin
 
 ## Crate Version Constraints
 
-- **goblin 0.9** (not 0.10): `Export.rva` is `usize`, not `Option<usize>`
-- **capstone 0.13** (not 0.14): stable API
-- **reqwest 0.12** with `rustls-tls`
+- **goblin 0.9** (not 0.10): 0.10 requires Rust 2024 edition (MSRV 1.85) and restructures PE debug directories
+- **capstone 0.14** for disassembly engine bindings
+- **reqwest 0.13** with `rustls` (renamed from `rustls-tls` in 0.13)
 - **cab 0.6** for Microsoft CAB decompression
-- **liblzma 0.4** + **tar 0.4** for Linux `.tar.xz` archive extraction (liblzma replaces xz2 to avoid linking conflict with backhand)
-- **backhand 0.24** (`default-features = false`, features `xz`+`lzo`) for squashfs (snap) extraction
-- **zip 2** (`default-features = false`, feature `deflate`) for APK extraction (lzma disabled to avoid linking conflict with backhand)
-- **quick-xml 0.37** + **cpio_reader 0.1** for macOS `.pkg` (XAR/cpio) archive extraction
-- **cpp_demangle 0.4** + **rustc-demangle 0.1** for C++/Rust symbol demangling
+- **liblzma 0.4** + **tar 0.4** for Linux `.tar.xz` archive extraction
+- **backhand 0.25** (`default-features = false`, features `xz`+`lzo`) for squashfs (snap) extraction; uses pure-Rust lzma-rust2 internally (no native linking conflicts)
+- **zip 2** (`default-features = false`, feature `deflate`) for APK extraction
+- **quick-xml 0.39** + **cpio_reader 0.1** for macOS `.pkg` (XAR/cpio) archive extraction
+- **cpp_demangle 0.5** + **rustc-demangle 0.1** for C++/Rust symbol demangling
 - **toml 0.8** for TOML config file parsing
 - **tracing 0.1** + **tracing-subscriber 0.3** for structured logging
 - **pdb 0.8** for PDB file parsing (pure Rust, no native dependencies)
-- **msvc-demangler 0.10** for MSVC-decorated symbol demangling (`?Name@...`)
+- **msvc-demangler 0.11** for MSVC-decorated symbol demangling (`?Name@...`)
 - **zstd 0.13** for `.deb` `data.tar.zst` decompression (Ubuntu 22.04+ uses zstandard)
 - **edition = "2021"** (not 2024)
 

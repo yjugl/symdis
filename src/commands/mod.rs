@@ -1610,9 +1610,7 @@ pub fn generate_binary_fetch_hints(ctx: &HintContext) -> Vec<String> {
     // Rule G: version+channel provided but product is still "firefox" (default)
     // Could be a Thunderbird crash where the FTP archive URL is wrong.
     if ctx.version_provided && ctx.channel_provided && ctx.product == "firefox" {
-        hints.push(
-            "if this is a Thunderbird crash, add --product thunderbird".to_string(),
-        );
+        hints.push("if this is a Thunderbird crash, add --product thunderbird".to_string());
     }
 
     // Rule F: Linux module, no effective code_id
