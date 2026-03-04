@@ -78,6 +78,37 @@ const DISASM_AFTER_LONG_HELP: &str = r#"MANUAL FLAGS (FALLBACK):
   report, a stack trace, or individual module IDs), specify flags manually.
   This requires extracting the right values yourself.
 
+TERMINOLOGY:
+
+  module        A loaded executable or shared library in the crashed
+                process (e.g., xul.dll, libxul.so, ntdll.dll).
+
+  debug-file    The name associated with debug symbols for a module.
+                On Windows: the PDB filename (e.g., xul.pdb).
+                On Linux/macOS: same as the binary filename (e.g., libxul.so).
+
+  code-file     The actual binary filename of the module (e.g., xul.dll,
+                libxul.so). On Windows this differs from debug-file;
+                on Linux/macOS it is usually the same.
+
+  debug-id      33-character Breakpad debug identifier (hex string).
+                Uniquely identifies a specific build of a module's symbols.
+
+  code-id       Platform-specific binary identifier (hex string).
+                On Windows: PE timestamp+size (e.g., 68d1a3cd87be000).
+                On Linux: 40-char ELF build ID.
+                On macOS: 32-char UUID.
+
+  .sym file     Breakpad-format text symbol file containing function names,
+                source lines, and inline records. Hosted on Tecken.
+
+  Tecken        Mozilla's symbol server (symbols.mozilla.org). Hosts .sym
+                files for Mozilla modules and many third-party modules.
+
+  offset        Byte offset of an instruction from the module's load base
+                address. Called "module_offset" in Socorro crash reports.
+                Also known as RVA (Relative Virtual Address) on Windows.
+
 SYMBOL COVERAGE — NOT LIMITED TO MOZILLA MODULES:
 
   symdis supports Windows (PE), Linux (ELF), macOS (Mach-O), and Android
