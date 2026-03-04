@@ -109,11 +109,11 @@ fn annotate_call_targets(
         // (e.g., "memcpy") whereas sym resolution of PLT stub addresses yields
         // generic section names (e.g., "<.plt ELF section in libxul.so>").
         if let Some(target) = insn.instruction.call_target {
-            if let Some(binary) = binary {
-                if let Some((dll, name)) = binary.resolve_import(target) {
-                    insn.call_target_name = Some(format_import(&dll, &name));
-                    continue;
-                }
+            if let Some(binary) = binary
+                && let Some((dll, name)) = binary.resolve_import(target)
+            {
+                insn.call_target_name = Some(format_import(&dll, &name));
+                continue;
             }
             if let Some(info) = sym.resolve_address(target) {
                 insn.call_target_name = Some(info.name);
@@ -125,20 +125,19 @@ fn annotate_call_targets(
         if insn.instruction.is_indirect_call {
             if let Some(slot_rva) = insn.instruction.indirect_mem_addr {
                 // 1. Try IAT import resolution
-                if let Some(binary) = binary {
-                    if let Some((dll, name)) = binary.resolve_import(slot_rva) {
-                        insn.call_target_name = Some(format_import(&dll, &name));
-                        continue;
-                    }
+                if let Some(binary) = binary
+                    && let Some((dll, name)) = binary.resolve_import(slot_rva)
+                {
+                    insn.call_target_name = Some(format_import(&dll, &name));
+                    continue;
                 }
                 // 2. Try reading the on-disk pointer and resolving as an intra-module target
-                if let Some(binary) = binary {
-                    if let Some(target_rva) = binary.read_pointer_at_rva(slot_rva) {
-                        if let Some(info) = sym.resolve_address(target_rva) {
-                            insn.call_target_name = Some(info.name);
-                            continue;
-                        }
-                    }
+                if let Some(binary) = binary
+                    && let Some(target_rva) = binary.read_pointer_at_rva(slot_rva)
+                    && let Some(info) = sym.resolve_address(target_rva)
+                {
+                    insn.call_target_name = Some(info.name);
+                    continue;
                 }
             }
             // Fall through: mark as [indirect]
@@ -459,11 +458,7 @@ PUBLIC 3000 0 _PublicSymbol
                 &[]
             }
             fn read_pointer_at_rva(&self, rva: u64) -> Option<u64> {
-                if rva == 0x9000 {
-                    Some(0x2000)
-                } else {
-                    None
-                }
+                if rva == 0x9000 { Some(0x2000) } else { None }
             }
         }
 

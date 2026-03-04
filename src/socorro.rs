@@ -141,7 +141,9 @@ fn resolve_from_report(
         // Module override: look up directly from modules list, skip frame lookup entirely.
         // The crash frame offset belongs to the frame's module, not the override.
         let m = find_module_in_list(modules, override_name).with_context(|| {
-            format!("module '{override_name}' not found in json_dump.modules (checked debug_file field)")
+            format!(
+                "module '{override_name}' not found in json_dump.modules (checked debug_file field)"
+            )
         })?;
         (m, None)
     } else {

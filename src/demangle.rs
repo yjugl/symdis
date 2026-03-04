@@ -23,10 +23,10 @@ pub fn demangle(name: &str) -> String {
     // Check for linker thunk prefixes wrapping a mangled name
     for prefix in THUNK_PREFIXES {
         if let Some(inner) = name.strip_prefix(prefix) {
-            if !inner.is_empty() {
-                if let Some(demangled) = try_demangle(inner) {
-                    return format!("{prefix}{demangled}");
-                }
+            if !inner.is_empty()
+                && let Some(demangled) = try_demangle(inner)
+            {
+                return format!("{prefix}{demangled}");
             }
             break;
         }
@@ -39,10 +39,10 @@ pub fn demangle(name: &str) -> String {
 /// Returns `None` if the name is not recognized as mangled.
 fn try_demangle(name: &str) -> Option<String> {
     // Try C++ (Itanium ABI) demangling first
-    if let Ok(sym) = cpp_demangle::Symbol::new(name) {
-        if let Ok(demangled) = sym.demangle() {
-            return Some(demangled);
-        }
+    if let Ok(sym) = cpp_demangle::Symbol::new(name)
+        && let Ok(demangled) = sym.demangle()
+    {
+        return Some(demangled);
     }
 
     // Try Rust demangling
@@ -51,11 +51,10 @@ fn try_demangle(name: &str) -> Option<String> {
     }
 
     // Try MSVC demangling (symbols start with '?')
-    if name.starts_with('?') {
-        if let Ok(demangled) = msvc_demangler::demangle(name, msvc_demangler::DemangleFlags::llvm())
-        {
-            return Some(demangled);
-        }
+    if name.starts_with('?')
+        && let Ok(demangled) = msvc_demangler::demangle(name, msvc_demangler::DemangleFlags::llvm())
+    {
+        return Some(demangled);
     }
 
     None

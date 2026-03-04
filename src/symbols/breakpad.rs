@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::io::BufRead;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 /// Parsed Breakpad .sym file.
 pub struct SymFile {
@@ -176,12 +176,12 @@ impl SymFile {
                 // Skip other INFO records
             } else if current_func.is_some() {
                 // This should be a line record (no prefix, part of current FUNC)
-                if let Some(ref mut func) = current_func {
-                    if let Ok(lr) = parse_line_record(line) {
-                        func.lines.push(lr);
-                    }
-                    // Silently skip unparseable lines within a function
+                if let Some(ref mut func) = current_func
+                    && let Ok(lr) = parse_line_record(line)
+                {
+                    func.lines.push(lr);
                 }
+                // Silently skip unparseable lines within a function
             }
         }
 

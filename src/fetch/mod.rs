@@ -12,7 +12,7 @@ pub mod tecken;
 
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use reqwest::Client;
 use tracing::{debug, info, warn};
 

@@ -4,7 +4,7 @@
 
 use std::io::Read;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use reqwest::Client;
 use tracing::{debug, info};
 
@@ -474,10 +474,10 @@ fn find_packages_by_name<'a>(data: &'a [u8], name: &str) -> Vec<(&'a str, &'a st
 
     let mut results = Vec::new();
     for stanza in PackagesIter::new(text) {
-        if stanza.package == Some(name) {
-            if let Some(filename) = stanza.filename {
-                results.push((stanza.package.unwrap(), filename));
-            }
+        if stanza.package == Some(name)
+            && let Some(filename) = stanza.filename
+        {
+            results.push((stanza.package.unwrap(), filename));
         }
     }
     results
@@ -504,10 +504,8 @@ fn find_packages_by_source<'a>(data: &'a [u8], source_name: &str) -> Vec<(&'a st
             false
         };
 
-        if matches {
-            if let (Some(pkg), Some(filename)) = (stanza.package, stanza.filename) {
-                results.push((pkg, filename));
-            }
+        if matches && let (Some(pkg), Some(filename)) = (stanza.package, stanza.filename) {
+            results.push((pkg, filename));
         }
     }
     results
@@ -757,17 +755,17 @@ pub(crate) fn extract_from_tar(tar_data: &[u8], target_name: &str) -> Result<Vec
                 entry.read_to_end(&mut buf).context("reading tar entry")?;
                 return Ok(buf);
             }
-            if entry_type == tar::EntryType::Symlink || entry_type == tar::EntryType::Link {
-                if let Ok(Some(link)) = entry.link_name() {
-                    let link_name = link
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("")
-                        .to_string();
-                    if !link_name.is_empty() {
-                        debug!("'{}' is a symlink to '{}'", target_name, link_name);
-                        symlink_target = Some(link_name);
-                    }
+            if (entry_type == tar::EntryType::Symlink || entry_type == tar::EntryType::Link)
+                && let Ok(Some(link)) = entry.link_name()
+            {
+                let link_name = link
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !link_name.is_empty() {
+                    debug!("'{}' is a symlink to '{}'", target_name, link_name);
+                    symlink_target = Some(link_name);
                 }
             }
         }
@@ -1139,16 +1137,18 @@ Filename: pool/main/m/mesa/mesa-common-dev_24.0.5-1_amd64.deb
     fn test_find_ar_member_bad_magic() {
         let result = find_ar_member(b"not an ar archive", "data.tar");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("not an ar archive"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not an ar archive")
+        );
     }
 
     #[test]
     fn test_decompress_deb_data_gzip() {
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
         use std::io::Write;
 
         let original = b"test tar data content";

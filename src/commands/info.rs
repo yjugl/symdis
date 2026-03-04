@@ -695,7 +695,9 @@ mod tests {
             type_count: None,
         };
         let output = format_info_text(&info);
-        assert!(output.contains("PDB file: available (2.0 MB, no type info (stripped/public PDB))"));
+        assert!(
+            output.contains("PDB file: available (2.0 MB, no type info (stripped/public PDB))")
+        );
     }
 
     #[test]

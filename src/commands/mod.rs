@@ -9,7 +9,7 @@ pub mod field_layout;
 pub mod info;
 pub mod lookup;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::{Parser, Subcommand, ValueEnum};
 
 use crate::config::Config;

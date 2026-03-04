@@ -5,7 +5,7 @@
 use std::fmt::Write;
 use std::io::BufReader;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use super::LookupArgs;

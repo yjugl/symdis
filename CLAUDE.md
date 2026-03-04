@@ -91,7 +91,7 @@ All commands are fully implemented and the project is ready for real-life testin
 
 ## Crate Version Constraints
 
-- **goblin 0.9** (not 0.10): 0.10 requires Rust 2024 edition (MSRV 1.85) and restructures PE debug directories
+- **goblin 0.10** for PE/ELF/Mach-O parsing
 - **capstone 0.14** for disassembly engine bindings
 - **reqwest 0.13** with `rustls` (renamed from `rustls-tls` in 0.13)
 - **cab 0.6** for Microsoft CAB decompression
@@ -105,5 +105,5 @@ All commands are fully implemented and the project is ready for real-life testin
 - **pdb 0.8** for PDB file parsing (pure Rust, no native dependencies)
 - **msvc-demangler 0.11** for MSVC-decorated symbol demangling (`?Name@...`)
 - **zstd 0.13** for `.deb` `data.tar.zst` decompression (Ubuntu 22.04+ uses zstandard)
-- **edition = "2021"** (not 2024)
+- **edition = "2024"** (MSRV 1.85)
 

@@ -1,7 +1,7 @@
 [package]
 name = "symdis"
 version = "0.3.0"
-edition = "2021"
+edition = "2024"
 license = "MPL-2.0"
 description = "Symbolic disassembler for Mozilla crash report analysis"
 repository = "https://github.com/yjugl/symdis"
@@ -18,7 +18,7 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 reqwest = { version = "0.13", default-features = false, features = ["gzip", "rustls", "json"] }
-goblin = "0.9"
+goblin = "0.10"
 capstone = "0.14"
 cab = "0.6"
 dirs = "6.0"

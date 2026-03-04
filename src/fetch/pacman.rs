@@ -4,7 +4,7 @@
 
 use std::io::Read;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use reqwest::Client;
 use tracing::{debug, info};
 
@@ -407,10 +407,11 @@ fn find_package_by_provides<'a>(packages: &'a [PkgDesc], code_file: &str) -> Opt
 
     for pkg in packages {
         for prov in &pkg.provides {
-            if let Some((prov_soname, prov_soversion)) = parse_provides_entry(prov) {
-                if prov_soname == bin_soname && prov_soversion == bin_soversion {
-                    return Some(pkg);
-                }
+            if let Some((prov_soname, prov_soversion)) = parse_provides_entry(prov)
+                && prov_soname == bin_soname
+                && prov_soversion == bin_soversion
+            {
+                return Some(pkg);
             }
         }
     }

@@ -4,7 +4,7 @@
 
 use std::io::Read;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use reqwest::Client;
 use tracing::{debug, info};
 
@@ -94,7 +94,9 @@ pub fn resolve_product_platform(
             Ok(Some(("fenix".to_string(), format!("android-{abi}"))))
         }
         _ if is_android => {
-            bail!("product '{product}' is not available for Android (use --product fenix or --product focus)")
+            bail!(
+                "product '{product}' is not available for Android (use --product fenix or --product focus)"
+            )
         }
         _ => match ftp_platform(os, arch) {
             Some(platform) => Ok(Some((product.to_string(), platform.to_string()))),
@@ -469,7 +471,7 @@ fn decode_pbzx(data: &[u8]) -> Result<Vec<u8>> {
     }
 
     let mut pos = 4; // skip "pbzx"
-                     // Skip the flags/chunk-size u64
+    // Skip the flags/chunk-size u64
     pos += 8;
 
     let mut output = Vec::new();
@@ -536,8 +538,8 @@ fn decode_pbzx(data: &[u8]) -> Result<Vec<u8>> {
 /// Returns all Payloads found (distribution PKGs may have multiple component
 /// packages, each with its own Payload). They are returned in document order.
 fn parse_xar_toc_for_payloads(toc_xml: &[u8]) -> Result<Vec<(usize, usize)>> {
-    use quick_xml::events::Event;
     use quick_xml::Reader;
+    use quick_xml::events::Event;
 
     #[derive(Default)]
     struct FileContext {
@@ -586,14 +588,12 @@ fn parse_xar_toc_for_payloads(toc_xml: &[u8]) -> Result<Vec<(usize, usize)>> {
                 }
 
                 // On </file>, check if this was a Payload file
-                if tag == "file" {
-                    if let Some(ctx) = file_stack.pop() {
-                        if ctx.name.as_deref() == Some("Payload") {
-                            if let (Some(off), Some(len)) = (ctx.data_offset, ctx.data_length) {
-                                payloads.push((off, len));
-                            }
-                        }
-                    }
+                if tag == "file"
+                    && let Some(ctx) = file_stack.pop()
+                    && ctx.name.as_deref() == Some("Payload")
+                    && let (Some(off), Some(len)) = (ctx.data_offset, ctx.data_length)
+                {
+                    payloads.push((off, len));
                 }
 
                 path.pop();
@@ -1216,7 +1216,7 @@ mod tests {
         note.extend_from_slice(&20u32.to_le_bytes()); // descsz
         note.extend_from_slice(&3u32.to_le_bytes()); // type = NT_GNU_BUILD_ID
         note.extend_from_slice(b"GNU\0"); // name
-                                          // 20 bytes of build ID
+        // 20 bytes of build ID
         let build_id_bytes: [u8; 20] = [
             0xe6, 0x15, 0x48, 0xbb, 0x7e, 0x61, 0xdf, 0xba, 0xe0, 0x4c, 0x82, 0x88, 0xdc, 0x78,
             0xc2, 0xbe, 0xcb, 0x85, 0xc9, 0x00,
@@ -1310,10 +1310,12 @@ mod tests {
         let mut data = vec![0u8; 100];
         data[0..4].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]);
         let result = extract_from_pkg(&data, "test");
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("not a XAR archive"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not a XAR archive")
+        );
     }
 
     #[test]
@@ -1501,10 +1503,12 @@ mod tests {
 </xar>"#;
         let result = parse_xar_toc_for_payloads(toc);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Payload not found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Payload not found")
+        );
     }
 
     #[test]
@@ -1517,8 +1521,8 @@ mod tests {
     #[test]
     fn test_decompress_payload_gzip() {
         // Create a gzip-compressed payload
-        use flate2::write::GzEncoder;
         use flate2::Compression;
+        use flate2::write::GzEncoder;
         use std::io::Write;
 
         let original = b"test data for gzip compression";
@@ -1786,10 +1790,12 @@ mod tests {
     fn test_resolve_product_platform_thunderbird_android() {
         let result = resolve_product_platform("thunderbird", "Android", "arm64");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("not available for Android"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("not available for Android")
+        );
     }
 
     #[test]
@@ -1988,7 +1994,7 @@ mod tests {
         buf.extend_from_slice(&1u32.to_le_bytes()); // e_version
         buf.extend_from_slice(&0u64.to_le_bytes()); // e_entry
         buf.extend_from_slice(&0u64.to_le_bytes()); // e_phoff
-                                                    // e_shoff: section headers at end (we'll fill this in)
+        // e_shoff: section headers at end (we'll fill this in)
         let shoff_pos = buf.len();
         buf.extend_from_slice(&0u64.to_le_bytes()); // placeholder
         buf.extend_from_slice(&0u32.to_le_bytes()); // e_flags

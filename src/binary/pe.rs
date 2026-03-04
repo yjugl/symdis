@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use goblin::pe::PE;
 
 use super::{BinaryFile, CpuArch};
@@ -91,7 +91,7 @@ impl PeFile {
             pdata_entries.sort_unstable_by_key(|&(begin, _)| begin);
         }
 
-        let image_base = pe.image_base as u64;
+        let image_base = pe.image_base;
 
         Ok(Self {
             data,

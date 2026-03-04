@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 /// Convert a Linux ELF build ID to a standard Breakpad debug ID (33 chars).
 ///

@@ -142,7 +142,9 @@ impl Disassembler {
                     let extended = idx + 201; // target + 200 trailing context
                     info!(
                         "auto-extending instruction limit from {} to {} to include highlight offset at instruction #{}",
-                        max_instructions, extended.min(total_count), idx + 1
+                        max_instructions,
+                        extended.min(total_count),
+                        idx + 1
                     );
                     extended
                 } else {
@@ -380,13 +382,12 @@ fn resolve_aarch64_indirect(instructions: &mut [Instruction]) {
         let scan_start = i.saturating_sub(10);
         let mut ldr_result = None;
         for j in (scan_start..i).rev() {
-            if instructions[j].mnemonic == "ldr" {
-                if let Some((dest, base, offset)) = parse_ldr_operands(&instructions[j].operands) {
-                    if dest == blr_reg {
-                        ldr_result = Some((j, base, offset));
-                        break;
-                    }
-                }
+            if instructions[j].mnemonic == "ldr"
+                && let Some((dest, base, offset)) = parse_ldr_operands(&instructions[j].operands)
+                && dest == blr_reg
+            {
+                ldr_result = Some((j, base, offset));
+                break;
             }
             if writes_to_xreg(
                 &instructions[j].mnemonic,
@@ -405,13 +406,12 @@ fn resolve_aarch64_indirect(instructions: &mut [Instruction]) {
         let scan_start2 = ldr_idx.saturating_sub(10);
         let mut adrp_page = None;
         for j in (scan_start2..ldr_idx).rev() {
-            if instructions[j].mnemonic == "adrp" {
-                if let Some((dest, page)) = parse_adrp_operands(&instructions[j].operands) {
-                    if dest == ldr_base {
-                        adrp_page = Some(page);
-                        break;
-                    }
-                }
+            if instructions[j].mnemonic == "adrp"
+                && let Some((dest, page)) = parse_adrp_operands(&instructions[j].operands)
+                && dest == ldr_base
+            {
+                adrp_page = Some(page);
+                break;
             }
             if writes_to_xreg(
                 &instructions[j].mnemonic,

@@ -4,7 +4,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use reqwest::Client;
 use tracing::{debug, info};
 
@@ -179,10 +179,10 @@ pub fn extract_from_squashfs(snap_path: &Path, target_filename: &str) -> Result<
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
-            if filename == real_name {
-                if let InnerNode::File(file_data) = &node.inner {
-                    return read_squashfs_file(&fs, file_data, real_name);
-                }
+            if filename == real_name
+                && let InnerNode::File(file_data) = &node.inner
+            {
+                return read_squashfs_file(&fs, file_data, real_name);
             }
         }
     }

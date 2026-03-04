@@ -4,7 +4,7 @@
 
 use std::fmt::Write;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::Serialize;
 
 use super::FieldLayoutArgs;
@@ -174,22 +174,23 @@ fn format_text(
     }
 
     // If offset was queried but no match found
-    if let Some(q) = query_offset {
-        if find_field_at_offset(layout, q).is_none() && find_base_at_offset(layout, q).is_none() {
-            if q >= layout.size {
-                writeln!(
-                    out,
-                    ";\n; WARNING: offset 0x{q:X} is beyond the type size (0x{:X})",
-                    layout.size
-                )
-                .unwrap();
-            } else {
-                writeln!(
-                    out,
-                    ";\n; WARNING: offset 0x{q:X} falls in padding (no field at this offset)"
-                )
-                .unwrap();
-            }
+    if let Some(q) = query_offset
+        && find_field_at_offset(layout, q).is_none()
+        && find_base_at_offset(layout, q).is_none()
+    {
+        if q >= layout.size {
+            writeln!(
+                out,
+                ";\n; WARNING: offset 0x{q:X} is beyond the type size (0x{:X})",
+                layout.size
+            )
+            .unwrap();
+        } else {
+            writeln!(
+                out,
+                ";\n; WARNING: offset 0x{q:X} falls in padding (no field at this offset)"
+            )
+            .unwrap();
         }
     }
 

@@ -5,11 +5,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
+use goblin::elf::Elf;
 use goblin::elf::program_header::PT_LOAD;
 use goblin::elf::reloc;
 use goblin::elf::sym::{STT_FUNC, STT_GNU_IFUNC, STT_NOTYPE};
-use goblin::elf::Elf;
 
 use super::{BinaryFile, CpuArch};
 
@@ -72,26 +72,28 @@ impl ElfFile {
         // .dynsym — defined (non-import) function symbols
         for sym in elf.dynsyms.iter() {
             let ty = sym.st_type();
-            if (ty == STT_FUNC || ty == STT_GNU_IFUNC) && sym.st_value != 0 && !sym.is_import() {
-                if let Some(name) = elf.dynstrtab.get_at(sym.st_name) {
-                    if !name.is_empty() {
-                        exports_map.insert(sym.st_value, name.to_string());
-                    }
-                }
+            if (ty == STT_FUNC || ty == STT_GNU_IFUNC)
+                && sym.st_value != 0
+                && !sym.is_import()
+                && let Some(name) = elf.dynstrtab.get_at(sym.st_name)
+                && !name.is_empty()
+            {
+                exports_map.insert(sym.st_value, name.to_string());
             }
         }
 
         // .symtab — defined function symbols (may not exist in stripped binaries)
         for sym in elf.syms.iter() {
             let ty = sym.st_type();
-            if (ty == STT_FUNC || ty == STT_GNU_IFUNC) && sym.st_value != 0 && !sym.is_import() {
-                if let Some(name) = elf.strtab.get_at(sym.st_name) {
-                    if !name.is_empty() {
-                        exports_map
-                            .entry(sym.st_value)
-                            .or_insert_with(|| name.to_string());
-                    }
-                }
+            if (ty == STT_FUNC || ty == STT_GNU_IFUNC)
+                && sym.st_value != 0
+                && !sym.is_import()
+                && let Some(name) = elf.strtab.get_at(sym.st_name)
+                && !name.is_empty()
+            {
+                exports_map
+                    .entry(sym.st_value)
+                    .or_insert_with(|| name.to_string());
             }
         }
 
@@ -239,12 +241,11 @@ fn build_plt_imports(elf: &Elf, arch: CpuArch) -> HashMap<u64, (String, String)>
 
     // Helper: insert an import for a pltreloc entry
     let mut insert_import = |addr: u64, reloc: &goblin::elf::reloc::Reloc| {
-        if let Some(sym) = elf.dynsyms.get(reloc.r_sym) {
-            if let Some(name) = elf.dynstrtab.get_at(sym.st_name) {
-                if !name.is_empty() {
-                    map.insert(addr, (String::new(), name.to_string()));
-                }
-            }
+        if let Some(sym) = elf.dynsyms.get(reloc.r_sym)
+            && let Some(name) = elf.dynstrtab.get_at(sym.st_name)
+            && !name.is_empty()
+        {
+            map.insert(addr, (String::new(), name.to_string()));
         }
     };
 
@@ -303,12 +304,11 @@ fn build_got_imports(elf: &Elf, arch: CpuArch, imports_map: &mut HashMap<u64, (S
         if imports_map.contains_key(&got_va) {
             continue;
         }
-        if let Some(sym) = elf.dynsyms.get(reloc.r_sym) {
-            if let Some(name) = elf.dynstrtab.get_at(sym.st_name) {
-                if !name.is_empty() {
-                    imports_map.insert(got_va, (String::new(), name.to_string()));
-                }
-            }
+        if let Some(sym) = elf.dynsyms.get(reloc.r_sym)
+            && let Some(name) = elf.dynstrtab.get_at(sym.st_name)
+            && !name.is_empty()
+        {
+            imports_map.insert(got_va, (String::new(), name.to_string()));
         }
     }
 }
@@ -370,11 +370,7 @@ impl BinaryFile for ElfFile {
         };
         // ELF pointers are absolute VAs (same address space as our RVAs),
         // so no base subtraction needed. Filter out zero (unresolved relocations).
-        if value == 0 {
-            None
-        } else {
-            Some(value)
-        }
+        if value == 0 { None } else { Some(value) }
     }
 
     fn is_thumb(&self, rva: u64) -> bool {

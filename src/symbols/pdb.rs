@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use pdb::FallibleIterator;
 
 use super::breakpad::{FuncRecord, InlineRecord, LineRecord, ModuleRecord, PublicRecord, SymFile};
@@ -72,10 +72,10 @@ fn extract_inline_ranges(
             }
             pdb::BinaryAnnotation::ChangeCodeLength(length) => {
                 // Update previous record's length if not explicitly set
-                if let Some(last) = emissions.last_mut() {
-                    if last.length.is_none() {
-                        last.length = Some(length);
-                    }
+                if let Some(last) = emissions.last_mut()
+                    && last.length.is_none()
+                {
+                    last.length = Some(length);
                 }
                 code_offset.offset = code_offset.offset.wrapping_add(length);
             }
@@ -100,10 +100,10 @@ fn extract_inline_ranges(
                 }
             }
         };
-        if length > 0 {
-            if let Some(rva) = emissions[i].offset.to_rva(address_map) {
-                ranges.push((u64::from(rva.0), u64::from(length)));
-            }
+        if length > 0
+            && let Some(rva) = emissions[i].offset.to_rva(address_map)
+        {
+            ranges.push((u64::from(rva.0), u64::from(length)));
         }
     }
 
@@ -295,14 +295,14 @@ pub fn parse_pdb(path: &Path, debug_file: &str, debug_id: &str) -> Result<SymFil
         let global_symbols = pdb.global_symbols().context("reading PDB global symbols")?;
         let mut iter = global_symbols.iter();
         while let Some(symbol) = iter.next().context("iterating global symbols")? {
-            if let Ok(pdb::SymbolData::Public(data)) = symbol.parse() {
-                if let Some(rva) = data.offset.to_rva(&address_map) {
-                    publics.push(PublicRecord {
-                        address: u64::from(rva.0),
-                        param_size: 0,
-                        name: data.name.to_string().into_owned(),
-                    });
-                }
+            if let Ok(pdb::SymbolData::Public(data)) = symbol.parse()
+                && let Some(rva) = data.offset.to_rva(&address_map)
+            {
+                publics.push(PublicRecord {
+                    address: u64::from(rva.0),
+                    param_size: 0,
+                    name: data.name.to_string().into_owned(),
+                });
             }
         }
     }

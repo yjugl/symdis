@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use pdb::FallibleIterator;
 
 /// Information about a bitfield member.
@@ -211,10 +211,10 @@ fn resolve_type_size(
             if class.size == 0 && class.properties.forward_reference() {
                 // Follow forward reference to real definition
                 let name = class.name.to_string().into_owned();
-                if let Some(&real_idx) = fwd_map.get(&name) {
-                    if real_idx != index {
-                        return resolve_type_size(type_finder, fwd_map, real_idx);
-                    }
+                if let Some(&real_idx) = fwd_map.get(&name)
+                    && real_idx != index
+                {
+                    return resolve_type_size(type_finder, fwd_map, real_idx);
                 }
             }
             Some(class.size)
@@ -222,10 +222,10 @@ fn resolve_type_size(
         pdb::TypeData::Union(union) => {
             if union.size == 0 && union.properties.forward_reference() {
                 let name = union.name.to_string().into_owned();
-                if let Some(&real_idx) = fwd_map.get(&name) {
-                    if real_idx != index {
-                        return resolve_type_size(type_finder, fwd_map, real_idx);
-                    }
+                if let Some(&real_idx) = fwd_map.get(&name)
+                    && real_idx != index
+                {
+                    return resolve_type_size(type_finder, fwd_map, real_idx);
                 }
             }
             Some(union.size)
@@ -351,19 +351,19 @@ fn resolve_member_type(
     fwd_map: &FwdMap,
     index: pdb::TypeIndex,
 ) -> (String, u64, Option<BitfieldInfo>) {
-    if let Ok(item) = type_finder.find(index) {
-        if let Ok(pdb::TypeData::Bitfield(bf)) = item.parse() {
-            let type_name = resolve_type_name(type_finder, bf.underlying_type);
-            let size = resolve_type_size(type_finder, fwd_map, bf.underlying_type).unwrap_or(0);
-            return (
-                type_name,
-                size,
-                Some(BitfieldInfo {
-                    bit_position: bf.position,
-                    bit_length: bf.length,
-                }),
-            );
-        }
+    if let Ok(item) = type_finder.find(index)
+        && let Ok(pdb::TypeData::Bitfield(bf)) = item.parse()
+    {
+        let type_name = resolve_type_name(type_finder, bf.underlying_type);
+        let size = resolve_type_size(type_finder, fwd_map, bf.underlying_type).unwrap_or(0);
+        return (
+            type_name,
+            size,
+            Some(BitfieldInfo {
+                bit_position: bf.position,
+                bit_length: bf.length,
+            }),
+        );
     }
 
     let type_name = resolve_type_name(type_finder, index);

@@ -4,7 +4,7 @@
 
 use std::io::BufReader;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use tracing::warn;
 
 use super::DisasmArgs;
@@ -651,13 +651,12 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
 
     // Verify binary identity — discard the binary on mismatch to avoid
     // showing disassembly from a different build.
-    if let Some(ref bin) = binary_file {
-        if let Some(msg) =
+    if let Some(ref bin) = binary_file
+        && let Some(msg) =
             check_binary_identity(bin.as_ref(), code_id_resolved.as_deref(), &debug_id)
-        {
-            warn!("{msg}");
-            binary_file = None;
-        }
+    {
+        warn!("{msg}");
+        binary_file = None;
     }
 
     let mut warnings: Vec<String> = Vec::new();
@@ -727,16 +726,16 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
         // Demangle call target names and inline frame names
         if demangle_enabled {
             for insn in &mut annotated {
-                if let Some(ref name) = insn.call_target_name {
-                    if !name.starts_with('[') {
-                        // Handle "dll!symbol" format (PE/Mach-O imports):
-                        // split on '!', demangle the symbol part, reconstruct.
-                        if let Some((dll, sym)) = name.split_once('!') {
-                            let demangled = maybe_demangle(sym, true);
-                            insn.call_target_name = Some(format!("{dll}!{demangled}"));
-                        } else {
-                            insn.call_target_name = Some(maybe_demangle(name, true));
-                        }
+                if let Some(ref name) = insn.call_target_name
+                    && !name.starts_with('[')
+                {
+                    // Handle "dll!symbol" format (PE/Mach-O imports):
+                    // split on '!', demangle the symbol part, reconstruct.
+                    if let Some((dll, sym)) = name.split_once('!') {
+                        let demangled = maybe_demangle(sym, true);
+                        insn.call_target_name = Some(format!("{dll}!{demangled}"));
+                    } else {
+                        insn.call_target_name = Some(maybe_demangle(name, true));
                     }
                 }
                 for frame in &mut insn.inline_frames {
@@ -907,10 +906,10 @@ fn load_binary(
 /// Determine the CPU architecture from available sources.
 fn determine_arch(sym_file: &Option<SymFile>, binary: Option<&dyn BinaryFile>) -> Result<CpuArch> {
     // Try sym file first
-    if let Some(sym) = sym_file {
-        if let Some(arch) = CpuArch::from_sym_arch(&sym.module.arch) {
-            return Ok(arch);
-        }
+    if let Some(sym) = sym_file
+        && let Some(arch) = CpuArch::from_sym_arch(&sym.module.arch)
+    {
+        return Ok(arch);
     }
 
     // Try binary file
@@ -1175,10 +1174,10 @@ fn resolve_public_size(
     binary: Option<&dyn BinaryFile>,
 ) -> u64 {
     // Prefer exact bounds from PE .pdata section
-    if let Some(bin) = binary {
-        if let Some((begin, end)) = bin.function_bounds(addr) {
-            return end - begin;
-        }
+    if let Some(bin) = binary
+        && let Some((begin, end)) = bin.function_bounds(addr)
+    {
+        return end - begin;
     }
     // Fall back to estimation from next PUBLIC symbol
     estimate_public_size(publics, addr)
@@ -1316,11 +1315,7 @@ mod tests {
                 return None;
             }
             let (begin, end) = self.pdata[idx - 1];
-            if rva < end {
-                Some((begin, end))
-            } else {
-                None
-            }
+            if rva < end { Some((begin, end)) } else { None }
         }
     }
 

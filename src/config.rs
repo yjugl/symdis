@@ -121,14 +121,14 @@ impl Config {
         // --- Layer 2: config file ---
         let config_path = config_file_path_override().or_else(config_file_path_default);
 
-        if let Some(path) = config_path {
-            if path.exists() {
-                let contents = std::fs::read_to_string(&path)
-                    .with_context(|| format!("reading config file: {}", path.display()))?;
-                let file: ConfigFile = toml::from_str(&contents)
-                    .with_context(|| format!("parsing config file: {}", path.display()))?;
-                apply_config_file(&mut config, &file);
-            }
+        if let Some(path) = config_path
+            && path.exists()
+        {
+            let contents = std::fs::read_to_string(&path)
+                .with_context(|| format!("reading config file: {}", path.display()))?;
+            let file: ConfigFile = toml::from_str(&contents)
+                .with_context(|| format!("parsing config file: {}", path.display()))?;
+            apply_config_file(&mut config, &file);
         }
 
         // --- Layer 3: environment variables ---
@@ -176,13 +176,13 @@ fn apply_config_file(config: &mut Config, file: &ConfigFile) {
             config.max_instructions = max;
         }
     }
-    if let Some(ref output) = file.output {
-        if let Some(ref fmt) = output.format {
-            match fmt.to_ascii_lowercase().as_str() {
-                "text" => config.format = OutputFormat::Text,
-                "json" => config.format = OutputFormat::Json,
-                _ => {}
-            }
+    if let Some(ref output) = file.output
+        && let Some(ref fmt) = output.format
+    {
+        match fmt.to_ascii_lowercase().as_str() {
+            "text" => config.format = OutputFormat::Text,
+            "json" => config.format = OutputFormat::Json,
+            _ => {}
         }
     }
     if let Some(ref network) = file.network {
@@ -225,10 +225,10 @@ fn apply_env_vars(config: &mut Config) {
         }
     }
 
-    if let Ok(val) = std::env::var("SYMDIS_CACHE_DIR") {
-        if !val.is_empty() {
-            config.cache_dir = PathBuf::from(val);
-        }
+    if let Ok(val) = std::env::var("SYMDIS_CACHE_DIR")
+        && !val.is_empty()
+    {
+        config.cache_dir = PathBuf::from(val);
     }
 }
 
@@ -278,10 +278,10 @@ fn config_file_path_default() -> Option<PathBuf> {
 /// Called when no explicit cache_dir was set by config file, env var, or CLI.
 fn resolve_cache_dir() -> Result<PathBuf> {
     // Check _NT_SYMBOL_PATH on Windows
-    if let Ok(sym_path) = std::env::var("_NT_SYMBOL_PATH") {
-        if let Some(cache_dir) = parse_nt_symbol_path(&sym_path) {
-            return Ok(cache_dir);
-        }
+    if let Ok(sym_path) = std::env::var("_NT_SYMBOL_PATH")
+        && let Some(cache_dir) = parse_nt_symbol_path(&sym_path)
+    {
+        return Ok(cache_dir);
     }
 
     // Platform default

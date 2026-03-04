@@ -5,7 +5,7 @@
 use reqwest::Client;
 use tracing::debug;
 
-use super::{compress_filename, decompress_cab, FetchResult};
+use super::{FetchResult, compress_filename, decompress_cab};
 
 pub const DEFAULT_MS_SYMBOL_SERVER: &str = "https://msdl.microsoft.com/download/symbols";
 

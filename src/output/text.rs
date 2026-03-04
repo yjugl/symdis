@@ -125,7 +125,7 @@ pub fn format_text(
         prev_inline_names = curr_inline_names;
 
         // Emit source line annotation when file:line changes
-        if let (Some(ref file), Some(line)) = (&insn.source_file, insn.source_line) {
+        if let (Some(file), Some(line)) = (&insn.source_file, insn.source_line) {
             let curr = (file.clone(), line);
             if prev_source.as_ref() != Some(&curr) {
                 writeln!(out, "    ; {}:{}", file, line).unwrap();

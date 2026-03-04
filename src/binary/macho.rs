@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use goblin::mach::constants::cputype::*;
-use goblin::mach::constants::{SECTION_TYPE, S_SYMBOL_STUBS};
+use goblin::mach::constants::{S_SYMBOL_STUBS, SECTION_TYPE};
 use goblin::mach::exports::ExportInfo;
 use goblin::mach::load_command::{
     CommandVariant, SIZEOF_SECTION_32, SIZEOF_SECTION_64, SIZEOF_SEGMENT_COMMAND_32,
@@ -116,10 +116,10 @@ impl MachOFile {
         let mut exports_list: Vec<(u64, String)> = Vec::new();
         if let Ok(exports) = macho.exports() {
             for export in exports {
-                if let ExportInfo::Regular { address, .. } = export.info {
-                    if address > 0 {
-                        exports_list.push((address, export.name.clone()));
-                    }
+                if let ExportInfo::Regular { address, .. } = export.info
+                    && address > 0
+                {
+                    exports_list.push((address, export.name.clone()));
                 }
             }
         }
@@ -287,11 +287,11 @@ fn build_stub_imports(
                 continue;
             }
 
-            if let Ok((name, _nlist)) = symbols.get(sym_idx as usize) {
-                if !name.is_empty() {
-                    let dylib = name_to_dylib.get(name).copied().unwrap_or("").to_string();
-                    map.insert(stub_addr, (dylib, name.to_string()));
-                }
+            if let Ok((name, _nlist)) = symbols.get(sym_idx as usize)
+                && !name.is_empty()
+            {
+                let dylib = name_to_dylib.get(name).copied().unwrap_or("").to_string();
+                map.insert(stub_addr, (dylib, name.to_string()));
             }
         }
     }
@@ -325,10 +325,10 @@ pub fn extract_macho_uuids(data: &[u8]) -> Result<Vec<String>> {
             let arches = multi.arches().context("reading fat arches")?;
             for fat_arch in &arches {
                 let slice = fat_arch.slice(data);
-                if let Ok(macho) = MachO::parse(slice, 0) {
-                    if let Some(uuid) = extract_uuid_from_macho(&macho) {
-                        uuids.push(uuid);
-                    }
+                if let Ok(macho) = MachO::parse(slice, 0)
+                    && let Some(uuid) = extract_uuid_from_macho(&macho)
+                {
+                    uuids.push(uuid);
                 }
             }
         }
@@ -398,11 +398,7 @@ impl BinaryFile for MachOFile {
         };
         // Mach-O pointers are absolute VAs — no base subtraction needed.
         // Filter out zero (unresolved lazy pointers).
-        if value == 0 {
-            None
-        } else {
-            Some(value)
-        }
+        if value == 0 { None } else { Some(value) }
     }
 
     fn build_id(&self) -> Option<String> {
