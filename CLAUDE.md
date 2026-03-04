@@ -100,7 +100,7 @@ All commands are fully implemented and the project is ready for real-life testin
 - **zip 2** (`default-features = false`, feature `deflate`) for APK extraction
 - **quick-xml 0.39** + **cpio_reader 0.1** for macOS `.pkg` (XAR/cpio) archive extraction
 - **cpp_demangle 0.5** + **rustc-demangle 0.1** for C++/Rust symbol demangling
-- **toml 0.8** for TOML config file parsing
+- **toml 1** for TOML config file parsing
 - **tracing 0.1** + **tracing-subscriber 0.3** for structured logging
 - **pdb 0.8** for PDB file parsing (pure Rust, no native dependencies)
 - **msvc-demangler 0.11** for MSVC-decorated symbol demangling (`?Name@...`)
