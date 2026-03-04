@@ -200,63 +200,32 @@ BINARY FETCH CHAIN:
 
 PDB SUPPORT (AUTOMATIC FOR WINDOWS MODULES):
 
-  For Windows modules (debug-file ends in .pdb), symdis can fetch and
-  parse the original PDB file from symbol servers or Tecken. PDB is
-  the primary symbol format for all non-Mozilla Windows modules —
-  including Microsoft system DLLs, kernel drivers, GPU drivers, and
-  third-party vendor modules — and is fetched AUTOMATICALLY when .sym
-  is unavailable (no --pdb flag required).
+  JUST RUN THE COMMAND. You do NOT need --pdb for disassembly:
+    - .sym available on Tecken → used automatically (preferred)
+    - .sym unavailable → PDB fetched automatically from symbol servers
+  Auto-fallback handles kernel drivers, third-party DLLs, GPU drivers,
+  and all non-Mozilla Windows modules. No special flags needed.
 
-  PDB fetch chain: cache → Tecken (uncompressed or CAB) → Microsoft →
-  Intel → AMD → NVIDIA (all use symsrv protocol, uncompressed or CAB).
-  Extended timeout (10 min) is used because PDB files can be very large
-  (xul.pdb ~1-2 GB as CAB). GPU driver PDBs (nvoglv64.pdb, amdxc64.pdb,
-  etc.) are fetched from vendor servers automatically.
+  When --pdb IS useful:
+    - Skip the .sym attempt when you know it will fail (saves one
+      round-trip).
+    - Pre-cache PDB for 'symdis field-layout' (type information
+      requires PDB — .sym files have no type data).
 
-  Behavior without --pdb (default):
-    1. Fetch .sym file from Tecken (fast, lightweight)
-    2. If .sym is unavailable, auto-fallback to PDB fetch+parse
-    This is the most common path for kernel drivers, third-party DLLs,
-    and other non-Mozilla modules — PDB is fetched automatically.
+  When NOT to use --pdb for disassembly:
+    - Mozilla modules (xul.pdb, mozglue.pdb) where .sym has denser
+      source line coverage and consistently demangled function names.
 
-  Behavior with --pdb (explicit preference):
-    1. Fetch PDB directly (skip .sym)
-    2. If PDB is unavailable, fall back to .sym
-    Useful when you know .sym is unavailable and want to skip the
-    failed lookup (saves one round-trip), or when you need type info
-    for field-layout.
+  PDB fetch chain: cache → Tecken → Microsoft → Intel → AMD → NVIDIA
+  (all symsrv protocol; extended 10-min timeout for large PDBs like
+  xul.pdb ~1-2 GB). The data source is reported as "binary+pdb" or
+  "pdb" in output.
 
-  The data source is reported as "binary+pdb" or "pdb" in output.
+  .sym vs PDB — DETAILS (only matters when BOTH are available):
 
-  .sym vs PDB — WHEN TO USE WHICH:
-
-  For most non-Mozilla Windows modules (kernel drivers, third-party
-  DLLs, GPU drivers, Microsoft system DLLs without .sym on Tecken),
-  there is NO choice — PDB is the only symbol source and is fetched
-  automatically. The guidance below only applies when BOTH formats
-  are available (primarily Mozilla modules).
-
-  PDB files contain MORE information than .sym files — specifically,
-  C++ type information (class/struct layouts, field offsets, sizes) that
-  enables the 'symdis field-layout' command. However, PDB files are
-  much larger and slower to fetch and parse.
-
-  RULE OF THUMB FOR AI AGENTS:
-    - For DISASSEMBLY (disasm, lookup): prefer .sym (default). It is
-      lightweight, fast, and has denser source line coverage. You do
-      NOT need --pdb for disassembly — auto-fallback fetches PDB
-      when .sym is unavailable.
-    - For TYPE INFORMATION (field-layout): PDB is REQUIRED. The .sym
-      format has no type data at all. Use 'symdis field-layout' to
-      look up struct field offsets, or 'symdis info --pdb' to check
-      if type info is available before running field-layout.
-    - JUST RUN THE COMMAND. Auto-fallback handles the common case:
-      symdis automatically tries PDB when .sym is unavailable. You
-      do not need to pre-check whether .sym exists.
-
-  The comparison below only applies to MOZILLA modules where both
-  .sym and PDB exist (for all other Windows modules, PDB is the
-  only and primary symbol source — no comparison needed):
+  For most non-Mozilla Windows modules, there is NO choice — PDB is
+  the only symbol source and is fetched automatically. The comparison
+  below only applies to MOZILLA modules where both formats exist:
 
     Feature                 .sym file             PDB (current)
     ----------------------  --------------------  --------------------
@@ -279,47 +248,17 @@ PDB SUPPORT (AUTOMATIC FOR WINDOWS MODULES):
     File size               Small (~1 MB)         Large (~100 MB-2 GB)
     Parse speed             Fast                  Slow
 
-  For Mozilla modules, .sym is preferred for disassembly because
-  Mozilla's sym generator (dump_syms) pre-processes PDB data:
-  demangling, VCS path mapping, inline expansion. The .sym file is
-  a lightweight, optimized format. PDB's unique advantage is type
-  information, which .sym lacks entirely.
+  For Mozilla modules, .sym is preferred: Mozilla's sym generator
+  (dump_syms) pre-processes PDB data (demangling, VCS path mapping,
+  inline expansion). PDB's unique advantage is type information for
+  field-layout.
 
-  Auto-fallback handles most cases — you do NOT need --pdb for:
-    - WINDOWS KERNEL DRIVERS (.sys files like win32kfull.sys, ntfs.sys,
-      tcpip.sys). These never have .sym files on Tecken, so auto-fallback
-      kicks in and fetches the PDB automatically. Most kernel functions
-      appear as PUBLIC symbols (address only, no size); symdis resolves
-      exact function bounds from the PE .pdata section automatically.
-      Kernel driver disassembly is a first-class use case.
-    - NON-MOZILLA Windows modules where no .sym exists on Tecken.
-      Third-party DLLs, game engines, driver components, GPU drivers,
-      and other vendor modules — auto-fallback fetches the PDB when
-      .sym is missing. This works across Microsoft, Intel, AMD, and
-      NVIDIA symbol servers.
-
-  When --pdb IS useful (skip the .sym attempt, go straight to PDB):
-    - When you KNOW there is no .sym on Tecken and want to skip the
-      failed .sym lookup (saves one round-trip).
-    - When you plan to run field-layout afterward — use 'symdis fetch
-      --pdb' to pre-cache the PDB, then run field-layout.
-
-  When NOT to use --pdb for disassembly:
-    - Mozilla modules (xul.pdb, mozglue.pdb, etc.) where Tecken has a
-      .sym file. The .sym output has denser line coverage and
-      consistently demangled function names.
-
-  Notes on PDB-only modules (kernel drivers, vendor DLLs, etc.):
-    - PUBLIC symbols carry only an address and name (no source lines,
-      no inline frames). Disassembly shows raw instructions with call
-      target resolution but without source annotations.
-    - Call targets within the same module ARE resolved from other
-      PUBLIC symbol names.
-    - When the binary is available (fetched from Microsoft/vendor
-      servers), exact function bounds come from the PE .pdata section.
-    - The pdb crate panics on some modules in large PDBs (e.g.
-      xul.pdb); these are caught and skipped silently, which may
-      result in sparser line coverage compared to .sym files.
+  Notes on PDB-only modules (kernel drivers, vendor DLLs):
+    - PUBLIC symbols have address and name only (no source lines or
+      inline frames). Call targets within the module ARE resolved.
+    - Exact function bounds come from PE .pdata when binary is available.
+    - The pdb crate may panic on some modules in large PDBs; these are
+      caught silently and may result in sparser line coverage.
 
 APT PACKAGES (--apt, DEBIAN/UBUNTU):
 
@@ -528,6 +467,34 @@ GRACEFUL DEGRADATION:
                          but no disassembly
   neither            ->  Error
 
+OUTPUT EXAMPLE (text format):
+
+  ; Module: ntdll.dll (ntdll.pdb / 08A413EE85E91D0377BA33DC3A2641941)
+  ; Function: NtCreateFile (RVA: 0x162650, size: 0x18)
+  ; Architecture: x86_64
+  ; Data sources: binary+sym
+  ;
+      0x00162650:  mov     r10, rcx
+      0x00162653:  mov     eax, 0x55
+      0x00162658:  test    byte ptr [0x7ffe0308], 1
+      0x00162660:  jne     0x162665
+      0x00162662:  syscall
+      0x00162664:  ret
+      0x00162665:  int     0x2e
+      0x00162667:  ret
+
+  The header shows module, function, RVA, size, architecture, and data
+  sources. Each instruction line shows its RVA and disassembly.
+
+  With richer symbol data, additional annotations appear:
+    ; path/to/source.cc:123          <- source file and line number
+    ; [inline] InlinedFunc()         <- inline frame entry
+    ; [end inline] InlinedFunc()     <- inline frame exit
+==> 0x001234ab:  call    target       <- crash instruction (--highlight-offset)
+    0x001234b0:  mov     rax, rbx     ; dll!ImportName  <- resolved call target
+
+  Use --format json for structured output with the same information.
+
 EXAMPLES (manual flags — prefer --socorro-json when possible):
 
   # Windows module -- disassemble by offset, highlight crash address:
@@ -723,68 +690,19 @@ TIPS:
   - Don't skip non-Mozilla modules! Crashes in ntdll.dll, kernel32.dll,
     and other Microsoft system DLLs are common and symdis has symbols for
     them. Other third-party modules are also worth trying.
-  - Windows kernel drivers (.sys files like win32kfull.sys, tcpip.sys,
-    ntfs.sys) are supported. Always provide --code-file for .sys files
-    because derive-from-PDB defaults to .dll. PDB is fetched
-    automatically (no .sym exists for kernel drivers on Tecken).
-  - --pdb skips the .sym lookup and goes straight to PDB. This saves
-    one round-trip when you know .sym is unavailable. For disassembly,
-    the default .sym path gives better output (denser line coverage,
-    consistent function names). For type information (field-layout),
-    PDB is required — .sym files have no type data. For kernel
-    drivers and other non-Mozilla modules, auto-fallback already
-    fetches PDB when .sym is missing, so --pdb is optional.
+  - --pdb skips the .sym lookup and goes straight to PDB. For
+    disassembly, the default .sym path gives better output. For type
+    information (field-layout), PDB is required. For kernel drivers
+    and other non-Mozilla modules, auto-fallback already fetches PDB
+    when .sym is missing, so --pdb is optional.
   - PUBLIC symbols are searched when --function doesn't match a FUNC
-    record. This is common for Windows kernel drivers where PDB data
-    only has PUBLIC symbols (address, no size) for many functions.
-    When the binary is available, exact function bounds come from
-    the PE .pdata section; otherwise size is estimated from the
-    distance to the next symbol.
-  - Indirect calls through the Import Address Table are automatically
-    resolved to their target import names (e.g., "kernel32.dll!CreateFileW").
-    On x86-64, these are call [rip+disp]; on x86 32-bit, these are
-    call [absolute_va] (the standard IAT calling convention on both
-    architectures). If the memory slot does not point to an import,
-    symdis also tries reading the on-disk pointer value to resolve
-    intra-module function pointer tables.
-  - On AArch64, indirect calls via ADRP+LDR+BLR sequences are resolved
-    automatically. The engine scans backward from each blr/br instruction
-    to find the matching adrp+ldr pair, computes the GOT/IAT slot address,
-    and resolves the import name or intra-module target. This covers the
-    standard indirect calling convention on AArch64 across all platforms
-    (Linux ELF, macOS Mach-O, Windows PE, Android ELF). Register clobber
-    detection prevents incorrect resolution when the register chain is
-    broken between instructions.
-  - On ARM/AArch64 ELF binaries, direct calls to PLT stubs (bl <addr>)
-    are resolved to their import names (e.g., "memcpy", "recvmsg").
-    This covers the standard calling convention for imported functions
-    on Linux ARM and AArch64.
-  - On macOS Mach-O binaries, direct calls to __stubs entries (e.g.,
-    call <__stubs+0x42> on x86-64, bl <__stubs+0x30> on AArch64) are
-    resolved to their import names (e.g., "libSystem.B.dylib!_malloc").
-    This covers the standard calling convention for imported functions
-    on macOS.
-  - For system libraries (libxml2, mesa, libdrm, libffi, etc.) on
-    Debian/Ubuntu, use --apt --distro <codename> to fetch binaries from
-    APT packages. Supports Ubuntu (noble, jammy, ...) and Debian
-    (bookworm, bullseye, ...) codenames. The source package name is
-    auto-detected from .sym source paths (e.g., /build/libxml2-2gYHdD/...).
-    Use --apt <package> to specify the binary package name explicitly
-    when auto-detection fails. For other Debian derivatives (Kali, MX,
-    Raspberry Pi OS), use --mirror to point to the custom repository.
-  - For Arch Linux and derivatives (CachyOS, Manjaro, EndeavourOS),
-    use --pacman to fetch binaries from pacman packages. The package
-    is usually auto-detected (PROVIDES matching + name fallback).
-    Use --pacman <pkg> to specify explicitly when auto-detect fails
-    (mainly libc.so.6 → --pacman glibc). Use --mirror for derivative
-    repos that use different mirrors. Arch is rolling release: only
-    the latest package version is available, so older crashes may get
-    sym-only output (build ID mismatch).
-  - ARM32 Thumb-2 mode is auto-detected from ELF symbol metadata
-    (mapping symbols $t/$a and function symbol Thumb bit). Most
-    ARM32 binaries (including Fenix armeabi-v7a) use Thumb-2
-    instructions. Without proper detection, disassembly would show
-    garbage mnemonics; with detection, you get correct push/mov/bl/ldr."#;
+    record (common for kernel drivers). When the binary is available,
+    exact function bounds come from PE .pdata; otherwise size is
+    estimated from the distance to the next symbol.
+  - Call targets are resolved automatically across all platforms and
+    architectures (direct calls, indirect calls through IAT/GOT/PLT/
+    stubs, AArch64 ADRP+LDR sequences). Import names are shown when
+    available. ARM32 Thumb-2 mode is auto-detected from ELF metadata."#;
 
 const LOOKUP_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
 
