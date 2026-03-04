@@ -80,7 +80,7 @@ impl PeFile {
             imports_map.insert(iat_rva, (dll, name));
         }
 
-        // Parse .pdata exception entries (x86_64 only in goblin 0.9)
+        // Parse .pdata exception entries (goblin only parses these for x86_64)
         let mut pdata_entries = Vec::new();
         if let Some(ref exception_data) = pe.exception_data {
             for rf in exception_data.functions().flatten() {

@@ -935,7 +935,7 @@ const INFO_LONG_HELP: &str = r#"CRASH REPORT FIELD MAPPING:
   Shows module metadata from the .sym file: module name, debug ID, OS,
   architecture, function count, and whether the binary is available.
   Binary availability is checked using the same fetch chain as disasm
-  (Tecken → Microsoft/Intel/AMD/NVIDIA → debuginfod → FTP archive).
+  (Tecken → Microsoft (Windows) → debuginfod → FTP archive).
   Works with any Windows module — PDB is fetched automatically when
   .sym is unavailable (kernel drivers, third-party DLLs, etc.).
 
