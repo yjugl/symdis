@@ -1134,7 +1134,11 @@ TIPS:
         On each run, symdis checks crates.io in the background for a newer\n  \
         version. If one is found, a notice is printed to stderr after the\n  \
         command completes. The check is cached for 24 hours and can be\n  \
-        disabled by setting MOZTOOLS_UPDATE_CHECK=0."
+        disabled by setting MOZTOOLS_UPDATE_CHECK=0.\n\n\
+        Machine-readable output:\n  \
+        All diagnostic messages (tracing, update notices) go to stderr.\n  \
+        JSON output (--format json) goes to stdout. Do not merge stdout\n  \
+        and stderr when parsing JSON output programmatically."
 )]
 pub struct Cli {
     #[command(subcommand)]
