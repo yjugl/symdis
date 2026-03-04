@@ -97,7 +97,7 @@ All commands are fully implemented and the project is ready for real-life testin
 - **cab 0.6** for Microsoft CAB decompression
 - **liblzma 0.4** + **tar 0.4** for Linux `.tar.xz` archive extraction
 - **backhand 0.25** (`default-features = false`, features `xz`+`lzo`) for squashfs (snap) extraction; uses pure-Rust lzma-rust2 internally (no native linking conflicts)
-- **zip 2** (`default-features = false`, feature `deflate`) for APK extraction
+- **zip 8** (`default-features = false`, feature `deflate`) for APK extraction
 - **quick-xml 0.39** + **cpio_reader 0.1** for macOS `.pkg` (XAR/cpio) archive extraction
 - **cpp_demangle 0.5** + **rustc-demangle 0.1** for C++/Rust symbol demangling
 - **toml 1** for TOML config file parsing
