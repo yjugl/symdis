@@ -11,7 +11,7 @@ cargo test
 cargo clippy -- -D warnings
 ```
 
-All tests must pass and clippy must report zero warnings before submitting changes.
+Code must be formatted with `cargo fmt`, all tests must pass, and clippy must report zero warnings before submitting changes.
 
 ## AI Tool Usage
 
