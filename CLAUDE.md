@@ -27,6 +27,7 @@ Also verify:
 - **`--help` is complete**: An AI agent without access to the source code relies on `--help` as its sole reference. Ensure all flags, fetch chain behavior, examples, and edge cases are documented in the `after_long_help` text in `commands/mod.rs`.
 - **`--help` examples are concrete**: Every example in `--help` must use real debug-file, debug-id, code-id, and code-file values from actual crash reports or real modules — never placeholders like `AABBCCDD...` or `<ID>`. Each example must be tested end-to-end (`cargo run -- disasm ...` or `cargo run -- fetch ...`) and confirmed to produce the expected output (e.g., `binary+sym` data sources for disasm, `ok` for fetch) before being committed. If an example depends on a network resource (APT mirror, symbol server), test it once and record the working command. This ensures that AI agents can copy-paste examples as starting points and that bitrot is caught early.
 - **CLAUDE.md is up-to-date**: Update the Project Status, Architecture, and Key Conventions sections to reflect any new modules, commands, flags, or behavioral changes.
+- **README.md is up-to-date**: Update the Features list, Quick Start examples, command sections, and any other relevant parts of `README.md` to reflect new commands, flags, or capabilities.
 
 ## Project Status
 

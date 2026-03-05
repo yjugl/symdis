@@ -21,6 +21,7 @@ Designed primarily for use by AI agents analyzing [Socorro/Crash Stats](https://
 - **Highlight** a specific offset (e.g., a crash address) in the output
 - **Graceful degradation**: binary+sym gives full annotated disassembly; binary-only gives raw disassembly; sym-only gives function metadata
 - **Text and JSON** output formats (`--format text|json`)
+- **Socorro crash report integration** (`--socorro-json`): pass a full Socorro crash report JSON and all module IDs, offsets, product, version, channel, distro, and backend flags are extracted automatically — frame mode disassembles the crash frame, module mode targets any loaded module
 - **Configurable** via TOML config file, environment variables, and CLI flags with layered precedence
 - **Local cache** with WinDbg-compatible layout, atomic writes, negative-cache markers, and `_NT_SYMBOL_PATH` integration
 
@@ -31,6 +32,12 @@ Pre-built binaries (fastest):
 ```bash
 cargo binstall symdis
 ```
+
+Pre-built binaries are available for:
+- `x86_64-pc-windows-msvc` and `aarch64-pc-windows-msvc` (Windows)
+- `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` (Linux glibc)
+- `x86_64-unknown-linux-musl` (Linux static)
+- `x86_64-apple-darwin` and `aarch64-apple-darwin` (macOS)
 
 From source:
 
@@ -49,7 +56,18 @@ cargo install --path .
 ## Quick Start
 
 ```bash
-# Disassemble the function containing a specific offset, with crash address highlight
+# Easiest: pass a Socorro crash report JSON — all IDs, offsets, and flags are
+# extracted automatically. Disassembles the crash frame by default.
+symdis disasm --socorro-json crash_report.json
+
+# Same, but pipe from socorro-cli (use "-" for stdin):
+socorro-cli crash <crash_id> --full | symdis disasm --socorro-json -
+
+# Disassemble a specific function in a different loaded module from the report:
+symdis disasm --socorro-json crash_report.json \
+    --debug-file ntdll.pdb --function NtCreateFile
+
+# Manual mode: specify all IDs explicitly
 symdis disasm \
     --debug-file xul.pdb \
     --debug-id EE20BD9ABD8D048B4C4C44205044422E1 \
@@ -187,6 +205,13 @@ Run `symdis <command> --help` for full documentation, crash report field mapping
 The primary command. See the [Quick Start](#quick-start) section above for common examples. Additional examples:
 
 ```bash
+# Socorro crash report JSON — frame mode (disassembles the crash frame):
+symdis disasm --socorro-json crash_report.json
+
+# Socorro JSON — module mode (disassemble a function in any loaded module):
+symdis disasm --socorro-json crash_report.json \
+    --debug-file ntdll.pdb --function NtCreateFile
+
 # Non-Mozilla module (Windows system DLL):
 symdis disasm \
     --debug-file ntdll.pdb \
@@ -226,6 +251,8 @@ symdis disasm \
     --code-file ntdll.dll --code-id 5b6dddee267000 \
     --function NtCreateFile --pdb
 ```
+
+The `--socorro-json` flag accepts a file path or `"-"` for stdin. In **frame mode** (default, no `--debug-file`), it disassembles the function at the selected frame (default: frame 0, the crash frame) with offset and highlight auto-set. In **module mode** (`--debug-file` + `--function`/`--offset`), it disassembles a specific function in any loaded module, with IDs resolved from the crash report's module list. In both modes, product, version, channel, build-id, distro, and backend flags (APT/pacman/snap) are auto-extracted from the crash report.
 
 ### lookup
 
@@ -368,7 +395,7 @@ format = "text"         # "text" or "json"
 
 [network]
 timeout_seconds = 30
-user_agent = "symdis/0.1.0"
+user_agent = "symdis/0.4.1"
 offline = false
 ```
 
