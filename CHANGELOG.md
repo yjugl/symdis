@@ -1,0 +1,199 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+## [0.4.1] - 2026-03-05
+
+### New release targets
+
+- aarch64-unknown-linux-gnu (ARM64 Linux)
+- x86_64-unknown-linux-musl (static Linux binary)
+- aarch64-pc-windows-msvc (Windows ARM64)
+
+### Fixes
+
+- Fix cargo binstall on Windows falling back to source build (binstall metadata now correctly uses `.zip` for Windows targets)
+
+### CI improvements
+
+- Add `cargo fmt --check`
+- Add cross-compilation build checks for all release targets
+
+## [0.4.0] - 2026-03-04
+
+### New features
+
+- **`--socorro-json` flag**: Pass a full Socorro crash report JSON to `disasm`
+  and all module IDs, offsets, product, version, channel, distro, and backend
+  flags are extracted automatically. Two modes: frame mode (disassemble the
+  crash frame) and module mode (`--debug-file` + `--function`/`--offset` to
+  target any loaded module). APT, pacman, and snap are auto-enabled from
+  `lsb_release` in the crash report.
+
+- **`field-layout` command**: Extract C++ class/struct/union field layouts from
+  PDB type information (TPI stream). Shows fields sorted by offset with type
+  names and sizes. `--offset` highlights the field at a given byte offset;
+  `--fuzzy` enables substring matching on type names. Works with Mozilla PDBs
+  (xul.pdb: 535K+ types) and some Microsoft public PDBs (ntdll.pdb: 686 types
+  including `_PEB`, `_TEB`, `_RTL_CRITICAL_SECTION`).
+
+- **`--pdb` flag for `info` and `fetch`**: `info --pdb` fetches the PDB and reports
+  whether type information is available (type count or "stripped");
+  `fetch --pdb` pre-caches the PDB for subsequent `field-layout` use.
+
+- **Arch Linux pacman backend (`--pacman`)**: Fetch binaries from pacman
+  packages. Downloads `.db.tar.gz` repo databases, matches packages by soname
+  PROVIDES or name fallback, downloads `.pkg.tar.zst` packages. Supports
+  `--mirror` for derivatives (CachyOS, Manjaro, EndeavourOS). x86_64 only.
+
+- **Vendor PDB symbol servers**: Intel, AMD, and NVIDIA symbol servers added
+  to defaults. PDB auto-fallback now covers GPU drivers (nvoglv64.pdb,
+  amdxc64.pdb) and other vendor modules automatically.
+
+- **Debian APT generalization**: APT backend expanded from Ubuntu-only to
+  Ubuntu + Debian + derivatives. Distro presets for known codenames (noble,
+  jammy, bookworm, bullseye, etc.). `--mirror` and `--components` flags for
+  custom repos (Kali, Raspberry Pi OS, Parrot, etc.). Debian security pocket
+  uses separate mirror automatically.
+
+- **openSUSE debuginfod** added to default debuginfod server URLs.
+
+### Improvements
+
+- **Contextual hints on binary fetch failure**: When the binary cannot be
+  fetched, error messages now suggest which flags might help (e.g., "try
+  `--apt --distro noble`" or "try `--code-id` for debuginfod").
+
+- **`--help` restructured for AI agents**: Quickstart (`--socorro-json`)
+  front-loaded so it's visible even with truncated output. PDB section leads
+  with "JUST RUN THE COMMAND" instead of burying it. TIPS section condensed.
+  Output example added. Terminology glossary added.
+
+- Advise against merging stdout and stderr in `--help` (structured output
+  goes to stdout, diagnostics to stderr).
+
+### Dependency updates
+
+- Rust edition 2024 (MSRV 1.85)
+- goblin 0.10, zip 8.2, toml 1.0, cab 0.6, backhand 0.25, msvc-demangler 0.11,
+  zstd 0.13, cpp_demangle 0.5, capstone 0.14, pdb 0.8
+
+## [0.3.0] - 2026-02-25
+
+### New
+
+- **Ubuntu APT package backend**: Binaries for Ubuntu system libraries
+  (libxml2, mesa, libdrm, libffi, etc.) can now be fetched directly from
+  Ubuntu's APT repositories when debuginfod and Snap have no match. Downloads
+  `.deb` packages from `archive.ubuntu.com` (or `ports.ubuntu.com` for
+  arm64/armhf), searches across base release, `-updates`, and `-security`
+  pockets. Source package name is auto-detected from `.sym` source paths or
+  specified explicitly via `--apt <package>`. Use `--apt` + `--distro <codename>`
+  to enable.
+
+### Fixes
+
+- **Full ELF build ID for Linux binary lookups**: The full 40-character ELF
+  build ID is now extracted from `INFO CODE_ID` records in `.sym` files, fixing
+  debuginfod, Snap Store, and FTP archive lookups. Previously, these backends
+  received a truncated ID derived from the Breakpad debug ID (which only
+  preserves 16 of 20 build ID bytes).
+
+- **PLT import resolution on CET/IBT-enabled ELF binaries**: Call targets are
+  now correctly resolved through `.plt.sec` sections on modern Linux binaries
+  built with Intel CET or ARM BTI.
+
+## [0.2.0] - 2026-02-20
+
+### PDB Symbol Support
+
+- New `--pdb` flag fetches PDB files directly from Tecken or Microsoft Symbol Server
+- Auto-fallback: when `.sym` is unavailable for a Windows module, PDB is automatically tried
+- Inline frame tracking via `InlineSiteSymbol` records and the IPI stream
+- Source file paths mapped to VCS paths (Mercurial/GitHub) via the srcsrv stream
+- Function names enriched with full demangled signatures from public symbols
+- MSVC-decorated symbol names (`?Name@...`) demangled via msvc-demangler
+- PDBs without a string table (newer Windows kernel modules) still yield functions/publics/inlines
+
+### Call Resolution Improvements
+
+- x86-64: Indirect `call/jmp [rip+disp]` resolved to IAT imports or intra-module pointer targets
+- x86 32-bit: Indirect `call/jmp [absolute_va]` resolved to IAT imports
+- AArch64: ADRP+LDR+BLR/BR pattern detection resolves indirect calls through GOT/IAT slots
+- ARM/AArch64 ELF: Direct `bl <plt_addr>` calls resolved to import names
+- Mach-O: Direct calls to `__stubs` entries resolved to import names via indirect symbol table
+- ELF GOT: GLOB_DAT/JUMP_SLOT relocations enable indirect call resolution through GOT slots
+- ELF and Mach-O on-disk pointer reads for intra-module dispatch table resolution
+
+### PUBLIC Symbol and Function Bounds
+
+- `--function` searches PUBLIC symbols (exact, demangled, fuzzy) when no FUNC record matches
+- PE `.pdata` exception data provides exact function bounds for PUBLIC symbols
+- `lookup --function` now also searches PUBLIC symbols
+
+### ARM32 Thumb-2 Support
+
+- Auto-detection from ELF mapping symbols (`$t`/`$a`) and function symbol Thumb bit
+- Correct disassembly of Thumb-2 binaries (including Fenix armeabi-v7a)
+
+### Other
+
+- Windows kernel driver (`.sys`) support
+- Linker thunk wrapper symbols demangled
+- Version update check via moz-cli-version-check
+
+## [0.1.0] - 2026-02-12
+
+Initial release.
+
+### Commands
+
+- **`disasm`**: Fetch symbols and binary, disassemble a function, annotate with
+  source lines, call targets, and inline frames. Supports `--function` (exact
+  or `--fuzzy` substring match) and `--offset` targeting. `--highlight-offset`
+  marks a specific instruction (e.g., a crash address). `--format text|json`.
+- **`lookup`**: Resolve an offset to a symbol, or a name to an address
+  (sym-file only).
+- **`info`**: Show module metadata (OS, arch, function/line/inline counts).
+- **`fetch`**: Pre-fetch symbols and binary into the local cache.
+- **`cache`**: Manage the local cache (`path`, `size`, `clear`, `list`).
+
+### Platform and architecture support
+
+- **Windows** (PE), **Linux** (ELF), **macOS** (Mach-O including fat/universal
+  binaries), and **Android** (Fenix and Focus via APK extraction).
+- **x86**, **x86-64**, **ARM32**, and **AArch64** disassembly via Capstone.
+
+### Symbol and binary fetch
+
+- Fetch `.sym` files from Mozilla Tecken.
+- Fetch binaries from Tecken, Microsoft Symbol Server, debuginfod, Snap Store,
+  and Mozilla FTP archive — with automatic CAB decompression, `.tar.xz`
+  extraction, `.pkg` (XAR/cpio) extraction, and `.apk` (ZIP) extraction.
+- Not limited to Mozilla modules: Windows system DLLs (ntdll, kernel32,
+  kernelbase, etc.) are supported because Mozilla's crash infrastructure
+  generates `.sym` files from Microsoft PDBs for all modules seen in crash
+  stacks.
+
+### Annotation
+
+- Source file and line numbers from `.sym` FUNC/line records.
+- Direct call targets resolved to FUNC/PUBLIC symbol names.
+- Inline function enter/exit boundaries from `.sym` INLINE records.
+- C++ (Itanium ABI) and Rust symbol demangling (`--no-demangle` to disable).
+- Graceful degradation: binary+sym → full annotated disassembly; binary-only →
+  raw disassembly; sym-only → function metadata; neither → error.
+
+### Configuration
+
+- Layered config: TOML config file < environment variables < CLI flags.
+- Local cache with WinDbg-compatible flat layout, atomic writes,
+  negative-cache markers with configurable TTL, and `_NT_SYMBOL_PATH`
+  integration.
+- `--offline` flag restricts operation to cached data only.
+- Structured logging via `tracing` (`-v` for info, `-vv` for debug).
+
+### Distribution
+
+- `cargo install symdis` and `cargo binstall symdis`.
+- CI/release workflows for cross-platform binary builds.
