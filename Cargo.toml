@@ -50,3 +50,11 @@ codegen-units = 1
 pkg-url = "{ repo }/releases/download/v{ version }/symdis-{ target }.tar.gz"
 pkg-fmt = "tgz"
 bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/symdis-{ target }.zip"
+pkg-fmt = "zip"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/symdis-{ target }.zip"
+pkg-fmt = "zip"
