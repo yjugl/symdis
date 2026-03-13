@@ -107,13 +107,12 @@ dependencies = [
 [[package]]
 name = "backhand"
 version = "0.25.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "72e7812fe72262dd26c2b4309c8e8f2c028db1ffbeb21054f009f847f09ca92c"
+source = "git+https://github.com/yjugl/backhand.git?branch=lzokay#b8c5e05b2c32eb48577950ecd1d8709b7d31e480"
 dependencies = [
  "deku",
  "liblzma",
+ "lzokay",
  "no_std_io2",
- "rust-lzo",
  "solana-nohash-hasher",
  "thiserror 2.0.18",
  "tracing",
@@ -1088,6 +1087,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
 
 [[package]]
+name = "lzokay"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "953d350dc065718bb00b61ea2118274ffe2fdf6488f32f720422bcd1c9d6025f"
+dependencies = [
+ "zerocopy",
+]
+
+[[package]]
 name = "lzxd"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1566,15 +1574,6 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "rust-lzo"
-version = "0.6.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf191ab1b954757cb5bb7f366e17d80daaa06010f1fdde7a3a7db052c1ecd1a8"
-dependencies = [
- "libc",
 ]
 
 [[package]]
