@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.3] - 2026-03-13
+
+### Fixes
+
+- Fixed release CI failing on Windows: `cargo-about` rejects shell output
+  redirection (`>`) in PowerShell; switched to its built-in `-o` flag.
+
 ## [0.4.2] - 2026-03-13
 
 ### Fixes
