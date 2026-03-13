@@ -25,21 +25,28 @@ async fn main() -> Result<()> {
     );
     checker.check_async();
 
-    let cli = Cli::parse();
+    match Cli::try_parse() {
+        Ok(cli) => {
+            let level = match cli.verbose {
+                0 => tracing::Level::WARN,
+                1 => tracing::Level::INFO,
+                _ => tracing::Level::DEBUG,
+            };
+            tracing_subscriber::fmt()
+                .with_max_level(level)
+                .with_target(false)
+                .with_writer(std::io::stderr)
+                .without_time()
+                .init();
 
-    let level = match cli.verbose {
-        0 => tracing::Level::WARN,
-        1 => tracing::Level::INFO,
-        _ => tracing::Level::DEBUG,
-    };
-    tracing_subscriber::fmt()
-        .with_max_level(level)
-        .with_target(false)
-        .with_writer(std::io::stderr)
-        .without_time()
-        .init();
-
-    let result = commands::run(cli).await;
-    checker.print_warning();
-    result
+            let result = commands::run(cli).await;
+            checker.print_warning();
+            result
+        }
+        Err(e) => {
+            let _ = e.print();
+            checker.print_warning();
+            std::process::exit(e.exit_code());
+        }
+    }
 }
