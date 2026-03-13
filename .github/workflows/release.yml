@@ -63,18 +63,24 @@ jobs:
       - name: Build
         run: ${{ matrix.use_cross && 'cross' || 'cargo' }} build --release --target ${{ matrix.target }}
 
+      - name: Generate third-party licenses
+        run: |
+          cargo install cargo-about
+          cargo about generate about.hbs > THIRD-PARTY-LICENSES.txt
+
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../symdis-${{ matrix.target }}.tar.gz symdis
+          cp ../../../LICENSE ../../../THIRD-PARTY-LICENSES.txt .
+          tar czf ../../../symdis-${{ matrix.target }}.tar.gz symdis LICENSE THIRD-PARTY-LICENSES.txt
           cd ../../..
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          Compress-Archive -Path target/${{ matrix.target }}/release/symdis.exe -DestinationPath symdis-${{ matrix.target }}.zip
+          Compress-Archive -Path target/${{ matrix.target }}/release/symdis.exe,LICENSE,THIRD-PARTY-LICENSES.txt -DestinationPath symdis-${{ matrix.target }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -1,0 +1,25 @@
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "ISC",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "Unlicense",
+    "Zlib",
+    "0BSD",
+    "CC0-1.0",
+    "MIT-0",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "OpenSSL",
+    "CDLA-Permissive-2.0",
+]
+
+# libbz2-rs-sys uses the bzip2-1.0.6 license (BSD-like, permissive).
+# cargo-about doesn't recognize this SPDX id, so we clarify it here.
+[libbz2-rs-sys]
+accepted = ["bzip2-1.0.6"]
+
+# msvc-demangler is MIT/NCSA (both permissive). NCSA is BSD-like.
+[msvc-demangler]
+accepted = ["NCSA"]
