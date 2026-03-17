@@ -137,7 +137,7 @@ pub fn extract_from_squashfs(snap_path: &Path, target_filename: &str) -> Result<
     let file = std::fs::File::open(snap_path)
         .with_context(|| format!("opening snap file: {}", snap_path.display()))?;
     let reader = std::io::BufReader::new(file);
-    let fs = FilesystemReader::from_reader(reader).context("reading squashfs from snap")?;
+    let fs = FilesystemReader::from_reader(reader).map_err(squashfs_error)?;
 
     // First pass: find the target by filename, resolving symlinks
     let mut real_filename = None;
@@ -201,9 +201,31 @@ fn read_squashfs_file(
 ) -> Result<Vec<u8>> {
     let mut buf = Vec::new();
     let mut file_reader = fs.file(file_data).reader();
-    std::io::Read::read_to_end(&mut file_reader, &mut buf).context("reading file from squashfs")?;
+    std::io::Read::read_to_end(&mut file_reader, &mut buf).map_err(squashfs_error)?;
     debug!("extracted {} ({} bytes) from snap", name, buf.len());
     Ok(buf)
+}
+
+/// Improve squashfs error messages, especially for unsupported LZO compression.
+///
+/// When the `lzo` feature is not enabled (the default for crates.io builds),
+/// backhand cannot decompress LZO-compressed squashfs images. Many Ubuntu GNOME
+/// runtime snaps use LZO compression. This function detects that specific error
+/// and provides guidance on how to get LZO support.
+fn squashfs_error(e: impl std::fmt::Display) -> anyhow::Error {
+    let msg = e.to_string();
+    if msg.contains("Lzo") && msg.contains("nsupported") {
+        #[cfg(not(feature = "lzokay"))]
+        return anyhow::anyhow!(
+            "this snap uses LZO compression which is not supported in this build of symdis. \
+             Install a pre-built binary with: cargo binstall symdis \
+             (or download from https://github.com/yjugl/symdis/releases). \
+             To build from source with LZO support, see the README"
+        );
+        #[cfg(feature = "lzokay")]
+        return anyhow::anyhow!("squashfs LZO decompression failed: {msg}");
+    }
+    anyhow::anyhow!("reading squashfs from snap: {msg}")
 }
 
 /// Compute the cache key for a snap archive.

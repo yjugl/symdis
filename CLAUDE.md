@@ -98,7 +98,7 @@ All commands are fully implemented and the project is ready for real-life testin
 - **reqwest 0.13** with `rustls` (renamed from `rustls-tls` in 0.13)
 - **cab 0.6** for Microsoft CAB decompression
 - **liblzma 0.4** + **tar 0.4** for Linux `.tar.xz` archive extraction
-- **backhand 0.25** (`default-features = false`, features `xz`+`lzo`) for squashfs (snap) extraction; uses pure-Rust lzma-rust2 internally (no native linking conflicts)
+- **backhand 0.25** (`default-features = false`, feature `xz`) for squashfs (snap) extraction; LZO support is NOT available on crates.io (upstream backhand's `lzo` feature depends on GPL rust-lzo); GitHub release builds add `[features] lzokay` + `[patch.crates-io]` to Cargo.toml at build time to use a fork with MIT-licensed lzokay instead; the `lzokay` cfg value is declared in `[lints.rust.unexpected_cfgs]` so `#[cfg(feature = "lzokay")]` compiles without warnings even when the feature isn't defined; uses pure-Rust lzma-rust2 internally (no native linking conflicts)
 - **zip 8** (`default-features = false`, feature `deflate`) for APK extraction
 - **quick-xml 0.39** + **cpio_reader 0.1** for macOS `.pkg` (XAR/cpio) archive extraction
 - **cpp_demangle 0.5** + **rustc-demangle 0.1** for C++/Rust symbol demangling

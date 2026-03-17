@@ -56,6 +56,44 @@ jobs:
       - name: Test
         run: cargo test
 
+  check-lzo:
+    name: Check with LZO
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: lzo-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: lzo-cargo-
+
+      - name: Enable LZO support via backhand lzokay fork
+        run: |
+          cat >> Cargo.toml << 'TOML'
+
+          [features]
+          lzokay = ["backhand/lzo"]
+
+          [patch.crates-io]
+          backhand = { git = "https://github.com/yjugl/backhand.git", branch = "lzokay" }
+          TOML
+
+      - name: Clippy (with lzo)
+        run: cargo clippy --features lzokay -- -D warnings
+
+      - name: Test (with lzo)
+        run: cargo test --features lzokay
+
   build-cross:
     name: Build (cross)
     runs-on: ubuntu-latest

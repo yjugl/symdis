@@ -27,10 +27,10 @@ Designed primarily for use by AI agents analyzing [Socorro/Crash Stats](https://
 
 ## Installation
 
-Pre-built binaries (fastest):
+Pre-built binaries (fastest, includes LZO support for snap packages):
 
 ```bash
-cargo binstall symdis
+cargo binstall symdis          # downloads pre-built binary from GitHub Releases
 ```
 
 Pre-built binaries are available for:
@@ -39,7 +39,7 @@ Pre-built binaries are available for:
 - `x86_64-unknown-linux-musl` (Linux static)
 - `x86_64-apple-darwin` and `aarch64-apple-darwin` (macOS)
 
-From source:
+From source (no LZO support for snap packages — see [below](#lzo-support-for-snap-packages)):
 
 ```bash
 cargo install symdis
@@ -52,6 +52,32 @@ git clone https://github.com/yjugl/symdis.git
 cd symdis
 cargo install --path .
 ```
+
+### LZO support for snap packages
+
+Some Ubuntu snap packages use LZO-compressed squashfs images. The upstream [backhand](https://crates.io/crates/backhand) crate's `lzo` feature depends on a GPL-licensed library, which is incompatible with symdis's MPL-2.0 license, so **`cargo install symdis` builds without LZO support**.
+
+**Pre-built release binaries** from [GitHub Releases](https://github.com/yjugl/symdis/releases) include LZO support — they are built against a [fork of backhand](https://github.com/yjugl/backhand/tree/lzokay) that uses the MIT-licensed [lzokay](https://crates.io/crates/lzokay) instead. `cargo binstall symdis` downloads these pre-built binaries (but note that `binstall` falls back to `cargo install` from crates.io if no binary is available for your platform, which would build without LZO).
+
+To build from source with LZO support:
+
+```bash
+git clone https://github.com/yjugl/symdis.git
+cd symdis
+cat >> Cargo.toml << 'TOML'
+
+[features]
+lzokay = ["backhand/lzo"]
+
+[patch.crates-io]
+backhand = { git = "https://github.com/yjugl/backhand.git", branch = "lzokay" }
+TOML
+cargo install --path . --features lzokay
+```
+
+Both the `[features]` and `[patch.crates-io]` sections are required. The `lzokay` feature activates backhand's `lzo` feature, and the patch redirects backhand to the lzokay fork so that it pulls in MIT-licensed lzokay instead of GPL rust-lzo. The feature is deliberately named `lzokay` (not `lzo`) to make it clear this requires the fork.
+
+Many of the GNOME runtime snaps that symdis encounters (e.g. `gnome-42-2204-sdk`, `core22`) use LZO compression, so LZO support is important for Ubuntu snap crash reports. If you hit an LZO-compressed snap without LZO support, symdis will print a clear error message with instructions.
 
 ## Quick Start
 
