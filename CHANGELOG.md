@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.4] - 2026-03-17
+
+### Packaging
+
+- **crates.io publishable**: Gate LZO support behind a `lzokay` Cargo feature
+  that is only defined at build time in CI (not in the published crate). The
+  previous version depended on a git fork of backhand, which crates.io rejects.
+  The published crate now uses upstream backhand (xz only) from crates.io.
+  Pre-built release binaries from GitHub still include LZO support via the
+  lzokay fork. A clear runtime error guides users to pre-built binaries when
+  they encounter an LZO-compressed snap package.
+
 ## [0.4.3] - 2026-03-13
 
 ### Fixes
