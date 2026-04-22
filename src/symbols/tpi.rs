@@ -395,15 +395,11 @@ pub fn probe_type_info(path: &Path) -> Option<TpiSummary> {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         while let Ok(Some(item)) = iter.next() {
             match item.parse() {
-                Ok(pdb::TypeData::Class(class)) => {
-                    if !class.properties.forward_reference() {
-                        type_count += 1;
-                    }
+                Ok(pdb::TypeData::Class(class)) if !class.properties.forward_reference() => {
+                    type_count += 1;
                 }
-                Ok(pdb::TypeData::Union(union)) => {
-                    if !union.properties.forward_reference() {
-                        type_count += 1;
-                    }
+                Ok(pdb::TypeData::Union(union)) if !union.properties.forward_reference() => {
+                    type_count += 1;
                 }
                 _ => {}
             }
@@ -450,15 +446,11 @@ pub fn extract_type_layout(path: &Path, type_name: &str, fuzzy: bool) -> Result<
         while let Ok(Some(item)) = iter.next() {
             type_finder.update(&iter);
             match item.parse() {
-                Ok(pdb::TypeData::Class(class)) => {
-                    if !class.properties.forward_reference() {
-                        name_map.insert(class.name.to_string().into_owned(), item.index());
-                    }
+                Ok(pdb::TypeData::Class(class)) if !class.properties.forward_reference() => {
+                    name_map.insert(class.name.to_string().into_owned(), item.index());
                 }
-                Ok(pdb::TypeData::Union(union)) => {
-                    if !union.properties.forward_reference() {
-                        name_map.insert(union.name.to_string().into_owned(), item.index());
-                    }
+                Ok(pdb::TypeData::Union(union)) if !union.properties.forward_reference() => {
+                    name_map.insert(union.name.to_string().into_owned(), item.index());
                 }
                 _ => {}
             }

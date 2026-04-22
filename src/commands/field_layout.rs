@@ -111,13 +111,14 @@ fn format_text(
         for base in &layout.base_classes {
             let virtual_marker = if base.is_virtual { " (virtual)" } else { "" };
             let highlight = match query_offset {
-                Some(q) if base.size > 0 && q >= base.offset && q < base.offset + base.size => {
-                    // Only highlight base if no field matches
-                    if find_field_at_offset(layout, q).is_none() {
-                        "==> "
-                    } else {
-                        ";   "
-                    }
+                // Only highlight base if no field matches
+                Some(q)
+                    if base.size > 0
+                        && q >= base.offset
+                        && q < base.offset + base.size
+                        && find_field_at_offset(layout, q).is_none() =>
+                {
+                    "==> "
                 }
                 _ => ";   ",
             };
