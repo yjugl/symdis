@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.5] - 2026-04-22
+
+### Packaging
+
+- Switched `Cargo.toml` from `exclude` to an explicit `include` allowlist so the
+  published crate tarball is minimal and predictable — only `src/`, `Cargo.toml`,
+  `Cargo.lock`, `README.md`, `LICENSE`, and `CHANGELOG.md` ship.
+
+### Maintenance
+
+- Fixed clippy warnings introduced by Rust 1.95.0.
+- Bumped dependencies: tokio 1.50 → 1.52, clap 4.5.60 → 4.6, zip 8.2 → 8.5,
+  rustls 0.23.37 → 0.23.38, tracing-subscriber 0.3.22 → 0.3.23,
+  moz-cli-version-check 0.2.3 → 0.2.4.
+
 ## [0.4.4] - 2026-03-17
 
 ### Packaging
