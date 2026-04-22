@@ -29,6 +29,7 @@ Also verify:
 - **License compatibility**: When adding, updating, or enabling a new feature on a dependency, run `cargo tree --format "{p} {l}" --prefix none` and verify that no new license is incompatible with MPL-2.0. In particular, reject GPL/LGPL/AGPL dependencies. All current dependencies are permissive (MIT, Apache-2.0, ISC, BSD-3-Clause, BSL-1.0, Zlib, etc.) — keep it that way. If in doubt, flag the license for review before committing.
 - **CLAUDE.md is up-to-date**: Update the Project Status, Architecture, and Key Conventions sections to reflect any new modules, commands, flags, or behavioral changes.
 - **README.md is up-to-date**: Update the Features list, Quick Start examples, command sections, and any other relevant parts of `README.md` to reflect new commands, flags, or capabilities.
+- **Cargo.toml `include` list is complete**: After any significant change (new source file outside `src/`, new top-level asset referenced at build time such as a `build.rs`/`include_str!`/`include_bytes!` target, new test/bench/example directory, or renamed top-level file), run `cargo package --allow-dirty` and confirm the verification step compiles successfully against the extracted tarball in `target/package/`. The `include` directive is a strict allowlist — anything not listed is silently dropped from the published crate, and missing files will only surface as a build failure on the first downstream user. Add new required paths to `include` in `Cargo.toml` before publishing.
 
 ## Project Status
 
