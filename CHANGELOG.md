@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.7] - 2026-05-15
+
+### Maintenance
+
+- Enabled the `cli` feature when installing `cargo-about` in the release
+  workflow. Recent `cargo-about` versions gate the binary behind a non-default
+  `cli` feature, so `cargo install cargo-about` produced no binary and the
+  third-party license generation step failed with "no such command: `about`".
+
 ## [0.4.6] - 2026-05-15
 
 ### Fixes
