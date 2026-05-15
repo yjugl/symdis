@@ -77,7 +77,7 @@ jobs:
 
       - name: Generate third-party licenses
         run: |
-          cargo install cargo-about
+          cargo install cargo-about --features cli
           cargo about generate --features lzokay about.hbs -o THIRD-PARTY-LICENSES.txt
 
       - name: Package (Unix)
