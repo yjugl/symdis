@@ -650,12 +650,19 @@ pub async fn run(args: &DisasmArgs, config: &Config) -> Result<()> {
     };
 
     // Verify binary identity — discard the binary on mismatch to avoid
-    // showing disassembly from a different build.
+    // showing disassembly from a different build. The cached file stays on
+    // disk and will be re-loaded (and re-rejected) on the next run, so the
+    // warning names the path the user needs to delete to force a re-fetch.
     if let Some(ref bin) = binary_file
         && let Some(msg) =
             check_binary_identity(bin.as_ref(), code_id_resolved.as_deref(), &debug_id)
     {
-        warn!("{msg}");
+        let cached_at = bin_result
+            .as_ref()
+            .ok()
+            .map(|p| format!(" (cached at {}; delete to force re-fetch)", p.display()))
+            .unwrap_or_default();
+        warn!("{msg}{cached_at}");
         binary_file = None;
     }
 
