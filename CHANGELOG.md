@@ -2,6 +2,45 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.6] - 2026-05-15
+
+### Fixes
+
+- **Mach-O binary identity check**: `check_binary_identity` unconditionally
+  byte-swapped the binary's build ID to compare against the `.sym` debug ID.
+  That swap is correct for ELF (the GNU build-id is interpreted as a
+  little-endian Windows GUID), but wrong for Mach-O — `LC_UUID` bytes are
+  already in the natural UUID order that Breakpad's `dump_syms` writes into
+  the `.sym` file. The swap mangled Mach-O identities and rejected valid
+  locally-cached binaries with a spurious "Binary identity mismatch" warning.
+  A new format-aware `BinaryFile::breakpad_debug_id()` trait method delegates
+  the conversion to each binary format. (#1)
+
+- **PE binary identity check**: `PeFile` inherited the `BinaryFile` trait
+  defaults of `None` for both `build_id()` and `breakpad_debug_id()`, so
+  `check_binary_identity` silently skipped every PE. A stale or misplaced DLL
+  in the cache rendered as garbage instructions on Windows while the same
+  misplacement on macOS or Linux warned and discarded the binary. `PeFile`
+  now implements both methods: `build_id()` returns
+  `{TimeDateStamp:08X}{SizeOfImage:X}` from the COFF + optional headers, and
+  `breakpad_debug_id()` pulls the GUID + age from the CodeView `CV_INFO_PDB70`
+  record. `check_binary_identity` now runs the code_id and debug_id checks
+  independently — for PE the two can diverge (re-stamped or post-link-patched
+  binaries), and both mismatches are reported in a single diagnostic.
+
+### Improvements
+
+- **Identity-mismatch warning names the cached file**: When the loaded binary
+  fails the identity check, the diagnostic now includes the cache path and
+  notes that deleting the file forces a re-fetch. Previously the user got a
+  bare "Binary identity mismatch" with no indication of which file in the
+  cache was poisoned — the next run would silently re-load the same bad file
+  and warn again in a loop. `cache clear` was the only escape hatch.
+
+### Maintenance
+
+- Fixed `useless_vec` warnings introduced by Rust 1.95.0 in tests.
+
 ## [0.4.5] - 2026-04-22
 
 ### Packaging
