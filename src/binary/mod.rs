@@ -61,6 +61,24 @@ pub trait BinaryFile {
         None
     }
 
+    /// Return the binary's identity as a 33-character Breakpad debug ID.
+    ///
+    /// ELF and Mach-O use different conventions for converting their build
+    /// identifier to a Breakpad debug ID:
+    /// - ELF GNU build-id: byte-swap the first 16 bytes as if they were a
+    ///   little-endian Windows GUID (Data1 + Data2 + Data3 reversed), then
+    ///   append age "0".
+    /// - Mach-O LC_UUID: append age "0" directly — the bytes are already
+    ///   in the natural UUID order that Breakpad expects.
+    ///
+    /// Returns `None` for formats where symdis doesn't derive the debug ID
+    /// from the binary alone (e.g., PE — the equivalent identifier sits in
+    /// the CodeView debug record, but symdis verifies PE identity via the
+    /// linked PDB instead).
+    fn breakpad_debug_id(&self) -> Option<String> {
+        None
+    }
+
     /// Return the exact function bounds (begin_rva, end_rva) for an RVA.
     /// Uses PE .pdata entries when available. Returns `None` by default.
     fn function_bounds(&self, _rva: u64) -> Option<(u64, u64)> {

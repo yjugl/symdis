@@ -408,6 +408,14 @@ impl BinaryFile for MachOFile {
             .ok()
             .and_then(|uuids| uuids.into_iter().next())
     }
+
+    fn breakpad_debug_id(&self) -> Option<String> {
+        // Mach-O LC_UUID bytes are stored in natural UUID byte order, which
+        // is exactly the order Breakpad's dump_syms writes into the .sym file.
+        // No byte-swap is needed -- just uppercase and append age "0".
+        let uuid = self.build_id()?;
+        Some(format!("{}0", uuid.to_uppercase()))
+    }
 }
 
 #[cfg(test)]
@@ -696,5 +704,63 @@ mod tests {
     fn test_read_pointer_at_rva_unmapped() {
         let macho = make_macho_file();
         assert_eq!(macho.read_pointer_at_rva(0x20000), None);
+    }
+
+    /// Build a minimal x86_64 Mach-O with a single LC_UUID load command.
+    ///
+    /// Layout:
+    ///   0x000..0x020  mach_header_64
+    ///   0x020..0x038  LC_UUID command (cmd=0x1B, cmdsize=24, uuid[16])
+    fn make_synthetic_macho_with_uuid(uuid: [u8; 16]) -> Vec<u8> {
+        let mut data = vec![0u8; 0x38];
+
+        // mach_header_64
+        write_u32_le(&mut data, 0, 0xFEEDFACF); // magic = MH_MAGIC_64
+        write_u32_le(&mut data, 4, 0x01000007); // cputype = CPU_TYPE_X86_64
+        write_u32_le(&mut data, 8, 0x00000003); // cpusubtype
+        write_u32_le(&mut data, 12, 2); // filetype = MH_EXECUTE
+        write_u32_le(&mut data, 16, 1); // ncmds
+        write_u32_le(&mut data, 20, 24); // sizeofcmds
+
+        // LC_UUID at 0x20
+        write_u32_le(&mut data, 0x20, 0x1B); // cmd = LC_UUID
+        write_u32_le(&mut data, 0x24, 24); // cmdsize
+        data[0x28..0x38].copy_from_slice(&uuid);
+
+        data
+    }
+
+    // Regression test for https://github.com/yjugl/symdis/issues/1
+    //
+    // Mach-O LC_UUID bytes are in natural UUID byte order -- the Breakpad
+    // debug ID is just the uppercased hex with age "0" appended. No
+    // byte-swap (which would mangle the ID and cause spurious mismatches
+    // against locally-cached binaries).
+    #[test]
+    fn test_breakpad_debug_id_macho_no_byte_swap() {
+        // Bytes from a real libmozglue.dylib LC_UUID (issue #1).
+        let uuid: [u8; 16] = [
+            0x4C, 0x4C, 0x44, 0x9C, 0x55, 0x55, 0x31, 0x44, 0xA1, 0xC9, 0x51, 0x32, 0xD1, 0xF5,
+            0xB0, 0x7A,
+        ];
+        let data = make_synthetic_macho_with_uuid(uuid);
+        let macho = MachOFile::from_bytes(data, None).unwrap();
+
+        assert_eq!(
+            macho.build_id().as_deref(),
+            Some("4c4c449c55553144a1c95132d1f5b07a"),
+        );
+        assert_eq!(
+            macho.breakpad_debug_id().as_deref(),
+            Some("4C4C449C55553144A1C95132D1F5B07A0"),
+        );
+    }
+
+    #[test]
+    fn test_breakpad_debug_id_macho_no_uuid_returns_none() {
+        // make_macho_file() has no LC_UUID, so both should be None.
+        let macho = make_macho_file();
+        assert!(macho.build_id().is_none());
+        assert!(macho.breakpad_debug_id().is_none());
     }
 }

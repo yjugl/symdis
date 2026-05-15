@@ -352,6 +352,11 @@ impl BinaryFile for ElfFile {
             .flatten()
     }
 
+    fn breakpad_debug_id(&self) -> Option<String> {
+        let build_id = self.build_id()?;
+        crate::symbols::id_convert::build_id_to_debug_id(&build_id).ok()
+    }
+
     fn read_pointer_at_rva(&self, rva: u64) -> Option<u64> {
         let offset = self.va_to_offset(rva)? as usize;
         let ptr_size = match self.arch {

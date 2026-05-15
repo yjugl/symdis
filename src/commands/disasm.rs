@@ -1250,18 +1250,19 @@ fn build_sym_only_data(
 /// Check whether the loaded binary's identity matches the expected ID.
 ///
 /// Compares the binary's build ID (ELF) or UUID (Mach-O) against the
-/// code_id (if available) or the debug_id (converted via GUID byte-swapping).
-/// Returns a mismatch message on failure, or `None` if the identity matches
-/// or cannot be determined (e.g. PE binaries without a build ID).
+/// code_id (if available) or the debug_id (via `BinaryFile::breakpad_debug_id`,
+/// which uses the format-specific conversion: byte-swap for ELF, no swap for
+/// Mach-O). Returns a mismatch message on failure, or `None` if the identity
+/// matches or cannot be determined (e.g. PE — symdis doesn't currently derive
+/// a Breakpad debug ID from the PE alone; PE identity is verified via the PDB).
 fn check_binary_identity(
     binary: &dyn BinaryFile,
     code_id: Option<&str>,
     debug_id: &str,
 ) -> Option<String> {
-    let actual_id = binary.build_id()?;
-
-    // If we have code_id, compare directly (most reliable)
+    // If we have code_id, compare against the raw build ID (most reliable).
     if let Some(code_id) = code_id {
+        let actual_id = binary.build_id()?;
         if actual_id.eq_ignore_ascii_case(code_id) {
             return None;
         }
@@ -1271,19 +1272,17 @@ fn check_binary_identity(
         ));
     }
 
-    // Convert actual build ID to a standard Breakpad debug ID (33 chars)
-    // and compare directly.
-    if let Ok(actual_as_debug_id) = crate::symbols::id_convert::build_id_to_debug_id(&actual_id) {
-        if actual_as_debug_id.eq_ignore_ascii_case(debug_id) {
-            return None;
-        }
-        return Some(format!(
-            "Binary identity mismatch: expected debug ID {}, got {} -- disassembly may be from a different build",
-            debug_id, actual_as_debug_id
-        ));
+    // Otherwise compare against the standard Breakpad debug ID. The binary
+    // knows how to convert its own build ID — ELF needs the GUID byte-swap,
+    // Mach-O does not.
+    let actual_as_debug_id = binary.breakpad_debug_id()?;
+    if actual_as_debug_id.eq_ignore_ascii_case(debug_id) {
+        return None;
     }
-
-    None
+    Some(format!(
+        "Binary identity mismatch: expected debug ID {}, got {} -- disassembly may be from a different build",
+        debug_id, actual_as_debug_id
+    ))
 }
 
 #[cfg(test)]
@@ -1388,5 +1387,108 @@ mod tests {
         assert_eq!(estimate_export_size(&exports, 0x1000), 0x100);
         assert_eq!(estimate_export_size(&exports, 0x1100), 0x200);
         assert_eq!(estimate_export_size(&exports, 0x1300), 0x10000);
+    }
+
+    /// Stub binary with controllable build_id and breakpad_debug_id for
+    /// testing check_binary_identity.
+    struct IdStubBinary {
+        build_id: Option<String>,
+        breakpad_debug_id: Option<String>,
+    }
+
+    impl BinaryFile for IdStubBinary {
+        fn arch(&self) -> CpuArch {
+            CpuArch::X86_64
+        }
+        fn extract_code(&self, _rva: u64, _size: u64) -> Result<Vec<u8>> {
+            Ok(Vec::new())
+        }
+        fn resolve_import(&self, _rva: u64) -> Option<(String, String)> {
+            None
+        }
+        fn exports(&self) -> &[(u64, String)] {
+            &[]
+        }
+        fn build_id(&self) -> Option<String> {
+            self.build_id.clone()
+        }
+        fn breakpad_debug_id(&self) -> Option<String> {
+            self.breakpad_debug_id.clone()
+        }
+    }
+
+    // Regression test for https://github.com/yjugl/symdis/issues/1
+    //
+    // Mach-O LC_UUID bytes are stored in natural UUID byte order, so the
+    // corresponding Breakpad debug ID is the raw hex uppercased + age "0"
+    // -- NO byte-swap (unlike ELF). Previously check_binary_identity always
+    // ran the ELF-style byte-swap, which mangled Mach-O identity comparisons
+    // and rejected locally-cached binaries with a spurious mismatch error.
+    //
+    // This test stubs `breakpad_debug_id` to verify the call site reads
+    // from the trait. The real Mach-O conversion is exercised by
+    // `binary::macho::tests::test_breakpad_debug_id_macho_no_byte_swap`.
+    #[test]
+    fn test_check_binary_identity_macho_no_swap() {
+        // From issue: LC_UUID 4c4c449c55553144a1c95132d1f5b07a -> debug ID
+        // 4C4C449C55553144A1C95132D1F5B07A0 (just uppercase + age).
+        let binary = IdStubBinary {
+            build_id: Some("4c4c449c55553144a1c95132d1f5b07a".to_string()),
+            breakpad_debug_id: Some("4C4C449C55553144A1C95132D1F5B07A0".to_string()),
+        };
+        assert_eq!(
+            check_binary_identity(&binary, None, "4C4C449C55553144A1C95132D1F5B07A0"),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_check_binary_identity_elf_swap() {
+        // ELF: raw build ID b7dc60e91588d8a54c4c44205044422e gets byte-swapped
+        // to debug ID E960DCB78815A5D84C4C44205044422E0.
+        let binary = IdStubBinary {
+            build_id: Some("b7dc60e91588d8a54c4c44205044422e".to_string()),
+            breakpad_debug_id: Some("E960DCB78815A5D84C4C44205044422E0".to_string()),
+        };
+        assert_eq!(
+            check_binary_identity(&binary, None, "E960DCB78815A5D84C4C44205044422E0"),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_check_binary_identity_mismatch_reports_converted_id() {
+        let binary = IdStubBinary {
+            build_id: Some("4c4c449c55553144a1c95132d1f5b07a".to_string()),
+            breakpad_debug_id: Some("4C4C449C55553144A1C95132D1F5B07A0".to_string()),
+        };
+        let msg = check_binary_identity(&binary, None, "DEADBEEFDEADBEEFDEADBEEFDEADBEEF0")
+            .expect("expected mismatch");
+        assert!(msg.contains("DEADBEEFDEADBEEFDEADBEEFDEADBEEF0"));
+        assert!(msg.contains("4C4C449C55553144A1C95132D1F5B07A0"));
+    }
+
+    #[test]
+    fn test_check_binary_identity_code_id_match() {
+        let binary = IdStubBinary {
+            build_id: Some("4c4c449c55553144a1c95132d1f5b07a".to_string()),
+            breakpad_debug_id: Some("4C4C449C55553144A1C95132D1F5B07A0".to_string()),
+        };
+        // code_id branch compares raw build_id directly (case-insensitive)
+        assert_eq!(
+            check_binary_identity(&binary, Some("4C4C449C55553144A1C95132D1F5B07A"), "unused",),
+            None,
+        );
+    }
+
+    #[test]
+    fn test_check_binary_identity_no_build_id() {
+        // PE-like binary: no build_id, no breakpad_debug_id → returns None
+        // (identity cannot be checked).
+        let binary = IdStubBinary {
+            build_id: None,
+            breakpad_debug_id: None,
+        };
+        assert_eq!(check_binary_identity(&binary, None, "ignored"), None);
     }
 }
