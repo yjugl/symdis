@@ -21,12 +21,28 @@ pub struct PeFile {
     /// .pdata entries: (begin_rva, end_rva) pairs, sorted by begin_rva.
     /// Populated from PE exception data (x86_64 only in goblin 0.9).
     pdata_entries: Vec<(u32, u32)>,
+    /// CodeView CV_INFO_PDB70 ("RSDS") identity, if present. Used to
+    /// derive the Breakpad debug ID for matching against `.sym` files.
+    /// NB10 (PDB 2.0) entries are not used -- Mozilla hasn't shipped them
+    /// in two decades.
+    codeview: Option<CodeViewInfo>,
+    /// PE "code_id" identifier: `{TimeDateStamp:08X}{SizeOfImage:X}`.
+    /// This is the same string used by Microsoft Symbol Server URLs and
+    /// the WinDbg-style cache layout (e.g. `mozglue.dll/6A04554DAE000/`).
+    /// `None` only for PEs without an optional header (object files etc.,
+    /// not real executables).
+    pe_code_id: Option<String>,
 }
 
 struct SectionInfo {
     virtual_address: u64,
     virtual_size: u64,
     pointer_to_raw_data: u64,
+}
+
+struct CodeViewInfo {
+    signature: [u8; 16],
+    age: u32,
 }
 
 impl PeFile {
@@ -93,6 +109,30 @@ impl PeFile {
 
         let image_base = pe.image_base;
 
+        // Extract CodeView PDB70 identity for `breakpad_debug_id()`.
+        // goblin's `debug_data.codeview_pdb70_debug_info` already picks the
+        // CV entry out of the multi-entry debug directory for us.
+        let codeview = pe
+            .debug_data
+            .as_ref()
+            .and_then(|d| d.codeview_pdb70_debug_info)
+            .map(|cv| CodeViewInfo {
+                signature: cv.signature,
+                age: cv.age,
+            });
+
+        // Compute the PE "code_id" used by Microsoft Symbol Server URLs and
+        // the WinDbg cache layout. Reproducible-build PEs (`/Brepro`) zero
+        // the TimeDateStamp; we preserve that as-is, matching the convention
+        // used elsewhere in the toolchain.
+        let time_date_stamp = pe.header.coff_header.time_date_stamp;
+        let pe_code_id = pe.header.optional_header.as_ref().map(|oh| {
+            format!(
+                "{:08X}{:X}",
+                time_date_stamp, oh.windows_fields.size_of_image
+            )
+        });
+
         Ok(Self {
             data,
             arch,
@@ -101,6 +141,8 @@ impl PeFile {
             imports_map,
             sections,
             pdata_entries,
+            codeview,
+            pe_code_id,
         })
     }
 
@@ -195,6 +237,19 @@ impl BinaryFile for PeFile {
         // Convert VA to RVA by subtracting image_base
         value.checked_sub(self.image_base)
     }
+
+    fn breakpad_debug_id(&self) -> Option<String> {
+        let cv = self.codeview.as_ref()?;
+        Some(format!(
+            "{}{:X}",
+            crate::symbols::id_convert::format_breakpad_guid(&cv.signature),
+            cv.age
+        ))
+    }
+
+    fn build_id(&self) -> Option<String> {
+        self.pe_code_id.clone()
+    }
 }
 
 #[cfg(test)]
@@ -222,6 +277,8 @@ mod tests {
                 },
             ],
             pdata_entries: Vec::new(),
+            codeview: None,
+            pe_code_id: None,
         };
 
         // RVA in first section
@@ -247,6 +304,8 @@ mod tests {
             imports_map: HashMap::new(),
             sections: Vec::new(),
             pdata_entries: vec![(0x1000, 0x1100), (0x2000, 0x2200), (0x3000, 0x3050)],
+            codeview: None,
+            pe_code_id: None,
         };
 
         // Exact start of function
@@ -277,6 +336,8 @@ mod tests {
             imports_map: HashMap::new(),
             sections: Vec::new(),
             pdata_entries: Vec::new(),
+            codeview: None,
+            pe_code_id: None,
         };
         assert_eq!(pe.find_pdata_bounds(0x1000), None);
     }
@@ -304,6 +365,8 @@ mod tests {
                 pointer_to_raw_data: 0x200,
             }],
             pdata_entries: Vec::new(),
+            codeview: None,
+            pe_code_id: None,
         };
 
         // RVA 0x1000 → raw 0x200 → reads pointer → subtracts image_base → RVA 0x5000
@@ -337,6 +400,8 @@ mod tests {
                 pointer_to_raw_data: 0x200,
             }],
             pdata_entries: Vec::new(),
+            codeview: None,
+            pe_code_id: None,
         };
 
         assert_eq!(pe.read_pointer_at_rva(0x1000), Some(0x2000));
@@ -357,5 +422,104 @@ mod tests {
         assert_eq!(CpuArch::from_sym_arch("arm"), Some(CpuArch::Arm));
         assert_eq!(CpuArch::from_sym_arch("arm64"), Some(CpuArch::Arm64));
         assert_eq!(CpuArch::from_sym_arch("mips"), None);
+    }
+
+    fn make_pe_with_codeview(codeview: Option<CodeViewInfo>) -> PeFile {
+        PeFile {
+            data: Vec::new(),
+            arch: CpuArch::X86_64,
+            image_base: 0x180000000,
+            exports_list: Vec::new(),
+            imports_map: HashMap::new(),
+            sections: Vec::new(),
+            pdata_entries: Vec::new(),
+            codeview,
+            pe_code_id: None,
+        }
+    }
+
+    fn make_pe_with_code_id(pe_code_id: Option<String>) -> PeFile {
+        PeFile {
+            data: Vec::new(),
+            arch: CpuArch::X86_64,
+            image_base: 0x180000000,
+            exports_list: Vec::new(),
+            imports_map: HashMap::new(),
+            sections: Vec::new(),
+            pdata_entries: Vec::new(),
+            codeview: None,
+            pe_code_id,
+        }
+    }
+
+    // Real-world fixture: mozglue.dll from the same Firefox 151.0b10 crash
+    // is cached under `mozglue.dll/6A04554DAE000/` -- TimeDateStamp 0x6A04554D,
+    // SizeOfImage 0xAE000.
+    #[test]
+    fn test_build_id_pe_code_id() {
+        let pe = make_pe_with_code_id(Some("6A04554DAE000".to_string()));
+        assert_eq!(pe.build_id().as_deref(), Some("6A04554DAE000"));
+    }
+
+    #[test]
+    fn test_build_id_pe_no_optional_header() {
+        // PEs without an optional header (object files etc.) -> None,
+        // identity check falls through to debug_id branch via CodeView.
+        let pe = make_pe_with_code_id(None);
+        assert_eq!(pe.build_id(), None);
+    }
+
+    // Real-world fixture: mozglue.pdb from Firefox 151.0b10 crash
+    // 122a26c7-177b-4d7e-afbc-f508e0260515 reports debug_id
+    // 8F6374B35C6264174C4C44205044422E1. Reversing the Breakpad swap:
+    //   Data1 displayed "8F6374B3" -> on-disk LE bytes [B3, 74, 63, 8F]
+    //   Data2 displayed "5C62"     -> on-disk LE bytes [62, 5C]
+    //   Data3 displayed "6417"     -> on-disk LE bytes [17, 64]
+    //   Data4 unchanged             -> [4C, 4C, 44, 20, 50, 44, 42, 2E]
+    //   age = 1
+    #[test]
+    fn test_breakpad_debug_id_pe_pdb70() {
+        let pe = make_pe_with_codeview(Some(CodeViewInfo {
+            signature: [
+                0xB3, 0x74, 0x63, 0x8F, 0x62, 0x5C, 0x17, 0x64, 0x4C, 0x4C, 0x44, 0x20, 0x50, 0x44,
+                0x42, 0x2E,
+            ],
+            age: 1,
+        }));
+        assert_eq!(
+            pe.breakpad_debug_id().as_deref(),
+            Some("8F6374B35C6264174C4C44205044422E1"),
+        );
+    }
+
+    // Age must be formatted as uppercase hex with no padding so multi-digit
+    // values like 0x1A render as "1A" (33+ chars total), not "26" (decimal).
+    #[test]
+    fn test_breakpad_debug_id_pe_age_multi_digit() {
+        let pe = make_pe_with_codeview(Some(CodeViewInfo {
+            signature: [0u8; 16],
+            age: 0x1A,
+        }));
+        let id = pe.breakpad_debug_id().expect("debug id");
+        assert!(id.ends_with("1A"), "got {id}");
+        assert_eq!(id.len(), 34);
+    }
+
+    // Age 0 must render as a single "0", not as an empty string.
+    #[test]
+    fn test_breakpad_debug_id_pe_age_zero() {
+        let pe = make_pe_with_codeview(Some(CodeViewInfo {
+            signature: [0u8; 16],
+            age: 0,
+        }));
+        let id = pe.breakpad_debug_id().expect("debug id");
+        assert_eq!(id, "000000000000000000000000000000000");
+        assert_eq!(id.len(), 33);
+    }
+
+    #[test]
+    fn test_breakpad_debug_id_pe_no_codeview() {
+        let pe = make_pe_with_codeview(None);
+        assert_eq!(pe.breakpad_debug_id(), None);
     }
 }

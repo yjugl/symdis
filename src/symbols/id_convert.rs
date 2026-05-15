@@ -4,18 +4,48 @@
 
 use anyhow::{Result, bail};
 
+/// Format 16 raw GUID bytes as the 32-char uppercase hex prefix of a
+/// Breakpad debug ID.
+///
+/// The bytes are interpreted as a Windows GUID stored in little-endian
+/// (Data1 = 4 LE bytes, Data2 = 2 LE bytes, Data3 = 2 LE bytes, Data4 =
+/// 8 raw bytes). The Breakpad display reverses Data1/2/3 to big-endian
+/// while leaving Data4 untouched.
+///
+/// Callers append the age separately:
+///   - ELF / Mach-O: always `"0"`.
+///   - PE: `format!("{:X}", age)` from the CodeView CV_INFO_PDB70 record.
+///
+/// Never apply this swap to a Mach-O LC_UUID -- those bytes are already
+/// in natural UUID byte order and need no transformation.
+pub(crate) fn format_breakpad_guid(bytes: &[u8; 16]) -> String {
+    let mut out = String::with_capacity(32);
+    // Data1 -- 4 bytes LE -> BE
+    for b in bytes[0..4].iter().rev() {
+        out.push_str(&format!("{b:02X}"));
+    }
+    // Data2 -- 2 bytes LE -> BE
+    for b in bytes[4..6].iter().rev() {
+        out.push_str(&format!("{b:02X}"));
+    }
+    // Data3 -- 2 bytes LE -> BE
+    for b in bytes[6..8].iter().rev() {
+        out.push_str(&format!("{b:02X}"));
+    }
+    // Data4 -- 8 bytes unchanged
+    for b in &bytes[8..16] {
+        out.push_str(&format!("{b:02X}"));
+    }
+    out
+}
+
 /// Convert a Linux ELF build ID to a standard Breakpad debug ID (33 chars).
 ///
 /// The build ID is a raw hex string (typically 40 chars for 20-byte SHA-1).
-/// Only the first 16 bytes are used for the GUID, with byte-swapping on
-/// the first 3 fields:
-///   - Data1: 4 bytes (8 hex chars) — reverse byte order
-///   - Data2: 2 bytes (4 hex chars) — reverse byte order
-///   - Data3: 2 bytes (4 hex chars) — reverse byte order
-///   - Data4: 8 bytes (16 hex chars) — unchanged
-///
-/// Any bytes beyond the first 16 are discarded (Breakpad does the same).
-/// Age is always 0 for Linux.
+/// Only the first 16 bytes are used for the GUID, treated as a little-endian
+/// Windows GUID and byte-swapped via [`format_breakpad_guid`]. Any bytes
+/// beyond the first 16 are discarded (Breakpad does the same). Age is
+/// always 0 for Linux.
 pub fn build_id_to_debug_id(build_id: &str) -> Result<String> {
     if build_id.len() < 32 {
         bail!(
@@ -24,41 +54,19 @@ pub fn build_id_to_debug_id(build_id: &str) -> Result<String> {
         );
     }
 
-    let guid_part = &build_id[..32];
-
-    // Byte-swap Data1 (chars 0..8), Data2 (chars 8..12), Data3 (chars 12..16)
-    let data1 = swap_hex_bytes(&guid_part[0..8])?;
-    let data2 = swap_hex_bytes(&guid_part[8..12])?;
-    let data3 = swap_hex_bytes(&guid_part[12..16])?;
-    let data4 = &guid_part[16..32];
-
-    Ok(format!("{data1}{data2}{data3}{data4}0").to_uppercase())
-}
-
-/// Reverse the byte order of a hex string.
-/// "b7dc60e9" → "e960dcb7"
-fn swap_hex_bytes(hex: &str) -> Result<String> {
-    if !hex.len().is_multiple_of(2) {
-        bail!("hex string has odd length: {hex}");
+    let mut guid = [0u8; 16];
+    for (i, chunk) in guid.iter_mut().enumerate() {
+        let hex = &build_id[i * 2..i * 2 + 2];
+        *chunk = u8::from_str_radix(hex, 16)
+            .map_err(|_| anyhow::anyhow!("invalid hex in build ID at byte {i}: {hex}"))?;
     }
-    let mut result = String::with_capacity(hex.len());
-    for i in (0..hex.len()).rev().step_by(2) {
-        result.push_str(&hex[i - 1..=i]);
-    }
-    Ok(result)
+
+    Ok(format!("{}0", format_breakpad_guid(&guid)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_swap_hex_bytes() {
-        assert_eq!(swap_hex_bytes("b7dc60e9").unwrap(), "e960dcb7");
-        assert_eq!(swap_hex_bytes("1588").unwrap(), "8815");
-        assert_eq!(swap_hex_bytes("d8a5").unwrap(), "a5d8");
-        assert_eq!(swap_hex_bytes("AB").unwrap(), "AB");
-    }
 
     // 16-byte build ID (32 hex chars)
     #[test]
@@ -80,5 +88,26 @@ mod tests {
     #[test]
     fn test_too_short_build_id() {
         assert!(build_id_to_debug_id("ABC").is_err());
+    }
+
+    #[test]
+    fn test_invalid_hex_build_id() {
+        // Length is fine but contains non-hex; must error rather than panic.
+        let result = build_id_to_debug_id("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_format_breakpad_guid_swaps_data1_2_3_only() {
+        let bytes: [u8; 16] = [
+            0xb7, 0xdc, 0x60, 0xe9, // Data1 LE -> "E960DCB7"
+            0x15, 0x88, // Data2 LE -> "8815"
+            0xd8, 0xa5, // Data3 LE -> "A5D8"
+            0x4c, 0x4c, 0x44, 0x20, 0x50, 0x44, 0x42, 0x2e, // Data4 unchanged
+        ];
+        assert_eq!(
+            format_breakpad_guid(&bytes),
+            "E960DCB78815A5D84C4C44205044422E"
+        );
     }
 }

@@ -1249,40 +1249,48 @@ fn build_sym_only_data(
 
 /// Check whether the loaded binary's identity matches the expected ID.
 ///
-/// Compares the binary's build ID (ELF) or UUID (Mach-O) against the
-/// code_id (if available) or the debug_id (via `BinaryFile::breakpad_debug_id`,
-/// which uses the format-specific conversion: byte-swap for ELF, no swap for
-/// Mach-O). Returns a mismatch message on failure, or `None` if the identity
-/// matches or cannot be determined (e.g. PE — symdis doesn't currently derive
-/// a Breakpad debug ID from the PE alone; PE identity is verified via the PDB).
+/// Compares the binary's build ID (ELF), UUID (Mach-O), or CodeView GUID+age
+/// (PE) against the supplied code_id (if any) or the debug_id (via
+/// `BinaryFile::breakpad_debug_id`, which applies the format-specific
+/// conversion). Returns a mismatch message on failure, or `None` if the
+/// identity matches or cannot be determined. The latter happens for the
+/// rare PE binary without a CodeView CV_INFO_PDB70 record (stripped builds
+/// or NB10-only -- Mozilla hasn't shipped NB10 in two decades).
 fn check_binary_identity(
     binary: &dyn BinaryFile,
     code_id: Option<&str>,
     debug_id: &str,
 ) -> Option<String> {
-    // If we have code_id, compare against the raw build ID (most reliable).
-    if let Some(code_id) = code_id {
-        let actual_id = binary.build_id()?;
-        if actual_id.eq_ignore_ascii_case(code_id) {
-            return None;
-        }
-        return Some(format!(
-            "Binary identity mismatch: expected {}, got {} -- disassembly may be from a different build",
-            code_id, actual_id
-        ));
+    let mut mismatches = Vec::new();
+
+    // code_id check -- ELF GNU build-id, Mach-O LC_UUID, PE TimeDateStamp+
+    // SizeOfImage. Only meaningful when the caller supplied an expected
+    // value and the binary can surface its own.
+    if let (Some(expected), Some(actual)) = (code_id, binary.build_id())
+        && !actual.eq_ignore_ascii_case(expected)
+    {
+        mismatches.push(format!("code_id: expected {expected}, got {actual}"));
     }
 
-    // Otherwise compare against the standard Breakpad debug ID. The binary
-    // knows how to convert its own build ID — ELF needs the GUID byte-swap,
-    // Mach-O does not.
-    let actual_as_debug_id = binary.breakpad_debug_id()?;
-    if actual_as_debug_id.eq_ignore_ascii_case(debug_id) {
-        return None;
+    // debug_id check -- Breakpad-format ID (ELF: byte-swapped build-id + "0";
+    // Mach-O: uppercased UUID + "0"; PE: byte-swapped CodeView GUID + age).
+    // For ELF/Mach-O this duplicates the code_id check by construction; for
+    // PE the two identifiers are independent, so this catches re-stamped or
+    // post-link-patched PEs that the code_id check alone would miss.
+    if let Some(actual) = binary.breakpad_debug_id()
+        && !actual.eq_ignore_ascii_case(debug_id)
+    {
+        mismatches.push(format!("debug_id: expected {debug_id}, got {actual}"));
     }
-    Some(format!(
-        "Binary identity mismatch: expected debug ID {}, got {} -- disassembly may be from a different build",
-        debug_id, actual_as_debug_id
-    ))
+
+    if mismatches.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "Binary identity mismatch ({}) -- disassembly may be from a different build",
+            mismatches.join("; ")
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -1474,17 +1482,99 @@ mod tests {
             build_id: Some("4c4c449c55553144a1c95132d1f5b07a".to_string()),
             breakpad_debug_id: Some("4C4C449C55553144A1C95132D1F5B07A0".to_string()),
         };
-        // code_id branch compares raw build_id directly (case-insensitive)
+        // Both checks run when both are present (we no longer short-circuit
+        // on a code_id match), so the test passes a matching debug_id too.
         assert_eq!(
-            check_binary_identity(&binary, Some("4C4C449C55553144A1C95132D1F5B07A"), "unused",),
+            check_binary_identity(
+                &binary,
+                Some("4C4C449C55553144A1C95132D1F5B07A"),
+                "4C4C449C55553144A1C95132D1F5B07A0",
+            ),
             None,
         );
     }
 
+    // PE re-stamped / post-link-patched scenario: code_id matches but the
+    // CodeView GUID has been changed. The two PE identifiers are written
+    // by different linker stages and can diverge -- the second check catches
+    // it where the code_id check alone wouldn't.
     #[test]
-    fn test_check_binary_identity_no_build_id() {
-        // PE-like binary: no build_id, no breakpad_debug_id → returns None
-        // (identity cannot be checked).
+    fn test_check_binary_identity_code_id_matches_debug_id_mismatches() {
+        let binary = IdStubBinary {
+            build_id: Some("6A04554DAE000".to_string()),
+            breakpad_debug_id: Some("17CA6E98FAFE9AE94C4C44205044422E1".to_string()),
+        };
+        let msg = check_binary_identity(
+            &binary,
+            Some("6A04554DAE000"),
+            "8F6374B35C6264174C4C44205044422E1",
+        )
+        .expect("expected mismatch");
+        // The code_id portion shouldn't appear in the error (it matched);
+        // only the debug_id mismatch is reported.
+        assert!(!msg.contains("code_id"), "got {msg}");
+        assert!(msg.contains("debug_id"));
+        assert!(msg.contains("8F6374B35C6264174C4C44205044422E1"));
+        assert!(msg.contains("17CA6E98FAFE9AE94C4C44205044422E1"));
+    }
+
+    // Both identifiers mismatch -> both are reported in a single warning.
+    #[test]
+    fn test_check_binary_identity_both_mismatch_reports_both() {
+        let binary = IdStubBinary {
+            build_id: Some("DEADBEEF1000".to_string()),
+            breakpad_debug_id: Some("0000000000000000000000000000000000".to_string()),
+        };
+        let msg = check_binary_identity(
+            &binary,
+            Some("6A04554DAE000"),
+            "8F6374B35C6264174C4C44205044422E1",
+        )
+        .expect("expected mismatch");
+        assert!(msg.contains("code_id"));
+        assert!(msg.contains("debug_id"));
+        assert!(msg.contains("DEADBEEF1000"));
+        assert!(msg.contains("8F6374B35C6264174C4C44205044422E1"));
+    }
+
+    // Defensive fall-through: if a binary surfaces no `build_id()` (a
+    // stripped public PE with no optional header, say) but does surface
+    // a `breakpad_debug_id()`, the check uses the debug_id branch rather
+    // than silently skipping. The realistic PE workflow goes through
+    // `build_id()` because PeFile populates code_id from the optional
+    // header -- but this branch must stay live to keep the let-chain
+    // intentional rather than incidental.
+    #[test]
+    fn test_check_binary_identity_pe_falls_through_to_debug_id() {
+        let binary = IdStubBinary {
+            build_id: None,
+            breakpad_debug_id: Some("8F6374B35C6264174C4C44205044422E1".to_string()),
+        };
+        // Matching debug_id -> no warning.
+        assert_eq!(
+            check_binary_identity(
+                &binary,
+                Some("6A04554DAE000"),
+                "8F6374B35C6264174C4C44205044422E1",
+            ),
+            None,
+        );
+        // Mismatching debug_id -> warning, even though code_id was supplied.
+        let msg = check_binary_identity(
+            &binary,
+            Some("6A04554DAE000"),
+            "DEADBEEFDEADBEEFDEADBEEFDEADBEEF1",
+        )
+        .expect("expected mismatch");
+        assert!(msg.contains("8F6374B35C6264174C4C44205044422E1"));
+        assert!(msg.contains("DEADBEEFDEADBEEFDEADBEEFDEADBEEF1"));
+    }
+
+    #[test]
+    fn test_check_binary_identity_no_identity_available() {
+        // A binary that can't surface either identifier (e.g. a stripped
+        // PE with no CodeView entry) -> returns None, identity is not
+        // checked.
         let binary = IdStubBinary {
             build_id: None,
             breakpad_debug_id: None,

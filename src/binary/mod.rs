@@ -55,26 +55,33 @@ pub trait BinaryFile {
     /// Get all exports as (rva, name) pairs.
     fn exports(&self) -> &[(u64, String)];
 
-    /// Return the binary's build identifier (ELF build ID or Mach-O UUID).
-    /// Returns `None` for formats without a build ID (e.g., PE).
+    /// Return the binary's raw build identifier:
+    /// - ELF GNU build-id (40 hex chars for SHA-1 builds).
+    /// - Mach-O LC_UUID (32 hex chars).
+    /// - PE `{TimeDateStamp:08X}{SizeOfImage:X}` -- the same string Microsoft
+    ///   Symbol Server URLs and the WinDbg cache layout key on.
+    ///
+    /// Returns `None` only when the binary is missing the relevant section
+    /// (e.g. a PE without an optional header).
     fn build_id(&self) -> Option<String> {
         None
     }
 
-    /// Return the binary's identity as a 33-character Breakpad debug ID.
+    /// Return the binary's identity as a Breakpad debug ID.
     ///
-    /// ELF and Mach-O use different conventions for converting their build
-    /// identifier to a Breakpad debug ID:
+    /// Each format has its own conversion (length is 33 chars for age 0-9,
+    /// more for larger ages on PE):
     /// - ELF GNU build-id: byte-swap the first 16 bytes as if they were a
-    ///   little-endian Windows GUID (Data1 + Data2 + Data3 reversed), then
-    ///   append age "0".
-    /// - Mach-O LC_UUID: append age "0" directly — the bytes are already
-    ///   in the natural UUID order that Breakpad expects.
+    ///   little-endian Windows GUID (Data1, Data2, Data3 each reversed),
+    ///   then append age `"0"` (ELF has no age concept).
+    /// - Mach-O LC_UUID: uppercase the 16 bytes directly and append age
+    ///   `"0"` -- Mach-O stores UUIDs in natural byte order, no swap.
+    /// - PE: pull the GUID + age from the CodeView CV_INFO_PDB70 ("RSDS")
+    ///   record, byte-swap Data1/Data2/Data3, then append the age as
+    ///   uppercase hex without padding (`{age:X}`). Returns `None` for
+    ///   PEs without a CV_INFO_PDB70 entry (stripped or NB10-only).
     ///
-    /// Returns `None` for formats where symdis doesn't derive the debug ID
-    /// from the binary alone (e.g., PE — the equivalent identifier sits in
-    /// the CodeView debug record, but symdis verifies PE identity via the
-    /// linked PDB instead).
+    /// The default returns `None`.
     fn breakpad_debug_id(&self) -> Option<String> {
         None
     }
