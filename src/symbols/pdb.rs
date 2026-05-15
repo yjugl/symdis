@@ -623,7 +623,7 @@ mod tests {
     #[test]
     fn test_line_size_computation() {
         // Simulate what parse_pdb does for line size computation
-        let mut lines = vec![
+        let mut lines = [
             LineRecord {
                 address: 0x1000,
                 size: 0,

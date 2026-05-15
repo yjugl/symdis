@@ -622,7 +622,7 @@ glibc
 
     #[test]
     fn test_find_package_by_name() {
-        let packages = vec![
+        let packages = [
             PkgDesc {
                 name: "glib2".to_string(),
                 version: "2.82.4-1".to_string(),
